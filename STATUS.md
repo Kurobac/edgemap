@@ -14,8 +14,9 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.0.2 | `27ae79a` | Basic remap (Cross→Circle test rule) + byte position fix |
 | v0.0.3 | `bc6defa` | TOML config system + 12 bugfixes + log cleanup |
 | v0.0.4 | `d9f54b7` | 41 unit tests + hardened device detection |
-
-**Unreleased (HEAD):** touchpad split mode + missing-button warnings
+| v0.0.5 | `40fcbe4` | Touchpad split mode + missing-button warnings |
+| v0.0.6 | `9aa83b8` | Hot reload (SIGHUP) + trigger analog transfer fix |
+| current | `HEAD` | Turbo + `none`→`block` rename |
 
 ## Implemented Features
 
@@ -47,7 +48,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - **Remap**: source button → target button (all standard buttons)
 - **TriggerFull**: source → L2/R2 fully depressed (analog = 255)
 - **Stick**: source → 8 fixed stick directions (LS/RS up/down/left/right)
-- **Block**: source → disabled (`remap = "none"`)
+- **Block**: source → disabled (`remap = "block"`)
 - **Self-map**: source → same target (passthrough, used in default config)
 - All standard + Edge buttons supported as source (excluding mic)
 - Edge buttons excluded from target options
@@ -66,7 +67,40 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - Validation: unknown source buttons, unknown targets, split mode rules
 - Default config auto-generated at `/etc/dseuhid/config.toml`
 - Missing section warnings (all 22 buttons checked at startup)
-- Reserved fields: `turbo`, `turbo_interval_ms`, `turbo_delay_ms`, `combos`, `macros` (parsed but unused)
+- Reserved fields: `combo`/`macro` parsing stubs present, not yet implemented
+
+### Hot Reload
+- SIGHUP (`kill -HUP <pid>`) triggers config re-read
+- `Arc<RwLock<MappingConfig>>` — read lock per frame, write lock on reload
+- Failed reload reverts to passthrough (`MappingConfig::default`)
+- Debug snapshots cleared on reload
+- Turbo runtimes rebuilt on reload
+
+### Turbo System
+- **Turbo (hold-to-repeat)**: hold source → one-shot target → (delay_ms) → toggle at interval_ms
+- State machine in `proxy.rs`, reads from snapshot, runs after mapping rules
+- Per-frame target maintain (not just on toggle events)
+- Source suppression: digital + analog cleared while turbo active
+- Config: `turbo = true`, `turbo_interval_ms` (default 50ms), `turbo_delay_ms` (default 0ms)
+- Self-turbo: `[cross] turbo=true` (no remap field) → target = cross itself
+- All standard/Edge buttons supported as turbo source
+
+**Turbo edge cases actively rejected:**
+| Config | Reason |
+|--------|--------|
+| `[l2] remap="l2" turbo=true` | Trigger self-map × turbo (analog conflict) |
+| `[l2] remap="r2" turbo=true` | Trigger swap × turbo (analog transfer conflict) |
+| `[l2] turbo=true` (no remap) | Implicit self-map = trigger self × turbo (same as above) |
+| `[cross] remap="block" turbo=true` | Block × turbo (no target to toggle) |
+| `[l2] remap="none/block" turbo=true` | Same as above + trigger analog leak risk |
+
+**Turbo edge cases allowed:**
+| Config | Behavior |
+|--------|----------|
+| `[l2] remap="l2_full" turbo=true` | Turbo toggle of full L2 press (analog=255/0) |
+| `[l2] remap="cross" turbo=true` | Turbo toggle of digital cross (L2 analog cleared) |
+| `[cross] remap="l2" turbo=true` | Turbo toggle of digital L2 (analog=0, only digital) |
+| `[cross] turbo=true` (no remap) | Self-turbo: cross toggle itself |
 
 ### Device Detection
 - Scan `/dev/hidraw*`, ioctl HIDIOCGRAWINFO for VID/PID
@@ -113,15 +147,20 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | 17 | Touchpad coordinate wrong (x=3800 out of range) | Byte offset: `touchdata` starts at byte 33, not 34; nibble: low nibble = x_hi, not high nibble | `81b330d` |
 | 18 | Split mode allowed without both partitions | Validation missing | `81b330d` |
 | 19 | Split mode allowed with touchpad section missing | `contains_key("touchpad")` guard was too specific | `48739ae` |
+| 20 | Trigger self-map lost analog | `apply()` unconditionally cleared L2/R2 analog on all targets | `8ad808b` |
+| 21 | Trigger swap (L2→R2) lost analog | Self-map fix only handled self, not cross-trigger | `9aa83b8` |
+| 22 | Turbo source button leaked through | `to_mapping_config()` skips turbo buttons → no RemapRule to suppress source | `ef20805` |
+| 23 | Turbo target not maintained between frames | Only applied on toggle event, not every frame | `ef20805` |
+| 24 | Turbo on L2/R2 source leaked analog | Source suppression only cleared digital bit, not analog | `ef20805` |
+| 25 | `remap="none"` semantics confused with missing remap | `unwrap_or("none")` treated missing remap as explicit block | `9ad6dbb` |
+| 26 | `[cross] turbo=true` (no remap) silently skipped | `build_turbo_configs()` skipped `None` remap instead of self-targeting | `9ad6dbb` |
 
 ## TODO
 
 ### High Priority
-- [ ] **Hot reload**: `Arc<RwLock<MappingConfig>>` + SIGHUP → reload without UHID restart
-- [ ] **Dead code cleanup**: 24 compiler warnings (unused functions, camel case, imports)
+- [ ] **Dead code cleanup**: 25 compiler warnings (unused functions, camel case, imports)
 
 ### Medium Priority
-- [ ] **Turbo**: hold-to-rapid-fire with configurable interval/delay (state machine in `apply()`)
 - [ ] **Combo**: modifier key combinations (predefined key→output sequence)
 - [ ] **Macro**: timed key sequences, uinput injection for keyboard events
 - [ ] **D-Bus interface**: zbus session bus server for runtime control, edgemap CLI client
@@ -134,9 +173,15 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 ## Commit History
 
 ```
+9ad6dbb fix: rename none→block, fix self-turbo for missing remap
+ef20805 feat: turbo (hold-to-repeat) with configurable interval/delay
+9aa83b8 fix: transfer analog values on trigger swap (L2<->R2)        [v0.0.6]
+8ad808b fix: preserve analog values on trigger self-map
+6da6b0a feat: SIGHUP hot reload without UHID restart
+40fcbe4 docs: update STATUS.md with full project overview            [v0.0.5]
 48739ae feat: warn when button sections are missing from config
 81b330d feat: touchpad split mode (left/right partition)
-d9f54b7 test: add 41 unit tests covering mapping, report, config   [v0.0.4]
+d9f54b7 test: add 41 unit tests covering mapping, report, config    [v0.0.4]
 42bf5ca fix: harden device detection
 bc6defa chore: cleanup log levels and device messages               [v0.0.3]
 86bcf92 fix: defer button target writes to prevent multi-key collision

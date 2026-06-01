@@ -64,8 +64,16 @@ impl MappingConfig {
             // Phase 1: clear source button (always)
             state.set_button(rule.src, false);
             match rule.src {
-                Button::L2 => state.l2_analog = 0,
-                Button::R2 => state.r2_analog = 0,
+                Button::L2 => {
+                    if !matches!(&rule.dst, Target::Button(Button::L2) | Target::TriggerFull(Trigger::L2)) {
+                        state.l2_analog = 0;
+                    }
+                }
+                Button::R2 => {
+                    if !matches!(&rule.dst, Target::Button(Button::R2) | Target::TriggerFull(Trigger::R2)) {
+                        state.r2_analog = 0;
+                    }
+                }
                 _ => {}
             }
 
@@ -179,6 +187,19 @@ mod tests {
         s.set_button(Button::Cross, true);
         cfg.apply(&mut s);
         assert!(s.button(Button::Cross)); // self-map preserves
+    }
+
+    #[test]
+    fn trigger_self_map_preserves_analog() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::L2, Target::Button(Button::L2)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::L2, true);
+        s.l2_analog = 128;
+        cfg.apply(&mut s);
+        assert!(s.button(Button::L2));
+        assert_eq!(s.l2_analog, 128); // self-map preserves analog
     }
 
     #[test]

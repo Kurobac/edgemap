@@ -96,14 +96,14 @@ fn resolve_target(name: &str) -> Option<Target> {
     match name {
         "l2_full" => Some(Target::TriggerFull(Trigger::L2)),
         "r2_full" => Some(Target::TriggerFull(Trigger::R2)),
-        "ls_up" => Some(Target::Stick(StickDir::LS_Up)),
-        "ls_down" => Some(Target::Stick(StickDir::LS_Down)),
-        "ls_left" => Some(Target::Stick(StickDir::LS_Left)),
-        "ls_right" => Some(Target::Stick(StickDir::LS_Right)),
-        "rs_up" => Some(Target::Stick(StickDir::RS_Up)),
-        "rs_down" => Some(Target::Stick(StickDir::RS_Down)),
-        "rs_left" => Some(Target::Stick(StickDir::RS_Left)),
-        "rs_right" => Some(Target::Stick(StickDir::RS_Right)),
+        "ls_up" => Some(Target::Stick(StickDir::LsUp)),
+        "ls_down" => Some(Target::Stick(StickDir::LsDown)),
+        "ls_left" => Some(Target::Stick(StickDir::LsLeft)),
+        "ls_right" => Some(Target::Stick(StickDir::LsRight)),
+        "rs_up" => Some(Target::Stick(StickDir::RsUp)),
+        "rs_down" => Some(Target::Stick(StickDir::RsDown)),
+        "rs_left" => Some(Target::Stick(StickDir::RsLeft)),
+        "rs_right" => Some(Target::Stick(StickDir::RsRight)),
         _ => Button::from_name(name).map(Target::Button),
     }
 }

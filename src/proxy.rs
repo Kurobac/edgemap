@@ -23,14 +23,14 @@ fn apply_target_to_state(state: &mut crate::report::GamepadState, target: &Targe
         },
         Target::Stick(dir) => {
             match dir {
-                StickDir::LS_Up => if on { state.left_stick_y = 0 } else { state.left_stick_y = 128 },
-                StickDir::LS_Down => if on { state.left_stick_y = 255 } else { state.left_stick_y = 128 },
-                StickDir::LS_Left => if on { state.left_stick_x = 0 } else { state.left_stick_x = 128 },
-                StickDir::LS_Right => if on { state.left_stick_x = 255 } else { state.left_stick_x = 128 },
-                StickDir::RS_Up => if on { state.right_stick_y = 0 } else { state.right_stick_y = 128 },
-                StickDir::RS_Down => if on { state.right_stick_y = 255 } else { state.right_stick_y = 128 },
-                StickDir::RS_Left => if on { state.right_stick_x = 0 } else { state.right_stick_x = 128 },
-                StickDir::RS_Right => if on { state.right_stick_x = 255 } else { state.right_stick_x = 128 },
+                StickDir::LsUp => if on { state.left_stick_y = 0 } else { state.left_stick_y = 128 },
+                StickDir::LsDown => if on { state.left_stick_y = 255 } else { state.left_stick_y = 128 },
+                StickDir::LsLeft => if on { state.left_stick_x = 0 } else { state.left_stick_x = 128 },
+                StickDir::LsRight => if on { state.left_stick_x = 255 } else { state.left_stick_x = 128 },
+                StickDir::RsUp => if on { state.right_stick_y = 0 } else { state.right_stick_y = 128 },
+                StickDir::RsDown => if on { state.right_stick_y = 255 } else { state.right_stick_y = 128 },
+                StickDir::RsLeft => if on { state.right_stick_x = 0 } else { state.right_stick_x = 128 },
+                StickDir::RsRight => if on { state.right_stick_x = 255 } else { state.right_stick_x = 128 },
             }
         }
         Target::Block => {}

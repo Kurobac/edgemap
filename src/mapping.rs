@@ -8,14 +8,14 @@ pub enum Trigger {
 
 #[derive(Debug, Clone)]
 pub enum StickDir {
-    LS_Up,
-    LS_Down,
-    LS_Left,
-    LS_Right,
-    RS_Up,
-    RS_Down,
-    RS_Left,
-    RS_Right,
+    LsUp,
+    LsDown,
+    LsLeft,
+    LsRight,
+    RsUp,
+    RsDown,
+    RsLeft,
+    RsRight,
 }
 
 #[derive(Debug, Clone)]
@@ -137,14 +137,14 @@ impl MappingConfig {
                 }
                 Target::Stick(dir) => {
                     match dir {
-                        StickDir::LS_Up => state.left_stick_y = 0,
-                        StickDir::LS_Down => state.left_stick_y = 255,
-                        StickDir::LS_Left => state.left_stick_x = 0,
-                        StickDir::LS_Right => state.left_stick_x = 255,
-                        StickDir::RS_Up => state.right_stick_y = 0,
-                        StickDir::RS_Down => state.right_stick_y = 255,
-                        StickDir::RS_Left => state.right_stick_x = 0,
-                        StickDir::RS_Right => state.right_stick_x = 255,
+                        StickDir::LsUp => state.left_stick_y = 0,
+                        StickDir::LsDown => state.left_stick_y = 255,
+                        StickDir::LsLeft => state.left_stick_x = 0,
+                        StickDir::LsRight => state.left_stick_x = 255,
+                        StickDir::RsUp => state.right_stick_y = 0,
+                        StickDir::RsDown => state.right_stick_y = 255,
+                        StickDir::RsLeft => state.right_stick_x = 0,
+                        StickDir::RsRight => state.right_stick_x = 255,
                     }
                 }
                 Target::Block => {}
@@ -306,14 +306,14 @@ mod tests {
         fn rs_x(s: &GamepadState) -> u8 { s.right_stick_x }
 
         let cases: Vec<(StickDir, fn(&GamepadState) -> u8, u8)> = vec![
-            (StickDir::LS_Up,    ls_y, 0),
-            (StickDir::LS_Down,  ls_y, 255),
-            (StickDir::LS_Left,  ls_x, 0),
-            (StickDir::LS_Right, ls_x, 255),
-            (StickDir::RS_Up,    rs_y, 0),
-            (StickDir::RS_Down,  rs_y, 255),
-            (StickDir::RS_Left,  rs_x, 0),
-            (StickDir::RS_Right, rs_x, 255),
+            (StickDir::LsUp,    ls_y, 0),
+            (StickDir::LsDown,  ls_y, 255),
+            (StickDir::LsLeft,  ls_x, 0),
+            (StickDir::LsRight, ls_x, 255),
+            (StickDir::RsUp,    rs_y, 0),
+            (StickDir::RsDown,  rs_y, 255),
+            (StickDir::RsLeft,  rs_x, 0),
+            (StickDir::RsRight, rs_x, 255),
         ];
         let base = state();
         for (dir, getter, expected) in cases {

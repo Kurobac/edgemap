@@ -131,7 +131,7 @@ fn main() {
             proxy::ExitReason::DeviceGone => {
                 proxy.skip_restore();
                 info!("Device disconnected, waiting for reconnect...");
-                // hidraw + uhid auto-dropped — permissions restored, UHID destroyed
+                std::thread::sleep(Duration::from_secs(2));
             }
             proxy::ExitReason::UserShutdown => {
                 info!("Shutting down.");

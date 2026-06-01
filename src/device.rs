@@ -128,7 +128,7 @@ impl HidrawDevice {
         let is_edge = devinfo.product == DS5_EDGE_PID;
         let sysfs_path = find_sysfs_hidraw(path);
 
-        Ok(Self {
+        let mut device = Self {
             fd,
             info: DeviceInfo {
                 path: path.to_path_buf(),
@@ -143,7 +143,32 @@ impl HidrawDevice {
             },
             sysfs_path,
             restored_paths: Vec::new(),
-        })
+        };
+
+        // validate device state: read first input report
+        let mut buf = [0u8; 64];
+        match device.read_input(&mut buf) {
+            Ok(64) if buf[0] == 0x01 => {
+                debug!("device state OK: first input report valid");
+            }
+            Ok(n) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("unexpected first report: {n} bytes"),
+                ));
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                debug!("device state OK: no data yet (non-blocking read)");
+            }
+            Err(e) => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("device not responding: {e}"),
+                ));
+            }
+        }
+
+        Ok(device)
     }
 
     pub fn as_raw_fd(&self) -> RawFd {
@@ -362,11 +387,23 @@ impl Drop for HidrawDevice {
     }
 }
 
+fn is_physical_device(hidraw_name: &str) -> bool {
+    if let Ok(uevent) = fs::read_to_string(format!("/sys/class/hidraw/{hidraw_name}/device/uevent")) {
+        if uevent.contains("DRIVER=uhid") {
+            debug!("skipping virtual UHID device {hidraw_name}");
+            return false;
+        }
+    }
+    true
+}
+
 pub fn find_dualsense() -> Option<DeviceInfo> {
     let dir = match fs::read_dir(HIDRAW_DEV_DIR) {
         Ok(d) => d,
         Err(_) => return None,
     };
+
+    let mut found: Option<DeviceInfo> = None;
 
     for entry in dir.flatten() {
         let name = entry.file_name();
@@ -376,7 +413,6 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
         }
 
         let raw_path = entry.path();
-        let path = raw_path.clone();
 
         let file = match fs::OpenOptions::new().read(true).write(true).open(&raw_path) {
             Ok(f) => f,
@@ -389,34 +425,33 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
             continue;
         }
 
-        if devinfo.vendor != SONY_VID {
-            continue;
-        }
-        if devinfo.product != DS5_PID && devinfo.product != DS5_EDGE_PID {
+        if devinfo.vendor != SONY_VID || devinfo.product != DS5_EDGE_PID {
             continue;
         }
 
-        let is_edge = devinfo.product == DS5_EDGE_PID;
-        debug!(
-            "Found {} at {}",
-            if is_edge { "DualSense Edge" } else { "DualSense" },
-            raw_path.display()
-        );
+        if !is_physical_device(&name_str) {
+            continue;
+        }
 
-        return Some(DeviceInfo {
-            path,
+        if let Some(ref existing) = found {
+            warn!(
+                "multiple DualSense Edge devices found (at {} and {}); using the first, additional devices are not supported",
+                existing.path.display(),
+                raw_path.display()
+            );
+            continue;
+        }
+
+        found = Some(DeviceInfo {
+            path: raw_path.clone(),
             vid: devinfo.vendor,
             pid: devinfo.product,
-            name: if is_edge {
-                "DualSense Edge".into()
-            } else {
-                "DualSense".into()
-            },
-            is_edge,
+            name: "DualSense Edge".into(),
+            is_edge: true,
         });
     }
 
-    None
+    found
 }
 
 fn find_sysfs_hidraw(hidraw_path: &Path) -> Option<PathBuf> {

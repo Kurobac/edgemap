@@ -71,6 +71,10 @@ pub fn trigger_reload() {
     SHOULD_RELOAD.store(true, Ordering::SeqCst);
 }
 
+pub fn try_clear_reload() -> bool {
+    SHOULD_RELOAD.swap(false, Ordering::SeqCst)
+}
+
 pub fn setup_reload_handler() {
     unsafe {
         let handler = SigHandler::SigAction(handle_reload_signal);

@@ -20,6 +20,7 @@ fn main() {
 
     info!("DualSense Edge UHID proxy starting");
     proxy::setup_signal_handler();
+    proxy::setup_reload_handler();
 
     let report_desc = descriptor::dualsense_usb_descriptor();
     info!(
@@ -43,6 +44,9 @@ fn main() {
                     break d;
                 }
                 None => {
+                    if proxy::try_clear_reload() {
+                        info!("received reload signal (no device connected)");
+                    }
                     std::thread::sleep(Duration::from_secs(1));
                 }
             }
@@ -132,8 +136,6 @@ fn main() {
                 mapping::MappingConfig::default()
             }
         }));
-
-        proxy::setup_reload_handler();
 
         let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path);
         match proxy.run() {

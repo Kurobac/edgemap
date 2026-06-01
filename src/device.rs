@@ -262,6 +262,8 @@ impl HidrawDevice {
     }
 
     pub fn restrict_evdev_nodes(&mut self) -> io::Result<()> {
+        let mut hidden: Vec<String> = Vec::new();
+
         if let Some(ref sysfs) = self.sysfs_path {
             let input_dir = sysfs.join("device/input");
             if !input_dir.exists() {
@@ -288,7 +290,7 @@ impl HidrawDevice {
                                 let dev_path = PathBuf::from("/dev/input").join(ev_name);
                                 if dev_path.exists() {
                                     Self::restrict_node(&dev_path, &mut self.restored_paths)?;
-                                    info!("Restricted {ev_name}");
+                                    hidden.push(ev_name.to_string());
                                 }
                             }
                         }
@@ -304,8 +306,13 @@ impl HidrawDevice {
             let hidraw_path = PathBuf::from("/dev").join(devname);
             if hidraw_path.exists() {
                 Self::restrict_node(&hidraw_path, &mut self.restored_paths)?;
-                info!("Restricted {devname}");
+                hidden.push(devname.to_string());
             }
+        }
+
+        info!("hidden {} physical device nodes", hidden.len());
+        for name in &hidden {
+            debug!("  restricted {name}");
         }
 
         Ok(())
@@ -316,6 +323,10 @@ impl HidrawDevice {
     }
 
     fn restore_permissions(&self) {
+        if self.restored_paths.is_empty() {
+            return;
+        }
+        info!("restore {} device nodes", self.restored_paths.len());
         for (path, orig_mode, acl_data) in &self.restored_paths {
             if !path.exists() {
                 continue;
@@ -324,7 +335,7 @@ impl HidrawDevice {
             {
                 log::warn!("Failed to restore permissions on {:?}: {e}", path);
             } else {
-                log::info!("Restored permissions on {:?}", path);
+                log::debug!("Restored permissions on {:?}", path);
             }
 
             if !acl_data.is_empty() {

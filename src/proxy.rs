@@ -1,14 +1,23 @@
 use std::io;
 
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::os::fd::BorrowedFd;
 
 use crate::device::HidrawDevice;
 use crate::mapping::MappingConfig;
-use crate::report;
+use crate::report::{self, Button};
 use crate::uhid::UhidDevice;
+
+static ALL_BUTTONS: &[Button] = &[
+    Button::Square, Button::Cross, Button::Circle, Button::Triangle,
+    Button::L1, Button::R1, Button::L2, Button::R2,
+    Button::Create, Button::Options, Button::L3, Button::R3,
+    Button::PS, Button::Touchpad, Button::Mic,
+    Button::DpadUp, Button::DpadDown, Button::DpadLeft, Button::DpadRight,
+    Button::FnLeft, Button::FnRight, Button::LeftPaddle, Button::RightPaddle,
+];
 
 #[derive(Debug, PartialEq)]
 pub enum ExitReason {
@@ -82,15 +91,44 @@ pub struct Proxy {
     hidraw: HidrawDevice,
     uhid: UhidDevice,
     mapping: MappingConfig,
+    last_snapshot: Option<crate::report::GamepadState>,
+    last_output: Option<crate::report::GamepadState>,
 }
 
 impl Proxy {
     pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: MappingConfig) -> Self {
-        Self { hidraw, uhid, mapping }
+        Self { hidraw, uhid, mapping, last_snapshot: None, last_output: None }
     }
 
     pub fn skip_restore(&mut self) {
         self.hidraw.clear_restored_paths();
+    }
+
+    fn log_button_diff(&mut self, snapshot: &crate::report::GamepadState, output: &crate::report::GamepadState) {
+        let mut phys_changes: Vec<String> = Vec::new();
+        let prev = self.last_snapshot.as_ref();
+
+        for btn in ALL_BUTTONS.iter() {
+            let now = snapshot.button(*btn);
+            let was = prev.map_or(false, |p| p.button(*btn));
+            if now != was {
+                phys_changes.push(format!("{}{}", if now { "+" } else { "-" }, btn.name()));
+            }
+        }
+
+        if !phys_changes.is_empty() {
+            let mut out_names: Vec<&str> = Vec::new();
+            for btn in ALL_BUTTONS.iter() {
+                if output.button(*btn) {
+                    out_names.push(btn.name());
+                }
+            }
+            let out_display = if out_names.is_empty() { "[none]".to_string() } else { out_names.join(" ") };
+            debug!("in: {}  →  out: {}", phys_changes.join(" "), out_display);
+        }
+
+        self.last_snapshot = Some(snapshot.clone());
+        self.last_output = Some(output.clone());
     }
 
     pub fn run(&mut self) -> ExitReason {
@@ -182,8 +220,11 @@ impl Proxy {
                     *seq = seq.wrapping_add(1);
 
                     if let Some(mut state) = report::parse_input_report(&buf) {
+                        let snapshot = state.clone();
                         self.mapping.apply(&mut state);
                         report::apply_state_to_report(&mut buf, &state, *seq);
+                        // log button changes at debug level
+                        self.log_button_diff(&snapshot, &state);
                     } else {
                         warn!("parse_input_report failed, raw forwarding (mapping lost for this frame)");
                         buf[7] = *seq;
@@ -229,40 +270,39 @@ impl Proxy {
                             debug!("UHID device closed by client");
                         }
                         UhidEvent::Output { rtype, ref data } => {
-                            // rtype is UHID report type: 0=Feature, 1=Output, 2=Input
                             if rtype == 1 {
-                                debug!("UHID OUTPUT: size={}", data.len());
+                                trace!("UHID OUTPUT: size={}", data.len());
                                 if let Err(e) = self.hidraw.write_output(data) {
                                     error!("Failed to forward output report: {e}");
                                 }
                             } else {
-                                debug!("UHID Output with unexpected rtype={rtype}, ignoring");
+                                warn!("UHID Output with unexpected rtype={rtype}, ignoring");
                             }
                         }
                         UhidEvent::GetReport { id, rnum, rtype } => {
-                            debug!("UHID GET_REPORT: id={id}, rnum={rnum}, rtype={rtype}");
+                            trace!("UHID GET_REPORT: id={id}, rnum={rnum}, rtype={rtype}");
                             match get_cached_report(rnum) {
                                 Some(data) => {
-                                    debug!("GET_REPORT rnum={rnum}: served from cache");
+                                    trace!("GET_REPORT rnum={rnum}: served from cache");
                                     let _ = self.uhid.send_get_report_reply(id, 0, &data);
                                 }
                                 None => {
-                                    debug!("GET_REPORT rnum={rnum}: not cached, returning error");
+                                    warn!("GET_REPORT rnum={rnum}: not cached, returning error");
                                     let _ = self.uhid.send_get_report_reply(id, 1, &[]);
                                 }
                             }
                         }
                         UhidEvent::Unknown(t) => {
-                            debug!("Unknown UHID event type: {t}");
+                            warn!("Unknown UHID event type: {t}");
                         }
                         UhidEvent::SetReport { id, rnum, rtype, ref data } => {
-                            debug!("UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}", data.len());
+                            trace!("UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}", data.len());
                             // Forward feature report data to real hardware
                             if rtype == 0 {
                                 let mut full_data = vec![rnum];
                                 full_data.extend_from_slice(data);
                                 if let Err(e) = self.hidraw.send_feature_report(&full_data) {
-                                    debug!("Failed to forward set_report rnum={rnum}: {e}");
+                                    warn!("Failed to forward set_report rnum={rnum}: {e}");
                                 }
                             }
                             let _ = self.uhid.send_set_report_reply(id, 0);

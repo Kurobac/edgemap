@@ -34,8 +34,7 @@ fn main() {
             match find_dualsense() {
                 Some(d) => {
                     info!(
-                        "Found {} ({:04x}:{:04x}) at {}",
-                        d.device_name(),
+                        "found DualSense Edge ({:04x}:{:04x}) at {}",
                         d.vid,
                         d.pid,
                         d.path.display()
@@ -86,8 +85,6 @@ fn main() {
         if let Err(e) = hidraw.restrict_evdev_nodes() {
             info!("Failed to restrict physical evdev nodes: {e}");
             info!("You may see two controllers in games — select the virtual one.");
-        } else {
-            info!("Physical evdev nodes hidden — only virtual device is visible to games");
         }
 
         info!("Proxy starting");
@@ -113,7 +110,7 @@ fn main() {
                 } else {
                     match cfg.to_mapping_config() {
                         Ok(m) => {
-                            info!("Loaded {} remap rules from {config_path}", m.rules.len());
+                            info!("Loaded config from {config_path}");
                             m
                         }
                         Err(e) => {

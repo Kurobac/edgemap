@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use crate::mapping::{MappingConfig, RemapRule, StickDir, Target, Trigger};
+use crate::mapping::{MappingConfig, RemapRule, StickDir, Target, Trigger, TurboConfig};
 use crate::report::Button;
 
 #[derive(Debug, Default, Deserialize)]
@@ -118,6 +118,11 @@ impl Config {
             let src = Button::from_name(btn_name)
                 .ok_or_else(|| format!("Unknown source button: {btn_name}"))?;
 
+            // turbo buttons handled separately via build_turbo_configs
+            if btn_conf.turbo {
+                continue;
+            }
+
             if src == Button::Touchpad && btn_conf.remap.as_deref() == Some("split") {
                 split_touchpad = true;
                 continue; // handled below
@@ -158,7 +163,36 @@ impl Config {
             rules.push(RemapRule::new(Button::TouchpadRight, right));
         }
 
-        Ok(MappingConfig::from_rules_split(rules, split_touchpad))
+        let mut mapping = MappingConfig::from_rules_split(rules, split_touchpad);
+        mapping.turbo_configs = self.build_turbo_configs();
+        Ok(mapping)
+    }
+
+    pub fn build_turbo_configs(&self) -> Vec<TurboConfig> {
+        let mut configs = Vec::new();
+        for (btn_name, btn_conf) in &self.buttons {
+            if !btn_conf.turbo {
+                continue;
+            }
+            let src = match Button::from_name(btn_name) {
+                Some(b) => b,
+                None => continue,
+            };
+            let dst = match btn_conf.remap.as_deref() {
+                None | Some("none") => continue,
+                Some(target) => match resolve_target(target) {
+                    Some(t) => t,
+                    None => continue,
+                },
+            };
+            configs.push(TurboConfig {
+                src,
+                dst,
+                interval_ms: btn_conf.turbo_interval_ms,
+                delay_ms: btn_conf.turbo_delay_ms,
+            });
+        }
+        configs
     }
 }
 
@@ -191,6 +225,18 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
         if btn_name == "touchpad" && remap == "split" {
             has_split = true;
             continue; // validated below
+        }
+
+        // turbo with trigger source + trigger target (analog transfer) is not allowed
+        if btn_conf.turbo && matches!(btn_name.as_str(), "l2" | "r2") {
+            let target_is_trigger = matches!(remap, "l2" | "r2") || remap == "none";
+            if target_is_trigger {
+                return Err(format!("[{btn_name}] turbo with trigger target '{remap}' is not supported"));
+            }
+        }
+
+        if btn_conf.turbo && remap == "none" {
+            return Err(format!("[{btn_name}] turbo cannot be combined with remap=\"none\" (block)"));
         }
 
         if btn_name == "touchpad_left" {

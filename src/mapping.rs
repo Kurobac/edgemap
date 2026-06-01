@@ -38,19 +38,28 @@ impl RemapRule {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct TurboConfig {
+    pub src: Button,
+    pub dst: Target,
+    pub interval_ms: u64,
+    pub delay_ms: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MappingConfig {
     pub rules: Vec<RemapRule>,
     pub split_touchpad: bool,
+    pub turbo_configs: Vec<TurboConfig>,
 }
 
 impl MappingConfig {
     pub fn from_rules(rules: Vec<RemapRule>) -> Self {
-        Self { rules, split_touchpad: false }
+        Self { rules, split_touchpad: false, turbo_configs: Vec::new() }
     }
 
     pub fn from_rules_split(rules: Vec<RemapRule>, split_touchpad: bool) -> Self {
-        Self { rules, split_touchpad }
+        Self { rules, split_touchpad, turbo_configs: Vec::new() }
     }
 
     pub fn apply(&self, state: &mut GamepadState) {

@@ -8,9 +8,62 @@ use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal
 use std::os::fd::BorrowedFd;
 
 use crate::device::HidrawDevice;
-use crate::mapping::MappingConfig;
+use crate::mapping::{MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::{self, Button};
 use crate::uhid::UhidDevice;
+use std::time::Instant;
+
+fn apply_target_to_state(state: &mut crate::report::GamepadState, target: &Target, on: bool) {
+    use crate::mapping::StickDir;
+    match target {
+        Target::Button(btn) => state.set_button(*btn, on),
+        Target::TriggerFull(t) => match t {
+            Trigger::L2 => { state.set_button(Button::L2, on); state.l2_analog = if on { 255 } else { 0 }; }
+            Trigger::R2 => { state.set_button(Button::R2, on); state.r2_analog = if on { 255 } else { 0 }; }
+        },
+        Target::Stick(dir) => {
+            match dir {
+                StickDir::LS_Up => if on { state.left_stick_y = 0 } else { state.left_stick_y = 128 },
+                StickDir::LS_Down => if on { state.left_stick_y = 255 } else { state.left_stick_y = 128 },
+                StickDir::LS_Left => if on { state.left_stick_x = 0 } else { state.left_stick_x = 128 },
+                StickDir::LS_Right => if on { state.left_stick_x = 255 } else { state.left_stick_x = 128 },
+                StickDir::RS_Up => if on { state.right_stick_y = 0 } else { state.right_stick_y = 128 },
+                StickDir::RS_Down => if on { state.right_stick_y = 255 } else { state.right_stick_y = 128 },
+                StickDir::RS_Left => if on { state.right_stick_x = 0 } else { state.right_stick_x = 128 },
+                StickDir::RS_Right => if on { state.right_stick_x = 255 } else { state.right_stick_x = 128 },
+            }
+        }
+        Target::Block => {}
+    }
+}
+
+struct TurboRuntime {
+    src: Button,
+    dst: Target,
+    interval_ms: u64,
+    delay_ms: u64,
+    active: bool,
+    turbo_active: bool,
+    phase: bool,
+    press_time: Instant,
+    last_toggle: Instant,
+}
+
+impl TurboRuntime {
+    fn from_config(cfg: &TurboConfig) -> Self {
+        Self {
+            src: cfg.src,
+            dst: cfg.dst.clone(),
+            interval_ms: cfg.interval_ms,
+            delay_ms: cfg.delay_ms,
+            active: false,
+            turbo_active: false,
+            phase: false,
+            press_time: Instant::now(),
+            last_toggle: Instant::now(),
+        }
+    }
+}
 
 static SHOULD_RELOAD: AtomicBool = AtomicBool::new(false);
 
@@ -114,11 +167,15 @@ pub struct Proxy {
     config_path: String,
     last_snapshot: Option<crate::report::GamepadState>,
     last_output: Option<crate::report::GamepadState>,
+    turbo_runtimes: Vec<TurboRuntime>,
 }
 
 impl Proxy {
     pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str) -> Self {
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), last_snapshot: None, last_output: None }
+        let turbo_runtimes = mapping.read().unwrap().turbo_configs.iter()
+            .map(TurboRuntime::from_config)
+            .collect();
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), last_snapshot: None, last_output: None, turbo_runtimes }
     }
 
     pub fn skip_restore(&mut self) {
@@ -160,6 +217,10 @@ impl Proxy {
         if cfg_ok {
             info!("Config reloaded from {}", self.config_path);
         }
+        // rebuild turbo runtimes from the new mapping
+        self.turbo_runtimes = self.mapping.read().unwrap().turbo_configs.iter()
+            .map(TurboRuntime::from_config)
+            .collect();
     }
 
     fn log_button_diff(&mut self, snapshot: &crate::report::GamepadState, output: &crate::report::GamepadState) {
@@ -305,6 +366,54 @@ impl Proxy {
 
                         m.apply(&mut state);
                         drop(m);
+
+                        // turbo: override targets based on hold-to-repeat
+                        for t in &mut self.turbo_runtimes {
+                            let pressed = snapshot.button(t.src);
+                            // always suppress source button when turbo is active
+                            if t.active || pressed {
+                                state.set_button(t.src, false);
+                                match t.src {
+                                    Button::L2 => state.l2_analog = 0,
+                                    Button::R2 => state.r2_analog = 0,
+                                    _ => {}
+                                }
+                            }
+                            if pressed && !t.active {
+                                t.active = true;
+                                t.turbo_active = false;
+                                t.phase = true;
+                                t.press_time = Instant::now();
+                                apply_target_to_state(&mut state, &t.dst, true);
+                                debug!("turbo {:?}: press (one-shot)", t.src);
+                            } else if !pressed && t.active {
+                                t.active = false;
+                                t.turbo_active = false;
+                                apply_target_to_state(&mut state, &t.dst, false);
+                                debug!("turbo {:?}: released", t.src);
+                            } else if t.active && !t.turbo_active && t.delay_ms > 0 {
+                                if t.press_time.elapsed().as_millis() >= t.delay_ms as u128 {
+                                    t.turbo_active = true;
+                                    t.last_toggle = Instant::now();
+                                    debug!("turbo {:?}: delay expired, starting toggle (interval={}ms)", t.src, t.interval_ms);
+                                }
+                            } else if t.active && !t.turbo_active {
+                                t.turbo_active = true;
+                                t.last_toggle = Instant::now();
+                                debug!("turbo {:?}: starting toggle (interval={}ms)", t.src, t.interval_ms);
+                            } else if t.active && t.turbo_active {
+                                if t.last_toggle.elapsed().as_millis() >= t.interval_ms as u128 {
+                                    t.phase = !t.phase;
+                                    t.last_toggle = Instant::now();
+                                    debug!("turbo {:?}: toggle → {}", t.src, t.phase);
+                                }
+                            }
+                            // maintain target state every frame while active
+                            if t.active {
+                                apply_target_to_state(&mut state, &t.dst, t.phase);
+                            }
+                        }
+
                         report::apply_state_to_report(&mut buf, &state, *seq);
                         // log button changes at debug level
                         self.log_button_diff(&snapshot, &state);

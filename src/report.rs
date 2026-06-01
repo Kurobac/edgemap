@@ -4,10 +4,6 @@ pub const USB_INPUT_REPORT_SIZE: usize = 64;
 pub const USB_INPUT_REPORT_ID: u8 = 0x01;
 pub const USB_OUTPUT_REPORT_SIZE: usize = 48;
 pub const USB_OUTPUT_REPORT_ID: u8 = 0x02;
-pub const FEATURE_REPORT_CALIBRATION: u8 = 0x05;
-pub const FEATURE_REPORT_PAIRING: u8 = 0x09;
-pub const FEATURE_REPORT_FIRMWARE: u8 = 0x20;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Button {
@@ -101,14 +97,6 @@ impl Button {
             Self::R2Analog => "r2_analog",
         }
     }
-
-    pub fn is_standard(&self) -> bool {
-        !matches!(self, Self::DpadUp | Self::DpadDown | Self::DpadLeft | Self::DpadRight)
-    }
-
-    pub fn is_edge_specific(&self) -> bool {
-        matches!(self, Self::FnLeft | Self::FnRight | Self::LeftPaddle | Self::RightPaddle)
-    }
 }
 
 impl fmt::Display for Button {
@@ -139,16 +127,6 @@ impl GamepadState {
 
     pub fn set_button(&mut self, btn: Button, pressed: bool) {
         self.buttons[btn as usize] = pressed;
-    }
-
-    pub fn clear(&mut self) {
-        self.buttons.fill(false);
-        self.left_stick_x = 0x80;
-        self.left_stick_y = 0x80;
-        self.right_stick_x = 0x80;
-        self.right_stick_y = 0x80;
-        self.l2_analog = 0;
-        self.r2_analog = 0;
     }
 }
 
@@ -345,35 +323,6 @@ pub fn build_input_report(state: &GamepadState) -> [u8; USB_INPUT_REPORT_SIZE] {
     data[53] |= charging_bits;
 
     data
-}
-
-pub fn build_output_report(
-    rumble_right: u8,
-    rumble_left: u8,
-    led_r: u8,
-    led_g: u8,
-    led_b: u8,
-) -> [u8; USB_OUTPUT_REPORT_SIZE] {
-    let mut data = [0u8; USB_OUTPUT_REPORT_SIZE];
-    data[0] = USB_OUTPUT_REPORT_ID;
-
-    data[1] = 0x03; // enable bits 1: compatible vibration + haptics select
-    data[2] = 0x04; // enable bits 2: lightbar control
-    data[3] = rumble_right;
-    data[4] = rumble_left;
-
-    data[39] = 0x04; // enable bits 3: improved rumble emulation
-    data[42] = 0x02; // lightbar setup
-    data[44] = 0x1F; // all player LEDs
-    data[45] = led_r;
-    data[46] = led_g;
-    data[47] = led_b;
-
-    data
-}
-
-pub fn build_trigger_off_effect() -> [u8; 11] {
-    [0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 }
 
 #[cfg(test)]

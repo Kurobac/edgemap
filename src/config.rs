@@ -130,7 +130,7 @@ impl Config {
 
             let dst = match btn_conf.remap.as_deref() {
                 None => continue,
-                Some("none") => Target::Block,
+                Some("block") => Target::Block,
                 Some(target) => resolve_target(target)
                     .ok_or_else(|| format!("Unknown target '{target}' for button '{btn_name}'"))?,
             };
@@ -146,12 +146,12 @@ impl Config {
                 .and_then(|c| c.remap.as_deref())
                 .ok_or("split touchpad requires [touchpad_right] to be configured")?;
 
-            // Validate targets (none/block not allowed in split mode)
-            if left_dst == "none" {
-                return Err("touchpad_left: remap=\"none\" is not allowed in split mode".into());
+            // Validate targets (block not allowed in split mode)
+            if left_dst == "block" {
+                return Err("touchpad_left: remap=\"block\" is not allowed in split mode".into());
             }
-            if right_dst == "none" {
-                return Err("touchpad_right: remap=\"none\" is not allowed in split mode".into());
+            if right_dst == "block" {
+                return Err("touchpad_right: remap=\"block\" is not allowed in split mode".into());
             }
 
             let left = resolve_target(left_dst)
@@ -179,7 +179,8 @@ impl Config {
                 None => continue,
             };
             let dst = match btn_conf.remap.as_deref() {
-                None | Some("none") => continue,
+                Some("block") => continue,
+                None => Target::Button(src),
                 Some(target) => match resolve_target(target) {
                     Some(t) => t,
                     None => continue,
@@ -220,7 +221,7 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             ));
         }
         let btn_conf = &cfg.buttons[btn_name];
-        let remap = btn_conf.remap.as_deref().unwrap_or("none");
+        let remap = btn_conf.remap.as_deref().unwrap_or("");
 
         if btn_name == "touchpad" && remap == "split" {
             has_split = true;
@@ -229,14 +230,14 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
 
         // turbo with trigger source + trigger target (analog transfer) is not allowed
         if btn_conf.turbo && matches!(btn_name.as_str(), "l2" | "r2") {
-            let target_is_trigger = matches!(remap, "l2" | "r2") || remap == "none";
+            let target_is_trigger = matches!(remap, "l2" | "r2") || remap == "";
             if target_is_trigger {
                 return Err(format!("[{btn_name}] turbo with trigger target '{remap}' is not supported"));
             }
         }
 
-        if btn_conf.turbo && remap == "none" {
-            return Err(format!("[{btn_name}] turbo cannot be combined with remap=\"none\" (block)"));
+        if btn_conf.turbo && remap == "block" {
+            return Err(format!("[{btn_name}] turbo cannot be combined with remap=\"block\""));
         }
 
         if btn_name == "touchpad_left" {
@@ -246,7 +247,7 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             has_touch_right = true;
         }
 
-        if remap != "none" && !is_valid_target(remap) {
+        if remap != "block" && !remap.is_empty() && !is_valid_target(remap) {
             return Err(format!("[{btn_name}] unknown target: {remap}"));
         }
     }
@@ -258,13 +259,13 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
         if !has_touch_right {
             return Err("split touchpad requires [touchpad_right] to be configured".into());
         }
-        let left_rm = cfg.buttons.get("touchpad_left").and_then(|c| c.remap.as_deref()).unwrap_or("none");
-        let right_rm = cfg.buttons.get("touchpad_right").and_then(|c| c.remap.as_deref()).unwrap_or("none");
-        if left_rm == "none" {
-            return Err("touchpad_left: remap=\"none\" is not allowed in split mode".into());
+        let left_rm = cfg.buttons.get("touchpad_left").and_then(|c| c.remap.as_deref()).unwrap_or("block");
+        let right_rm = cfg.buttons.get("touchpad_right").and_then(|c| c.remap.as_deref()).unwrap_or("block");
+        if left_rm == "block" {
+            return Err("touchpad_left: remap=\"block\" is not allowed in split mode".into());
         }
-        if right_rm == "none" {
-            return Err("touchpad_right: remap=\"none\" is not allowed in split mode".into());
+        if right_rm == "block" {
+            return Err("touchpad_right: remap=\"block\" is not allowed in split mode".into());
         }
     } else if has_touch_left || has_touch_right {
         return Err("touchpad_left/right require [touchpad] remap = \"split\"".into());
@@ -368,7 +369,7 @@ mod tests {
 
     #[test]
     fn valid_block() {
-        assert!(validate(&parse("[cross]\nremap = \"none\"\n")).is_ok());
+        assert!(validate(&parse("[cross]\nremap = \"block\"\n")).is_ok());
     }
 
     #[test]
@@ -455,7 +456,7 @@ mod tests {
 
     #[test]
     fn block_creates_rule() {
-        let cfg = parse("[cross]\nremap = \"none\"\n");
+        let cfg = parse("[cross]\nremap = \"block\"\n");
         assert!(validate(&cfg).is_ok());
         let mapping = cfg.to_mapping_config().unwrap();
         assert_eq!(mapping.rules.len(), 1);

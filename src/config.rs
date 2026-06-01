@@ -162,6 +162,16 @@ impl Config {
     }
 }
 
+pub const ALL_BUTTON_NAMES: &[&str] = &[
+    "square", "cross", "circle", "triangle",
+    "l1", "r1", "l2", "r2",
+    "l3", "r3",
+    "options", "create", "ps",
+    "dpad_up", "dpad_down", "dpad_left", "dpad_right",
+    "touchpad",
+    "left_paddle", "right_paddle", "left_fn", "right_fn",
+];
+
 pub fn validate(cfg: &Config) -> Result<(), String> {
     let mut has_split = false;
     let mut has_touch_left = false;

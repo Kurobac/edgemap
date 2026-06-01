@@ -111,6 +111,12 @@ fn main() {
                     match cfg.to_mapping_config() {
                         Ok(m) => {
                             info!("Loaded config from {config_path}");
+                            // warn for missing button sections
+                            for name in config::ALL_BUTTON_NAMES {
+                                if !cfg.buttons.contains_key(*name) {
+                                    warn!("{name}: not configured, passthrough");
+                                }
+                            }
                             m
                         }
                         Err(e) => {

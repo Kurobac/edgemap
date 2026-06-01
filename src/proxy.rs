@@ -14,7 +14,7 @@ static ALL_BUTTONS: &[Button] = &[
     Button::Square, Button::Cross, Button::Circle, Button::Triangle,
     Button::L1, Button::R1, Button::L2, Button::R2,
     Button::Create, Button::Options, Button::L3, Button::R3,
-    Button::PS, Button::Touchpad, Button::Mic,
+    Button::PS, Button::Touchpad, Button::TouchpadLeft, Button::TouchpadRight, Button::Mic,
     Button::DpadUp, Button::DpadDown, Button::DpadLeft, Button::DpadRight,
     Button::FnLeft, Button::FnRight, Button::LeftPaddle, Button::RightPaddle,
 ];
@@ -221,6 +221,25 @@ impl Proxy {
 
                     if let Some(mut state) = report::parse_input_report(&buf) {
                         let snapshot = state.clone();
+
+                        // touchpad split mode: compute partition from touch coordinates
+                        if self.mapping.split_touchpad {
+                            let pressed = buf[10] & 0x02 != 0;
+                            if pressed {
+                                let f0_contact = buf[33] & 0x80 == 0;
+                                if f0_contact {
+                                    let x = ((buf[35] as u16 & 0x0F) << 8) | buf[34] as u16;
+                                    let side = if x < 960 { Button::TouchpadLeft } else { Button::TouchpadRight };
+                                    state.set_button(Button::Touchpad, false);
+                                    state.set_button(side, true);
+                                } else {
+                                    state.set_button(Button::Touchpad, false);
+                                }
+                            } else {
+                                state.set_button(Button::Touchpad, false);
+                            }
+                        }
+
                         self.mapping.apply(&mut state);
                         report::apply_state_to_report(&mut buf, &state, *seq);
                         // log button changes at debug level

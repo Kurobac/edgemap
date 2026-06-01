@@ -75,13 +75,15 @@ fn is_valid_target(name: &str) -> bool {
     ) {
         return true;
     }
-    // standard buttons, excluding edge-specific ones
+    // standard buttons, excluding edge-specific ones and partition buttons
     matches!(Button::from_name(name), Some(btn) if
         btn != Button::FnLeft
         && btn != Button::FnRight
         && btn != Button::LeftPaddle
         && btn != Button::RightPaddle
         && btn != Button::Mic
+        && btn != Button::TouchpadLeft
+        && btn != Button::TouchpadRight
     )
 }
 
@@ -110,9 +112,17 @@ impl Config {
 
     pub fn to_mapping_config(&self) -> Result<MappingConfig, String> {
         let mut rules = Vec::new();
+        let mut split_touchpad = false;
+
         for (btn_name, btn_conf) in &self.buttons {
             let src = Button::from_name(btn_name)
                 .ok_or_else(|| format!("Unknown source button: {btn_name}"))?;
+
+            if src == Button::Touchpad && btn_conf.remap.as_deref() == Some("split") {
+                split_touchpad = true;
+                continue; // handled below
+            }
+
             let dst = match btn_conf.remap.as_deref() {
                 None => continue,
                 Some("none") => Target::Block,
@@ -121,25 +131,89 @@ impl Config {
             };
             rules.push(RemapRule::new(src, dst));
         }
-        Ok(MappingConfig::from_rules(rules))
+
+        if split_touchpad {
+            // touchpad_left and touchpad_right must both be configured
+            let left_dst = self.buttons.get("touchpad_left")
+                .and_then(|c| c.remap.as_deref())
+                .ok_or("split touchpad requires [touchpad_left] to be configured")?;
+            let right_dst = self.buttons.get("touchpad_right")
+                .and_then(|c| c.remap.as_deref())
+                .ok_or("split touchpad requires [touchpad_right] to be configured")?;
+
+            // Validate targets (none/block not allowed in split mode)
+            if left_dst == "none" {
+                return Err("touchpad_left: remap=\"none\" is not allowed in split mode".into());
+            }
+            if right_dst == "none" {
+                return Err("touchpad_right: remap=\"none\" is not allowed in split mode".into());
+            }
+
+            let left = resolve_target(left_dst)
+                .ok_or_else(|| format!("Unknown target '{left_dst}' for touchpad_left"))?;
+            let right = resolve_target(right_dst)
+                .ok_or_else(|| format!("Unknown target '{right_dst}' for touchpad_right"))?;
+
+            rules.push(RemapRule::new(Button::TouchpadLeft, left));
+            rules.push(RemapRule::new(Button::TouchpadRight, right));
+        }
+
+        Ok(MappingConfig::from_rules_split(rules, split_touchpad))
     }
 }
 
 pub fn validate(cfg: &Config) -> Result<(), String> {
+    let mut has_split = false;
+    let mut has_touch_left = false;
+    let mut has_touch_right = false;
+
     for btn_name in cfg.buttons.keys() {
         if !is_valid_src(btn_name) {
             return Err(format!(
                 "Unknown source button: {btn_name} (valid names: square cross circle triangle \
                  l1 l2 l3 r1 r2 r3 options create ps dpad_up dpad_down dpad_left dpad_right \
-                 touchpad left_paddle right_paddle left_fn right_fn)"
+                 touchpad touchpad_left touchpad_right left_paddle right_paddle left_fn right_fn)"
             ));
         }
         let btn_conf = &cfg.buttons[btn_name];
         let remap = btn_conf.remap.as_deref().unwrap_or("none");
+
+        if btn_name == "touchpad" && remap == "split" {
+            has_split = true;
+            continue; // validated below
+        }
+
+        if btn_name == "touchpad_left" {
+            has_touch_left = true;
+        }
+        if btn_name == "touchpad_right" {
+            has_touch_right = true;
+        }
+
         if remap != "none" && !is_valid_target(remap) {
             return Err(format!("[{btn_name}] unknown target: {remap}"));
         }
     }
+
+    if has_split {
+        if !has_touch_left {
+            return Err("split touchpad requires [touchpad_left] to be configured".into());
+        }
+        if !has_touch_right {
+            return Err("split touchpad requires [touchpad_right] to be configured".into());
+        }
+        let left_rm = cfg.buttons.get("touchpad_left").and_then(|c| c.remap.as_deref()).unwrap_or("none");
+        let right_rm = cfg.buttons.get("touchpad_right").and_then(|c| c.remap.as_deref()).unwrap_or("none");
+        if left_rm == "none" {
+            return Err("touchpad_left: remap=\"none\" is not allowed in split mode".into());
+        }
+        if right_rm == "none" {
+            return Err("touchpad_right: remap=\"none\" is not allowed in split mode".into());
+        }
+    } else if has_touch_left || has_touch_right {
+        return Err("touchpad_left/right require [touchpad] remap = \"split\"".into());
+    }
+
     Ok(())
 }
 
@@ -152,7 +226,7 @@ version = 2
 #   l1 l2 l3 r1 r2 r3
 #   options create ps
 #   dpad_up dpad_down dpad_left dpad_right
-#   touchpad
+#   touchpad touchpad_left touchpad_right
 #   left_paddle right_paddle left_fn right_fn
 #
 # Target options:
@@ -163,6 +237,15 @@ version = 2
 #   Trigger:   l2_full r2_full
 #   Stick:     ls_up ls_down ls_left ls_right
 #              rs_up rs_down rs_left rs_right
+#
+# Split touchpad mode (use left/right partitions):
+#   [touchpad]
+#   remap = "split"
+#   [touchpad_left]
+#   remap = "cross"
+#   [touchpad_right]
+#   remap = "circle"
+# In split mode, both touchpad_left and touchpad_right must be configured.
 
 # --- Standard buttons (default: self) ---
 [cross]

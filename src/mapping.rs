@@ -41,11 +41,16 @@ impl RemapRule {
 #[derive(Debug, Clone, Default)]
 pub struct MappingConfig {
     pub rules: Vec<RemapRule>,
+    pub split_touchpad: bool,
 }
 
 impl MappingConfig {
     pub fn from_rules(rules: Vec<RemapRule>) -> Self {
-        Self { rules }
+        Self { rules, split_touchpad: false }
+    }
+
+    pub fn from_rules_split(rules: Vec<RemapRule>, split_touchpad: bool) -> Self {
+        Self { rules, split_touchpad }
     }
 
     pub fn apply(&self, state: &mut GamepadState) {

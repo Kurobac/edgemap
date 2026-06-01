@@ -21,6 +21,8 @@ pub enum Button {
     R3,
     PS,
     Touchpad,
+    TouchpadLeft,
+    TouchpadRight,
     Mic,
     DpadUp,
     DpadDown,
@@ -34,7 +36,7 @@ pub enum Button {
     R2Analog,
 }
 
-pub const BUTTON_COUNT: usize = 25;
+pub const BUTTON_COUNT: usize = 27;
 
 impl Button {
     pub fn from_name(name: &str) -> Option<Self> {
@@ -53,6 +55,8 @@ impl Button {
             "r3" => Self::R3,
             "ps" | "home" => Self::PS,
             "touchpad" => Self::Touchpad,
+            "touchpad_left" => Self::TouchpadLeft,
+            "touchpad_right" => Self::TouchpadRight,
             "mic" => Self::Mic,
             "dpad_up" | "dup" => Self::DpadUp,
             "dpad_down" | "ddown" => Self::DpadDown,
@@ -84,6 +88,8 @@ impl Button {
             Self::R3 => "r3",
             Self::PS => "ps",
             Self::Touchpad => "touchpad",
+            Self::TouchpadLeft => "touchpad_left",
+            Self::TouchpadRight => "touchpad_right",
             Self::Mic => "mic",
             Self::DpadUp => "dpad_up",
             Self::DpadDown => "dpad_down",
@@ -552,7 +558,7 @@ mod tests {
         Button::Square, Button::Cross, Button::Circle, Button::Triangle,
         Button::L1, Button::R1, Button::L2, Button::R2,
         Button::Create, Button::Options, Button::L3, Button::R3,
-        Button::PS, Button::Touchpad, Button::Mic,
+        Button::PS, Button::Touchpad, Button::TouchpadLeft, Button::TouchpadRight, Button::Mic,
         Button::DpadUp, Button::DpadDown, Button::DpadLeft, Button::DpadRight,
         Button::FnLeft, Button::FnRight, Button::LeftPaddle, Button::RightPaddle,
     ];

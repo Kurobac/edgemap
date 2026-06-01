@@ -201,12 +201,11 @@ pub fn parse_input_report(data: &[u8]) -> Option<GamepadState> {
     state.set_button(Button::PS, b2 & 0x01 != 0);
     state.set_button(Button::Touchpad, b2 & 0x02 != 0);
     state.set_button(Button::Mic, b2 & 0x04 != 0);
-
-    let b3 = data[11];
-    state.set_button(Button::FnLeft, b3 & 0x10 != 0);
-    state.set_button(Button::FnRight, b3 & 0x20 != 0);
-    state.set_button(Button::LeftPaddle, b3 & 0x40 != 0);
-    state.set_button(Button::RightPaddle, b3 & 0x80 != 0);
+    // Edge buttons in vendor usage 0x21 bits 0-3 (byte 10 bits 4-7)
+    state.set_button(Button::RightPaddle, b2 & 0x10 != 0);
+    state.set_button(Button::LeftPaddle, b2 & 0x20 != 0);
+    state.set_button(Button::FnRight, b2 & 0x40 != 0);
+    state.set_button(Button::FnLeft, b2 & 0x80 != 0);
 
     let status0 = data[53];
     state.battery_pct = (status0 & 0x0F).min(10) * 10;
@@ -301,28 +300,81 @@ pub fn build_input_report(state: &GamepadState) -> [u8; USB_INPUT_REPORT_SIZE] {
     if state.button(Button::Mic) {
         b2 |= 0x04;
     }
+    // Edge buttons in vendor usage 0x21 bits 0-3
+    if state.button(Button::RightPaddle) { b2 |= 0x10; }
+    if state.button(Button::LeftPaddle) { b2 |= 0x20; }
+    if state.button(Button::FnRight) { b2 |= 0x40; }
+    if state.button(Button::FnLeft) { b2 |= 0x80; }
     data[10] = b2;
 
-    let mut b3: u8 = 0;
-    if state.button(Button::FnLeft) {
-        b3 |= 0x10;
-    }
-    if state.button(Button::FnRight) {
-        b3 |= 0x20;
-    }
-    if state.button(Button::LeftPaddle) {
-        b3 |= 0x40;
-    }
-    if state.button(Button::RightPaddle) {
-        b3 |= 0x80;
-    }
-    data[11] = b3;
+    data[11] = 0;
 
     data[53] = (state.battery_pct / 10) & 0x0F;
     let charging_bits: u8 = if state.battery_charging { 0x10 } else { 0x00 };
     data[53] |= charging_bits;
 
     data
+}
+
+pub fn apply_state_to_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) {
+    raw[0] = USB_INPUT_REPORT_ID;
+    raw[1] = state.left_stick_x;
+    raw[2] = state.left_stick_y;
+    raw[3] = state.right_stick_x;
+    raw[4] = state.right_stick_y;
+    raw[5] = state.l2_analog;
+    raw[6] = state.r2_analog;
+    raw[7] = seq;
+
+    let mut b0: u8 = 0;
+    if state.button(Button::Square) { b0 |= 0x10; }
+    if state.button(Button::Cross) { b0 |= 0x20; }
+    if state.button(Button::Circle) { b0 |= 0x40; }
+    if state.button(Button::Triangle) { b0 |= 0x80; }
+
+    let up = state.button(Button::DpadUp);
+    let down = state.button(Button::DpadDown);
+    let left = state.button(Button::DpadLeft);
+    let right = state.button(Button::DpadRight);
+    let dpad_val: u8 = match (up, down, left, right) {
+        (false, false, false, false) => 8,
+        (true, false, false, false) => 0,
+        (true, false, false, true) => 1,
+        (false, false, false, true) => 2,
+        (false, true, false, true) => 3,
+        (false, true, false, false) => 4,
+        (false, true, true, false) => 5,
+        (false, false, true, false) => 6,
+        (true, false, true, false) => 7,
+        _ => 8,
+    };
+    b0 |= dpad_val & 0x0F;
+    raw[8] = b0;
+
+    let mut b1: u8 = 0;
+    if state.button(Button::L1) { b1 |= 0x01; }
+    if state.button(Button::R1) { b1 |= 0x02; }
+    if state.button(Button::L2) { b1 |= 0x04; }
+    if state.button(Button::R2) { b1 |= 0x08; }
+    if state.button(Button::Create) { b1 |= 0x10; }
+    if state.button(Button::Options) { b1 |= 0x20; }
+    if state.button(Button::L3) { b1 |= 0x40; }
+    if state.button(Button::R3) { b1 |= 0x80; }
+    raw[9] = b1;
+
+    let mut b2: u8 = raw[10] & 0x0F;
+    if state.button(Button::PS) { b2 |= 0x01; }
+    if state.button(Button::Touchpad) { b2 |= 0x02; }
+    if state.button(Button::Mic) { b2 |= 0x04; }
+    // Edge buttons in vendor usage 0x21 bits 0-3 (byte 10 high nibble)
+    if state.button(Button::RightPaddle) { b2 |= 0x10; }
+    if state.button(Button::LeftPaddle) { b2 |= 0x20; }
+    if state.button(Button::FnRight) { b2 |= 0x40; }
+    if state.button(Button::FnLeft) { b2 |= 0x80; }
+    raw[10] = b2;
+
+    let b3: u8 = raw[11] & 0x0F;
+    raw[11] = b3;
 }
 
 #[cfg(test)]

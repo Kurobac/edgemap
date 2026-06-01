@@ -6,6 +6,7 @@ use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal
 use std::os::fd::BorrowedFd;
 
 use crate::device::HidrawDevice;
+use crate::mapping::MappingConfig;
 use crate::report;
 use crate::uhid::UhidDevice;
 
@@ -80,11 +81,12 @@ fn get_cached_report(report_id: u8) -> Option<Vec<u8>> {
 pub struct Proxy {
     hidraw: HidrawDevice,
     uhid: UhidDevice,
+    mapping: MappingConfig,
 }
 
 impl Proxy {
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice) -> Self {
-        Self { hidraw, uhid }
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: MappingConfig) -> Self {
+        Self { hidraw, uhid, mapping }
     }
 
     pub fn skip_restore(&mut self) {
@@ -178,7 +180,13 @@ impl Proxy {
             match self.hidraw.read_input(&mut buf) {
                 Ok(n) if n >= report::USB_INPUT_REPORT_SIZE => {
                     *seq = seq.wrapping_add(1);
-                    buf[7] = *seq;
+
+                    if let Some(mut state) = report::parse_input_report(&buf) {
+                        self.mapping.apply(&mut state);
+                        report::apply_state_to_report(&mut buf, &state, *seq);
+                    } else {
+                        buf[7] = *seq;
+                    }
 
                     if let Err(e) = self.uhid.send_input(&buf) {
                         error!("Failed to send UHID input: {e}");

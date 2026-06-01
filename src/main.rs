@@ -1,5 +1,6 @@
 mod descriptor;
 mod device;
+mod mapping;
 mod proxy;
 mod report;
 mod uhid;
@@ -8,7 +9,9 @@ use log::{error, info};
 use std::time::Duration;
 
 use device::find_dualsense;
+use mapping::{MappingConfig, RemapRule};
 use proxy::Proxy;
+use report::Button;
 use uhid::UhidDevice;
 
 fn main() {
@@ -89,7 +92,12 @@ fn main() {
 
         info!("Proxy starting");
 
-        let mut proxy = Proxy::new(hidraw, uhid);
+        // TODO: replace hardcoded test with config file loading
+        let mapping = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Button::Circle),
+        ]);
+
+        let mut proxy = Proxy::new(hidraw, uhid, mapping);
         match proxy.run() {
             proxy::ExitReason::DeviceGone => {
                 proxy.skip_restore();

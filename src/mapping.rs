@@ -23,6 +23,7 @@ pub enum Target {
     Button(Button),
     TriggerFull(Trigger),
     Stick(StickDir),
+    Block,
 }
 
 #[derive(Debug, Clone)]
@@ -48,11 +49,18 @@ impl MappingConfig {
     }
 
     pub fn apply(&self, state: &mut GamepadState) {
+        let snapshot = state.clone();
         for rule in &self.rules {
-            if !state.button(rule.src) {
+            if !snapshot.button(rule.src) {
                 continue;
             }
             state.set_button(rule.src, false);
+            // clear analog values when trigger is remapped away
+            match rule.src {
+                Button::L2 => state.l2_analog = 0,
+                Button::R2 => state.r2_analog = 0,
+                _ => {}
+            }
             match &rule.dst {
                 Target::Button(btn) => {
                     state.set_button(*btn, true);
@@ -80,6 +88,9 @@ impl MappingConfig {
                         StickDir::RS_Left => state.right_stick_x = 0,
                         StickDir::RS_Right => state.right_stick_x = 255,
                     }
+                }
+                Target::Block => {
+                    // button already cleared above, nothing to set
                 }
             }
         }

@@ -40,14 +40,14 @@ impl Button {
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name.to_lowercase().as_str() {
             "square" => Self::Square,
-            "cross" | "x" => Self::Cross,
-            "circle" | "o" => Self::Circle,
+            "cross" => Self::Cross,
+            "circle" => Self::Circle,
             "triangle" => Self::Triangle,
             "l1" => Self::L1,
             "r1" => Self::R1,
             "l2" => Self::L2,
             "r2" => Self::R2,
-            "create" | "share" => Self::Create,
+            "create" | "share" | "view" => Self::Create,
             "options" => Self::Options,
             "l3" => Self::L3,
             "r3" => Self::R3,
@@ -58,10 +58,10 @@ impl Button {
             "dpad_down" | "ddown" => Self::DpadDown,
             "dpad_left" | "dleft" => Self::DpadLeft,
             "dpad_right" | "dright" => Self::DpadRight,
-            "fn_left" | "fnl" => Self::FnLeft,
-            "fn_right" | "fnr" => Self::FnRight,
+            "left_fn" | "fn_left" | "fnl" => Self::FnLeft,
+            "right_fn" | "fn_right" | "fnr" => Self::FnRight,
             "left_paddle" | "lp" => Self::LeftPaddle,
-            "right_paddle" | "rp" | "r4" => Self::RightPaddle,
+            "right_paddle" | "rp" => Self::RightPaddle,
             "l2_analog" => Self::L2Analog,
             "r2_analog" => Self::R2Analog,
             _ => return None,
@@ -202,10 +202,10 @@ pub fn parse_input_report(data: &[u8]) -> Option<GamepadState> {
     state.set_button(Button::Touchpad, b2 & 0x02 != 0);
     state.set_button(Button::Mic, b2 & 0x04 != 0);
     // Edge buttons in vendor usage 0x21 bits 0-3 (byte 10 bits 4-7)
-    state.set_button(Button::RightPaddle, b2 & 0x10 != 0);
-    state.set_button(Button::LeftPaddle, b2 & 0x20 != 0);
-    state.set_button(Button::FnRight, b2 & 0x40 != 0);
-    state.set_button(Button::FnLeft, b2 & 0x80 != 0);
+    state.set_button(Button::FnLeft, b2 & 0x10 != 0);
+    state.set_button(Button::FnRight, b2 & 0x20 != 0);
+    state.set_button(Button::LeftPaddle, b2 & 0x40 != 0);
+    state.set_button(Button::RightPaddle, b2 & 0x80 != 0);
 
     let status0 = data[53];
     state.battery_pct = (status0 & 0x0F).min(10) * 10;
@@ -301,10 +301,10 @@ pub fn build_input_report(state: &GamepadState) -> [u8; USB_INPUT_REPORT_SIZE] {
         b2 |= 0x04;
     }
     // Edge buttons in vendor usage 0x21 bits 0-3
-    if state.button(Button::RightPaddle) { b2 |= 0x10; }
-    if state.button(Button::LeftPaddle) { b2 |= 0x20; }
-    if state.button(Button::FnRight) { b2 |= 0x40; }
-    if state.button(Button::FnLeft) { b2 |= 0x80; }
+    if state.button(Button::FnLeft) { b2 |= 0x10; }
+    if state.button(Button::FnRight) { b2 |= 0x20; }
+    if state.button(Button::LeftPaddle) { b2 |= 0x40; }
+    if state.button(Button::RightPaddle) { b2 |= 0x80; }
     data[10] = b2;
 
     data[11] = 0;
@@ -362,15 +362,15 @@ pub fn apply_state_to_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) 
     if state.button(Button::R3) { b1 |= 0x80; }
     raw[9] = b1;
 
-    let mut b2: u8 = raw[10] & 0x0F;
+    let mut b2: u8 = 0;
     if state.button(Button::PS) { b2 |= 0x01; }
     if state.button(Button::Touchpad) { b2 |= 0x02; }
     if state.button(Button::Mic) { b2 |= 0x04; }
     // Edge buttons in vendor usage 0x21 bits 0-3 (byte 10 high nibble)
-    if state.button(Button::RightPaddle) { b2 |= 0x10; }
-    if state.button(Button::LeftPaddle) { b2 |= 0x20; }
-    if state.button(Button::FnRight) { b2 |= 0x40; }
-    if state.button(Button::FnLeft) { b2 |= 0x80; }
+    if state.button(Button::FnLeft) { b2 |= 0x10; }
+    if state.button(Button::FnRight) { b2 |= 0x20; }
+    if state.button(Button::LeftPaddle) { b2 |= 0x40; }
+    if state.button(Button::RightPaddle) { b2 |= 0x80; }
     raw[10] = b2;
 
     let b3: u8 = raw[11] & 0x0F;

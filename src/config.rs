@@ -113,12 +113,12 @@ impl Config {
         for (btn_name, btn_conf) in &self.buttons {
             let src = Button::from_name(btn_name)
                 .ok_or_else(|| format!("Unknown source button: {btn_name}"))?;
-            let remap = match btn_conf.remap.as_deref() {
-                None | Some("none") => continue,
-                Some(target) => target,
+            let dst = match btn_conf.remap.as_deref() {
+                None => continue,
+                Some("none") => Target::Block,
+                Some(target) => resolve_target(target)
+                    .ok_or_else(|| format!("Unknown target '{target}' for button '{btn_name}'"))?,
             };
-            let dst = resolve_target(remap)
-                .ok_or_else(|| format!("Unknown target '{remap}' for button '{btn_name}'"))?;
             rules.push(RemapRule::new(src, dst));
         }
         Ok(MappingConfig::from_rules(rules))
@@ -137,7 +137,7 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
         let btn_conf = &cfg.buttons[btn_name];
         let remap = btn_conf.remap.as_deref().unwrap_or("none");
         if remap != "none" && !is_valid_target(remap) {
-            return Err(format!("Unknown target: {remap}"));
+            return Err(format!("[{btn_name}] unknown target: {remap}"));
         }
     }
     Ok(())
@@ -147,10 +147,18 @@ pub fn default_content() -> &'static str {
     r#"# dseuhid config
 version = 2
 
+# Source (section name): any button below
+#   cross circle square triangle
+#   l1 l2 l3 r1 r2 r3
+#   options create ps
+#   dpad_up dpad_down dpad_left dpad_right
+#   touchpad
+#   left_paddle right_paddle left_fn right_fn
+#
 # Target options:
 #   Standard:  cross circle square triangle
 #              l1 l2 l3 r1 r2 r3
-#              options create ps
+#              options create ps touchpad
 #              dpad_up dpad_down dpad_left dpad_right
 #   Trigger:   l2_full r2_full
 #   Stick:     ls_up ls_down ls_left ls_right

@@ -1,4 +1,6 @@
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use log::{debug, error, info, trace, warn};
 use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
@@ -9,6 +11,24 @@ use crate::device::HidrawDevice;
 use crate::mapping::MappingConfig;
 use crate::report::{self, Button};
 use crate::uhid::UhidDevice;
+
+static SHOULD_RELOAD: AtomicBool = AtomicBool::new(false);
+
+pub fn trigger_reload() {
+    SHOULD_RELOAD.store(true, Ordering::SeqCst);
+}
+
+pub fn setup_reload_handler() {
+    unsafe {
+        let handler = SigHandler::SigAction(handle_reload_signal);
+        let action = SigAction::new(handler, SaFlags::empty(), SigSet::empty());
+        let _ = sigaction(Signal::SIGHUP, &action);
+    }
+}
+
+extern "C" fn handle_reload_signal(_sig: libc::c_int, _info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
+    SHOULD_RELOAD.store(true, Ordering::SeqCst);
+}
 
 static ALL_BUTTONS: &[Button] = &[
     Button::Square, Button::Cross, Button::Circle, Button::Triangle,
@@ -90,18 +110,56 @@ fn get_cached_report(report_id: u8) -> Option<Vec<u8>> {
 pub struct Proxy {
     hidraw: HidrawDevice,
     uhid: UhidDevice,
-    mapping: MappingConfig,
+    mapping: Arc<RwLock<MappingConfig>>,
+    config_path: String,
     last_snapshot: Option<crate::report::GamepadState>,
     last_output: Option<crate::report::GamepadState>,
 }
 
 impl Proxy {
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: MappingConfig) -> Self {
-        Self { hidraw, uhid, mapping, last_snapshot: None, last_output: None }
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str) -> Self {
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), last_snapshot: None, last_output: None }
     }
 
     pub fn skip_restore(&mut self) {
         self.hidraw.clear_restored_paths();
+    }
+
+    fn reload_config(&mut self) {
+        let mut new_mapping = MappingConfig::default();
+        let mut cfg_ok = false;
+        match crate::config::Config::load(&self.config_path) {
+            Ok(cfg) => {
+                if let Err(e) = crate::config::validate(&cfg) {
+                    error!("Config reload validation failed: {e}, reverting to passthrough");
+                } else {
+                    match cfg.to_mapping_config() {
+                        Ok(m) => {
+                            // warn for missing button sections
+                            for name in crate::config::ALL_BUTTON_NAMES {
+                                if !cfg.buttons.contains_key(*name) {
+                                    warn!("{name}: not configured, passthrough");
+                                }
+                            }
+                            new_mapping = m;
+                            cfg_ok = true;
+                        }
+                        Err(e) => {
+                            error!("Failed to build mapping on reload: {e}, reverting to passthrough");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to load config on reload: {e}, reverting to passthrough");
+            }
+        }
+        *self.mapping.write().unwrap() = new_mapping;
+        self.last_snapshot = None;
+        self.last_output = None;
+        if cfg_ok {
+            info!("Config reloaded from {}", self.config_path);
+        }
     }
 
     fn log_button_diff(&mut self, snapshot: &crate::report::GamepadState, output: &crate::report::GamepadState) {
@@ -174,6 +232,10 @@ impl Proxy {
 
         while RUNNING.load(std::sync::atomic::Ordering::SeqCst)
             && !DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
+            if SHOULD_RELOAD.load(Ordering::SeqCst) {
+                SHOULD_RELOAD.store(false, Ordering::SeqCst);
+                self.reload_config();
+            }
             match ep_fd.wait(&mut events, 16u16) {
                 Ok(n) => {
                     for i in 0..n {
@@ -222,8 +284,9 @@ impl Proxy {
                     if let Some(mut state) = report::parse_input_report(&buf) {
                         let snapshot = state.clone();
 
-                        // touchpad split mode: compute partition from touch coordinates
-                        if self.mapping.split_touchpad {
+                        // touchpad split mode and mapping apply under read lock
+                        let m = self.mapping.read().unwrap();
+                        if m.split_touchpad {
                             let pressed = buf[10] & 0x02 != 0;
                             if pressed {
                                 let f0_contact = buf[33] & 0x80 == 0;
@@ -240,7 +303,8 @@ impl Proxy {
                             }
                         }
 
-                        self.mapping.apply(&mut state);
+                        m.apply(&mut state);
+                        drop(m);
                         report::apply_state_to_report(&mut buf, &state, *seq);
                         // log button changes at debug level
                         self.log_button_diff(&snapshot, &state);

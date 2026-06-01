@@ -8,6 +8,7 @@ mod uhid;
 
 use log::{error, info, warn};
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use device::find_dualsense;
@@ -101,7 +102,7 @@ fn main() {
             }
         }
 
-        let mapping = match config::Config::load(config_path) {
+        let mapping = Arc::new(RwLock::new(match config::Config::load(config_path) {
             Ok(cfg) => {
                 if let Err(e) = config::validate(&cfg) {
                     error!("Config validation failed: {e}");
@@ -130,9 +131,11 @@ fn main() {
                 error!("Failed to load config: {e}");
                 mapping::MappingConfig::default()
             }
-        };
+        }));
 
-        let mut proxy = Proxy::new(hidraw, uhid, mapping);
+        proxy::setup_reload_handler();
+
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path);
         match proxy.run() {
             proxy::ExitReason::DeviceGone => {
                 proxy.skip_restore();

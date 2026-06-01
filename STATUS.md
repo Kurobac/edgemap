@@ -16,7 +16,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.0.4 | `d9f54b7` | 41 unit tests + hardened device detection |
 | v0.0.5 | `40fcbe4` | Touchpad split mode + missing-button warnings |
 | v0.0.6 | `9aa83b8` | Hot reload (SIGHUP) + trigger analog transfer fix |
-| current | `HEAD` | Turbo + `none`→`block` rename |
+| v0.0.7 | `6616c24` | Turbo (hold-to-repeat) + `none`→`block` rename + SIGHUP startup fix |
 
 ## Implemented Features
 
@@ -154,6 +154,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | 24 | Turbo on L2/R2 source leaked analog | Source suppression only cleared digital bit, not analog | `ef20805` |
 | 25 | `remap="none"` semantics confused with missing remap | `unwrap_or("none")` treated missing remap as explicit block | `9ad6dbb` |
 | 26 | `[cross] turbo=true` (no remap) silently skipped | `build_turbo_configs()` skipped `None` remap instead of self-targeting | `9ad6dbb` |
+| 27 | SIGHUP kills process when device not connected | `setup_reload_handler()` registered inside device loop; default handler terminated process | `6616c24` |
 
 ## TODO
 
@@ -173,6 +174,8 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 ## Commit History
 
 ```
+6616c24 fix: install SIGHUP handler at startup, not inside device loop  [v0.0.7]
+6acf69e docs: update STATUS.md for v0.0.6, turbo, hot reload
 9ad6dbb fix: rename none→block, fix self-turbo for missing remap
 ef20805 feat: turbo (hold-to-repeat) with configurable interval/delay
 9aa83b8 fix: transfer analog values on trigger swap (L2<->R2)        [v0.0.6]

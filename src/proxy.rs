@@ -185,6 +185,7 @@ impl Proxy {
                         self.mapping.apply(&mut state);
                         report::apply_state_to_report(&mut buf, &state, *seq);
                     } else {
+                        warn!("parse_input_report failed, raw forwarding (mapping lost for this frame)");
                         buf[7] = *seq;
                     }
 

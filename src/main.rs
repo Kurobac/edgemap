@@ -1,3 +1,4 @@
+mod config;
 mod descriptor;
 mod device;
 mod mapping;
@@ -5,13 +6,12 @@ mod proxy;
 mod report;
 mod uhid;
 
-use log::{error, info};
+use log::{error, info, warn};
+use std::path::Path;
 use std::time::Duration;
 
 use device::find_dualsense;
-use mapping::{MappingConfig, RemapRule};
 use proxy::Proxy;
-use report::Button;
 use uhid::UhidDevice;
 
 fn main() {
@@ -92,10 +92,42 @@ fn main() {
 
         info!("Proxy starting");
 
-        // TODO: replace hardcoded test with config file loading
-        let mapping = MappingConfig::from_rules(vec![
-            RemapRule::new(Button::Cross, Button::Circle),
-        ]);
+        let config_path = "/etc/dseuhid/config.toml";
+        if !Path::new(config_path).exists() {
+            if let Err(e) = std::fs::create_dir_all("/etc/dseuhid") {
+                warn!("Cannot create /etc/dseuhid: {e}");
+            }
+            if let Err(e) = std::fs::write(config_path, config::default_content()) {
+                warn!("Cannot create default config at {config_path}: {e}");
+            } else {
+                info!("Created default config at {config_path}");
+            }
+        }
+
+        let mapping = match config::Config::load(config_path) {
+            Ok(cfg) => {
+                if let Err(e) = config::validate(&cfg) {
+                    error!("Config validation failed: {e}");
+                    error!("Running with no remapping.");
+                    mapping::MappingConfig::default()
+                } else {
+                    match cfg.to_mapping_config() {
+                        Ok(m) => {
+                            info!("Loaded {} remap rules from {config_path}", m.rules.len());
+                            m
+                        }
+                        Err(e) => {
+                            error!("Failed to build mapping: {e}");
+                            mapping::MappingConfig::default()
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to load config: {e}");
+                mapping::MappingConfig::default()
+            }
+        };
 
         let mut proxy = Proxy::new(hidraw, uhid, mapping);
         match proxy.run() {

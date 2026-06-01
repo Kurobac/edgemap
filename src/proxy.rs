@@ -203,8 +203,16 @@ impl Proxy {
                         UhidEvent::Unknown(t) => {
                             debug!("Unknown UHID event type: {t}");
                         }
-                        UhidEvent::SetReport { id, .. } => {
-                            debug!("UHID SET_REPORT id={id}, replying OK");
+                        UhidEvent::SetReport { id, rnum, rtype, ref data } => {
+                            debug!("UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}", data.len());
+                            // Forward feature report data to real hardware
+                            if rtype == 0 {
+                                let mut full_data = vec![rnum];
+                                full_data.extend_from_slice(data);
+                                if let Err(e) = self.hidraw.send_feature_report(&full_data) {
+                                    debug!("Failed to forward set_report rnum={rnum}: {e}");
+                                }
+                            }
                             let _ = self.uhid.send_set_report_reply(id, 0);
                         }
                     }

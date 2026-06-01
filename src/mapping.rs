@@ -65,13 +65,45 @@ impl MappingConfig {
             state.set_button(rule.src, false);
             match rule.src {
                 Button::L2 => {
-                    if !matches!(&rule.dst, Target::Button(Button::L2) | Target::TriggerFull(Trigger::L2)) {
-                        state.l2_analog = 0;
+                    let analog = snapshot.l2_analog;
+                    match &rule.dst {
+                        Target::Button(Button::L2) => {
+                            // self-map: keep analog as-is
+                        }
+                        Target::Button(Button::R2) | Target::TriggerFull(Trigger::R2) => {
+                            // transfer to R2
+                            state.r2_analog = analog;
+                            state.l2_analog = 0;
+                        }
+                        Target::TriggerFull(Trigger::L2) => {
+                            // TriggerFull sets analog below, clear source
+                            state.l2_analog = 0;
+                        }
+                        _ => {
+                            // non-trigger target
+                            state.l2_analog = 0;
+                        }
                     }
                 }
                 Button::R2 => {
-                    if !matches!(&rule.dst, Target::Button(Button::R2) | Target::TriggerFull(Trigger::R2)) {
-                        state.r2_analog = 0;
+                    let analog = snapshot.r2_analog;
+                    match &rule.dst {
+                        Target::Button(Button::R2) => {
+                            // self-map: keep analog as-is
+                        }
+                        Target::Button(Button::L2) | Target::TriggerFull(Trigger::L2) => {
+                            // transfer to L2
+                            state.l2_analog = analog;
+                            state.r2_analog = 0;
+                        }
+                        Target::TriggerFull(Trigger::R2) => {
+                            // TriggerFull sets analog below, clear source
+                            state.r2_analog = 0;
+                        }
+                        _ => {
+                            // non-trigger target
+                            state.r2_analog = 0;
+                        }
                     }
                 }
                 _ => {}
@@ -200,6 +232,21 @@ mod tests {
         cfg.apply(&mut s);
         assert!(s.button(Button::L2));
         assert_eq!(s.l2_analog, 128); // self-map preserves analog
+    }
+
+    #[test]
+    fn trigger_swap_transfers_analog() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::L2, Target::Button(Button::R2)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::L2, true);
+        s.l2_analog = 100;
+        cfg.apply(&mut s);
+        assert!(!s.button(Button::L2));
+        assert!(s.button(Button::R2));
+        assert_eq!(s.l2_analog, 0);   // source cleared
+        assert_eq!(s.r2_analog, 100); // transferred
     }
 
     #[test]

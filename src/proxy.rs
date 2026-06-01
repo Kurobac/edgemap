@@ -9,7 +9,18 @@ use crate::device::HidrawDevice;
 use crate::report;
 use crate::uhid::UhidDevice;
 
+#[derive(Debug, PartialEq)]
+pub enum ExitReason {
+    UserShutdown,
+    DeviceGone,
+}
+
 static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static DISCONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn is_running() -> bool {
+    RUNNING.load(std::sync::atomic::Ordering::SeqCst)
+}
 
 pub fn setup_signal_handler() {
     unsafe {
@@ -76,8 +87,20 @@ impl Proxy {
         Self { hidraw, uhid }
     }
 
-    pub fn run(&mut self) -> io::Result<()> {
-        let ep_fd = Epoll::new(EpollCreateFlags::empty())?;
+    pub fn skip_restore(&mut self) {
+        self.hidraw.clear_restored_paths();
+    }
+
+    pub fn run(&mut self) -> ExitReason {
+        DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        let ep_fd = match Epoll::new(EpollCreateFlags::empty()) {
+            Ok(fd) => fd,
+            Err(e) => {
+                error!("Failed to create epoll: {e}");
+                return ExitReason::UserShutdown;
+            }
+        };
 
         let hidraw_bfd = unsafe {
             BorrowedFd::borrow_raw(self.hidraw.as_raw_fd())
@@ -90,29 +113,42 @@ impl Proxy {
             EpollFlags::EPOLLIN | EpollFlags::EPOLLERR | EpollFlags::EPOLLHUP,
             1,
         );
-        ep_fd.add(&hidraw_bfd, hidraw_event)?;
+        if let Err(e) = ep_fd.add(&hidraw_bfd, hidraw_event) {
+            error!("Failed to add hidraw to epoll: {e}");
+            return ExitReason::UserShutdown;
+        }
 
         let uhid_event = EpollEvent::new(
             EpollFlags::EPOLLIN | EpollFlags::EPOLLERR | EpollFlags::EPOLLHUP,
             2,
         );
-        ep_fd.add(&uhid_bfd, uhid_event)?;
+        if let Err(e) = ep_fd.add(&uhid_bfd, uhid_event) {
+            error!("Failed to add uhid to epoll: {e}");
+            return ExitReason::UserShutdown;
+        }
 
         info!("Proxy running. Press Ctrl+C to stop.");
 
         let mut seq: u8 = 0;
         let mut events = [EpollEvent::empty(); 8];
 
-        while RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+        while RUNNING.load(std::sync::atomic::Ordering::SeqCst)
+            && !DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
             match ep_fd.wait(&mut events, 16u16) {
                 Ok(n) => {
                     for i in 0..n {
                         let fd_num = events[i].data() as u64;
 
                         if fd_num == 1 {
-                            self.handle_hidraw_input(&mut seq)?;
+                            if let Err(e) = self.handle_hidraw_input(&mut seq) {
+                                error!("hidraw handler error: {e}");
+                                break;
+                            }
                         } else if fd_num == 2 {
-                            self.handle_uhid_event()?;
+                            if let Err(e) = self.handle_uhid_event() {
+                                error!("UHID handler error: {e}");
+                                break;
+                            }
                         }
                     }
                 }
@@ -125,7 +161,14 @@ impl Proxy {
         }
 
         info!("Proxy stopped.");
-        Ok(())
+
+        if !RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+            ExitReason::UserShutdown
+        } else if DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
+            ExitReason::DeviceGone
+        } else {
+            ExitReason::UserShutdown
+        }
     }
 
     fn handle_hidraw_input(&mut self, seq: &mut u8) -> io::Result<()> {
@@ -144,8 +187,8 @@ impl Proxy {
                 Ok(_) => continue,
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(ref e) if e.raw_os_error() == Some(libc::EIO) => {
-                    error!("hidraw I/O error (EIO). Controller disconnected?");
-                    RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+                    warn!("hidraw I/O error (EIO). Controller disconnected?");
+                    DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
                     break;
                 }
                 Err(e) => {

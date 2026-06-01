@@ -311,8 +311,15 @@ impl HidrawDevice {
         Ok(())
     }
 
+    pub fn clear_restored_paths(&mut self) {
+        self.restored_paths.clear();
+    }
+
     fn restore_permissions(&self) {
         for (path, orig_mode, acl_data) in &self.restored_paths {
+            if !path.exists() {
+                continue;
+            }
             if let Err(e) = fs::set_permissions(path, std::fs::Permissions::from_mode(*orig_mode))
             {
                 log::warn!("Failed to restore permissions on {:?}: {e}", path);

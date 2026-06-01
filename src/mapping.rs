@@ -50,20 +50,23 @@ impl MappingConfig {
 
     pub fn apply(&self, state: &mut GamepadState) {
         let snapshot = state.clone();
+        let mut button_targets: Vec<Button> = Vec::new();
+
         for rule in &self.rules {
             if !snapshot.button(rule.src) {
                 continue;
             }
+            // Phase 1: clear source button (always)
             state.set_button(rule.src, false);
-            // clear analog values when trigger is remapped away
             match rule.src {
                 Button::L2 => state.l2_analog = 0,
                 Button::R2 => state.r2_analog = 0,
                 _ => {}
             }
+
             match &rule.dst {
                 Target::Button(btn) => {
-                    state.set_button(*btn, true);
+                    button_targets.push(*btn);
                 }
                 Target::TriggerFull(trigger) => {
                     match trigger {
@@ -89,10 +92,13 @@ impl MappingConfig {
                         StickDir::RS_Right => state.right_stick_x = 255,
                     }
                 }
-                Target::Block => {
-                    // button already cleared above, nothing to set
-                }
+                Target::Block => {}
             }
+        }
+
+        // Phase 2: set all deferred button targets atomically
+        for btn in &button_targets {
+            state.set_button(*btn, true);
         }
     }
 }

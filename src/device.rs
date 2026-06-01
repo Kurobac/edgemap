@@ -246,14 +246,6 @@ impl HidrawDevice {
     fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32)>) -> io::Result<()> {
         let orig = fs::metadata(path)?.permissions().mode();
         fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))?;
-
-        let output = std::process::Command::new("setfacl")
-            .args(["-b", &path.to_string_lossy()])
-            .output();
-        if let Err(ref e) = output {
-            debug!("setfacl on {:?}: {e}", path);
-        }
-
         restored.push((path.to_path_buf(), orig));
         Ok(())
     }

@@ -67,6 +67,7 @@ impl TurboRuntime {
 
 static SHOULD_RELOAD: AtomicBool = AtomicBool::new(false);
 
+#[allow(dead_code)]
 pub fn trigger_reload() {
     SHOULD_RELOAD.store(true, Ordering::SeqCst);
 }

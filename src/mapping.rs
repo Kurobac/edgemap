@@ -54,6 +54,7 @@ pub struct MappingConfig {
 }
 
 impl MappingConfig {
+    #[allow(dead_code)]
     pub fn from_rules(rules: Vec<RemapRule>) -> Self {
         Self { rules, split_touchpad: false, turbo_configs: Vec::new() }
     }

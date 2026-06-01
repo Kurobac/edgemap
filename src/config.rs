@@ -5,6 +5,7 @@ use crate::mapping::{MappingConfig, RemapRule, StickDir, Target, Trigger, TurboC
 use crate::report::Button;
 
 #[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
 pub struct Config {
     #[serde(default)]
     pub version: u32,
@@ -15,6 +16,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
 pub struct ButtonConfig {
     pub remap: Option<String>,
     #[serde(default)]
@@ -32,17 +34,20 @@ fn default_turbo_interval() -> u64 {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
 pub struct ComboConfig {
     pub key: String,
     pub output: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
 pub struct MacroConfig {
     pub sequence: Vec<MacroStep>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
 pub struct MacroStep {
     pub key: String,
     pub press_ms: u64,

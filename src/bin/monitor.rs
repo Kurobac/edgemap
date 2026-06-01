@@ -1,5 +1,4 @@
 use std::io;
-use std::os::unix::fs::OpenOptionsExt;
 
 fn main() {
     println!("DSE Button Monitor");

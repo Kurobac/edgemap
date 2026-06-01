@@ -19,7 +19,6 @@ fn main() {
         match read_hidraw(fd, &mut buf) {
             Ok(64) => {
                 let pad_pressed = buf[10] & 0x02 != 0;
-                let count = buf[33] & 0x0F;
                 let f0 = finger(0, &buf);
                 let f1 = finger(1, &buf);
 

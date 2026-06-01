@@ -11,6 +11,7 @@ const HIDRAW_DEV_DIR: &str = "/dev";
 const HIDRAW_PREFIX: &str = "hidraw";
 
 pub const SONY_VID: u16 = 0x054C;
+#[allow(dead_code)]
 pub const DS5_PID: u16 = 0x0CE6;
 pub const DS5_EDGE_PID: u16 = 0x0DF2;
 
@@ -19,7 +20,6 @@ pub struct DeviceInfo {
     pub path: PathBuf,
     pub vid: u16,
     pub pid: u16,
-    pub name: String,
     pub is_edge: bool,
 }
 
@@ -53,19 +53,6 @@ fn hidraw_get_raw_info(fd: RawFd, info: &mut HidrawDevinfo) -> io::Result<()> {
     }
 }
 
-fn hidraw_get_rd_size(fd: RawFd) -> io::Result<u32> {
-    let mut size: u32 = 0;
-    let request = ioc_read(0x05, std::mem::size_of::<u32>());
-    let ret = unsafe {
-        libc::ioctl(fd, request, &raw mut size)
-    };
-    if ret < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(size)
-    }
-}
-
 const IOC_READ: u64 = 2;
 const IOC_WRITE: u64 = 1;
 const IOC_READWRITE: u64 = IOC_READ | IOC_WRITE;
@@ -78,35 +65,9 @@ fn ioc_readwrite(nr: u32, size: usize) -> u64 {
     (IOC_READWRITE << 30) | ((b'H' as u64) << 8) | ((nr as u64) << 0) | ((size as u64) << 16)
 }
 
-fn hid_descriptor_len(data: &[u8]) -> usize {
-    let mut pos: usize = 0;
-    let mut last_valid: usize = 0;
-
-    while pos < data.len() {
-        let prefix = data[pos];
-        if prefix == 0 {
-            break;
-        }
-        let mut size: usize = (prefix & 0x03) as usize;
-        if size == 3 {
-            size = 4;
-        }
-
-        pos += 1;
-        if pos + size > data.len() {
-            break;
-        }
-
-        last_valid = pos + size;
-        pos += size;
-    }
-
-    last_valid
-}
-
 pub struct HidrawDevice {
     fd: OwnedFd,
-    pub info: DeviceInfo,
+
     sysfs_path: Option<PathBuf>,
     restored_paths: Vec<(PathBuf, u32, String)>,
 }
@@ -125,22 +86,10 @@ impl HidrawDevice {
         hidraw_get_raw_info(raw_fd, &mut devinfo)
             .map_err(|e| io::Error::new(e.kind(), format!("HIDIOCGRAWINFO failed: {e}")))?;
 
-        let is_edge = devinfo.product == DS5_EDGE_PID;
         let sysfs_path = find_sysfs_hidraw(path);
 
-        let mut device = Self {
+        let device = Self {
             fd,
-            info: DeviceInfo {
-                path: path.to_path_buf(),
-                vid: devinfo.vendor,
-                pid: devinfo.product,
-                name: if is_edge {
-                    "DualSense Edge".into()
-                } else {
-                    "DualSense".into()
-                },
-                is_edge,
-            },
             sysfs_path,
             restored_paths: Vec::new(),
         };
@@ -202,59 +151,6 @@ impl HidrawDevice {
             Err(io::Error::last_os_error())
         } else {
             Ok(n as usize)
-        }
-    }
-
-    pub fn get_report_descriptor(&self) -> io::Result<Vec<u8>> {
-        if let Some(ref sysfs) = self.sysfs_path {
-            let desc_path = sysfs.join("device/report_descriptor");
-            if desc_path.exists() {
-                let data = fs::read(&desc_path)?;
-                if !data.is_empty() {
-                    let actual_len = hid_descriptor_len(&data);
-                    let mut desc = data;
-                    desc.truncate(actual_len);
-                    debug!(
-                        "Read report descriptor from sysfs: {} bytes (parsed to {actual_len})",
-                        desc.len()
-                    );
-                    return Ok(desc);
-                }
-            }
-        }
-
-        let raw_fd = self.fd.as_raw_fd();
-        let rd_size = hidraw_get_rd_size(raw_fd)?;
-
-        let mut desc = vec![0u8; rd_size as usize];
-        let request = ioc_read(0x01, rd_size as usize);
-        let ret = unsafe {
-            libc::ioctl(raw_fd, request, desc.as_mut_ptr())
-        };
-        if ret < 0 {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("HIDIOCGRDESC failed: {}", io::Error::last_os_error()),
-            ))
-        } else {
-            Ok(desc)
-        }
-    }
-
-    pub fn get_feature_report(&self, report_id: u8, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "buffer too small",
-            ));
-        }
-        buf[0] = report_id;
-        let request = ioc_readwrite(0x07, buf.len());
-        let ret = unsafe { libc::ioctl(self.fd.as_raw_fd(), request, buf.as_mut_ptr()) };
-        if ret < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(ret as usize)
         }
     }
 
@@ -446,7 +342,6 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
             path: raw_path.clone(),
             vid: devinfo.vendor,
             pid: devinfo.product,
-            name: "DualSense Edge".into(),
             is_edge: true,
         });
     }

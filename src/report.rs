@@ -2,7 +2,9 @@ use std::fmt;
 
 pub const USB_INPUT_REPORT_SIZE: usize = 64;
 pub const USB_INPUT_REPORT_ID: u8 = 0x01;
+#[allow(dead_code)]
 pub const USB_OUTPUT_REPORT_SIZE: usize = 48;
+#[allow(dead_code)]
 pub const USB_OUTPUT_REPORT_ID: u8 = 0x02;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -224,6 +226,7 @@ pub fn parse_input_report(data: &[u8]) -> Option<GamepadState> {
     Some(state)
 }
 
+#[allow(dead_code)]
 pub fn build_input_report(state: &GamepadState) -> [u8; USB_INPUT_REPORT_SIZE] {
     let mut data = [0u8; USB_INPUT_REPORT_SIZE];
     data[0] = USB_INPUT_REPORT_ID;

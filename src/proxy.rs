@@ -177,11 +177,14 @@ impl Proxy {
                             debug!("UHID device closed by client");
                         }
                         UhidEvent::Output { rtype, ref data } => {
-                            debug!("UHID OUTPUT: rtype={rtype}, size={}", data.len());
-                            if rtype == report::USB_OUTPUT_REPORT_ID {
+                            // rtype is UHID report type: 0=Feature, 1=Output, 2=Input
+                            if rtype == 1 {
+                                debug!("UHID OUTPUT: size={}", data.len());
                                 if let Err(e) = self.hidraw.write_output(data) {
                                     error!("Failed to forward output report: {e}");
                                 }
+                            } else {
+                                debug!("UHID Output with unexpected rtype={rtype}, ignoring");
                             }
                         }
                         UhidEvent::GetReport { id, rnum, rtype } => {

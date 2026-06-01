@@ -200,8 +200,9 @@ impl Proxy {
                         UhidEvent::Unknown(t) => {
                             debug!("Unknown UHID event type: {t}");
                         }
-                        UhidEvent::SetReport { .. } => {
-                            debug!("UHID SET_REPORT (not implemented)");
+                        UhidEvent::SetReport { id, .. } => {
+                            debug!("UHID SET_REPORT id={id}, replying OK");
+                            let _ = self.uhid.send_set_report_reply(id, 0);
                         }
                     }
                 }

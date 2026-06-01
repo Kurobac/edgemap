@@ -233,6 +233,19 @@ impl UhidDevice {
         Ok(())
     }
 
+    pub fn send_set_report_reply(&self, id: u32, err: u16) -> io::Result<()> {
+        let mut buf = [0u8; UHID_EVENT_SIZE];
+        buf[0..4].copy_from_slice(&UhidEventType::SetReportReply.to_u32_le());
+        buf[4..8].copy_from_slice(&id.to_le_bytes());
+        buf[8..10].copy_from_slice(&err.to_le_bytes());
+
+        let fd = self.fd.as_raw_fd();
+        unsafe {
+            libc::write(fd, buf.as_ptr() as *const libc::c_void, 10);
+        }
+        Ok(())
+    }
+
     pub fn recv_event(&self) -> io::Result<Option<UhidEvent>> {
         let mut buf = [0u8; UHID_EVENT_SIZE];
         let fd = self.fd.as_raw_fd();

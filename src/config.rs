@@ -213,3 +213,141 @@ remap = "create"
 remap = "options"
 "#
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(toml_str: &str) -> Config {
+        toml::from_str(toml_str).expect("test config should parse")
+    }
+
+    #[test]
+    fn valid_simple_remap() {
+        assert!(validate(&parse("[cross]\nremap = \"circle\"\n")).is_ok());
+    }
+
+    #[test]
+    fn valid_block() {
+        assert!(validate(&parse("[cross]\nremap = \"none\"\n")).is_ok());
+    }
+
+    #[test]
+    fn valid_trigger_target() {
+        assert!(validate(&parse("[cross]\nremap = \"l2_full\"\n")).is_ok());
+    }
+
+    #[test]
+    fn valid_stick_target() {
+        assert!(validate(&parse("[cross]\nremap = \"ls_up\"\n")).is_ok());
+        assert!(validate(&parse("[cross]\nremap = \"rs_right\"\n")).is_ok());
+    }
+
+    #[test]
+    fn valid_all_standard_sources() {
+        for src in &[
+            "cross", "circle", "square", "triangle",
+            "l1", "l2", "l3", "r1", "r2", "r3",
+            "options", "create", "ps",
+            "dpad_up", "dpad_down", "dpad_left", "dpad_right",
+            "touchpad", "left_paddle", "right_paddle", "left_fn", "right_fn",
+        ] {
+            let cfg = parse(&format!("[{src}]\nremap = \"cross\"\n"));
+            assert!(validate(&cfg).is_ok(), "source {src} should be valid");
+        }
+    }
+
+    #[test]
+    fn all_valid_targets() {
+        for target in &[
+            "cross", "circle", "square", "triangle",
+            "l1", "l2", "l3", "r1", "r2", "r3",
+            "options", "create", "ps",
+            "dpad_up", "dpad_down", "dpad_left", "dpad_right",
+            "touchpad", "l2_full", "r2_full",
+            "ls_up", "ls_down", "ls_left", "ls_right",
+            "rs_up", "rs_down", "rs_left", "rs_right",
+        ] {
+            let cfg = parse(&format!("[cross]\nremap = \"{target}\"\n"));
+            assert!(validate(&cfg).is_ok(), "target {target} should be valid");
+        }
+    }
+
+    #[test]
+    fn unknown_source() {
+        assert!(validate(&parse("[banana]\nremap = \"l1\"\n"))
+            .unwrap_err().contains("Unknown source button"));
+    }
+
+    #[test]
+    fn unknown_target() {
+        assert!(validate(&parse("[cross]\nremap = \"nope\"\n"))
+            .unwrap_err().contains("unknown target"));
+    }
+
+    #[test]
+    fn mic_not_allowed_as_source() {
+        assert!(validate(&parse("[mic]\nremap = \"cross\"\n"))
+            .unwrap_err().contains("Unknown source button: mic"));
+    }
+
+    #[test]
+    fn mic_not_allowed_as_target() {
+        assert!(validate(&parse("[cross]\nremap = \"mic\"\n"))
+            .unwrap_err().contains("unknown target"));
+    }
+
+    #[test]
+    fn edge_buttons_not_allowed_as_target() {
+        for edge in &["left_paddle", "right_paddle", "left_fn", "right_fn"] {
+            let cfg = parse(&format!("[cross]\nremap = \"{edge}\"\n"));
+            assert!(validate(&cfg).unwrap_err().contains("unknown target"),
+                "edge button {edge} should not be a valid target");
+        }
+    }
+
+    #[test]
+    fn missing_remap_passthrough() {
+        let cfg = parse("[cross]\n");
+        assert!(validate(&cfg).is_ok());
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert!(mapping.rules.is_empty()); // no rule created
+    }
+
+    #[test]
+    fn block_creates_rule() {
+        let cfg = parse("[cross]\nremap = \"none\"\n");
+        assert!(validate(&cfg).is_ok());
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert_eq!(mapping.rules.len(), 1);
+    }
+
+    #[test]
+    fn to_mapping_remap() {
+        let cfg = parse("[cross]\nremap = \"circle\"\n");
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert_eq!(mapping.rules.len(), 1);
+    }
+
+    #[test]
+    fn to_mapping_trigger() {
+        let cfg = parse("[cross]\nremap = \"l2_full\"\n");
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert_eq!(mapping.rules.len(), 1);
+    }
+
+    #[test]
+    fn to_mapping_stick() {
+        let cfg = parse("[cross]\nremap = \"ls_up\"\n");
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert_eq!(mapping.rules.len(), 1);
+    }
+
+    #[test]
+    fn default_config_parses() {
+        let cfg: Config = toml::from_str(default_content()).unwrap();
+        assert_eq!(cfg.version, 2);
+        assert_eq!(cfg.buttons.len(), 22);
+        assert!(validate(&cfg).is_ok());
+    }
+}

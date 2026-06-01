@@ -381,6 +381,12 @@ pub fn apply_state_to_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) 
 mod tests {
     use super::*;
 
+    fn raw_buf() -> [u8; 64] {
+        let mut buf = [0u8; 64];
+        buf[0] = 0x01;
+        buf
+    }
+
     #[test]
     fn test_parse_build_roundtrip() {
         let mut state = GamepadState::default();
@@ -421,4 +427,133 @@ mod tests {
             assert_eq!(parsed.button(Button::DpadRight), right);
         }
     }
+
+    // --- byte position verification ---
+
+    #[test]
+    fn parse_face_buttons() {
+        let mut buf = raw_buf();
+        buf[8] = 0x10;
+        let s = parse_input_report(&buf).unwrap();
+        assert!(s.button(Button::Square));
+        assert!(!s.button(Button::Cross));
+        assert!(!s.button(Button::Circle));
+        assert!(!s.button(Button::Triangle));
+
+        buf[8] = 0xA0; // Cross + Triangle
+        let s = parse_input_report(&buf).unwrap();
+        assert!(s.button(Button::Cross));
+        assert!(s.button(Button::Triangle));
+    }
+
+    #[test]
+    fn parse_shoulder_stick_buttons() {
+        let mut buf = raw_buf();
+        buf[9] = 0x01;
+        assert!(parse_input_report(&buf).unwrap().button(Button::L1));
+        buf[9] = 0x02;
+        assert!(parse_input_report(&buf).unwrap().button(Button::R1));
+        buf[9] = 0x04;
+        assert!(parse_input_report(&buf).unwrap().button(Button::L2));
+        buf[9] = 0x08;
+        assert!(parse_input_report(&buf).unwrap().button(Button::R2));
+        buf[9] = 0x10;
+        assert!(parse_input_report(&buf).unwrap().button(Button::Create));
+        buf[9] = 0x20;
+        assert!(parse_input_report(&buf).unwrap().button(Button::Options));
+        buf[9] = 0x40;
+        assert!(parse_input_report(&buf).unwrap().button(Button::L3));
+        buf[9] = 0x80;
+        assert!(parse_input_report(&buf).unwrap().button(Button::R3));
+    }
+
+    #[test]
+    fn parse_system_buttons() {
+        let mut buf = raw_buf();
+        buf[10] = 0x01;
+        assert!(parse_input_report(&buf).unwrap().button(Button::PS));
+        buf[10] = 0x02;
+        assert!(parse_input_report(&buf).unwrap().button(Button::Touchpad));
+        buf[10] = 0x04;
+        assert!(parse_input_report(&buf).unwrap().button(Button::Mic));
+    }
+
+    #[test]
+    fn parse_edge_buttons() {
+        let mut buf = raw_buf();
+        buf[10] = 0x10;
+        assert!(parse_input_report(&buf).unwrap().button(Button::FnLeft));
+        buf[10] = 0x20;
+        assert!(parse_input_report(&buf).unwrap().button(Button::FnRight));
+        buf[10] = 0x40;
+        assert!(parse_input_report(&buf).unwrap().button(Button::LeftPaddle));
+        buf[10] = 0x80;
+        assert!(parse_input_report(&buf).unwrap().button(Button::RightPaddle));
+    }
+
+    #[test]
+    fn apply_roundtrip_all_buttons() {
+        let mut src = raw_buf();
+        // set every standard button in byte 8-10
+        src[8] = 0xF8; // dpad=0, Square+Cross+Circle+Triangle
+        src[9] = 0xFF; // all shoulder/stick buttons + create/options
+        src[10] = 0xFF; // PS+Touch+Mic + all Edge buttons
+
+        let parsed = parse_input_report(&src).unwrap();
+        let mut dst = raw_buf();
+        apply_state_to_report(&mut dst, &parsed, 0);
+        let r2 = parse_input_report(&dst).unwrap();
+
+        for btn in ALL_BUTTONS {
+            assert_eq!(r2.button(*btn), parsed.button(*btn),
+                "roundtrip mismatch for {}", btn.name());
+        }
+    }
+
+    #[test]
+    fn byte11_low_nibble_preserved() {
+        let mut buf = raw_buf();
+        buf[11] = 0x07; // random low nibble value
+        let s = parse_input_report(&buf).unwrap();
+        apply_state_to_report(&mut buf, &s, 0);
+        assert_eq!(buf[11] & 0x0F, 0x07); // low nibble preserved
+        assert_eq!(buf[11] & 0xF0, 0x00); // high nibble was not set
+    }
+
+    #[test]
+    fn sticks_triggers_roundtrip() {
+        let mut src = raw_buf();
+        src[1] = 0x80; src[2] = 0x40; // left stick
+        src[3] = 0xFF; src[4] = 0x00; // right stick
+        src[5] = 0xC0; src[6] = 0x20; // triggers
+
+        let s = parse_input_report(&src).unwrap();
+        let mut dst = raw_buf();
+        apply_state_to_report(&mut dst, &s, 0);
+        let r2 = parse_input_report(&dst).unwrap();
+
+        assert_eq!(r2.left_stick_x, 0x80);
+        assert_eq!(r2.left_stick_y, 0x40);
+        assert_eq!(r2.right_stick_x, 0xFF);
+        assert_eq!(r2.right_stick_y, 0x00);
+        assert_eq!(r2.l2_analog, 0xC0);
+        assert_eq!(r2.r2_analog, 0x20);
+    }
+
+    #[test]
+    fn seq_number_survives_apply() {
+        let mut buf = raw_buf();
+        let s = parse_input_report(&buf).unwrap();
+        apply_state_to_report(&mut buf, &s, 0xAB);
+        assert_eq!(buf[7], 0xAB);
+    }
+
+    static ALL_BUTTONS: &[Button] = &[
+        Button::Square, Button::Cross, Button::Circle, Button::Triangle,
+        Button::L1, Button::R1, Button::L2, Button::R2,
+        Button::Create, Button::Options, Button::L3, Button::R3,
+        Button::PS, Button::Touchpad, Button::Mic,
+        Button::DpadUp, Button::DpadDown, Button::DpadLeft, Button::DpadRight,
+        Button::FnLeft, Button::FnRight, Button::LeftPaddle, Button::RightPaddle,
+    ];
 }

@@ -102,3 +102,204 @@ impl MappingConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> GamepadState { GamepadState::default() }
+
+    #[test]
+    fn single_remap() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::Cross, true);
+        cfg.apply(&mut s);
+        assert!(!s.button(Button::Cross));
+        assert!(s.button(Button::Circle));
+    }
+
+    #[test]
+    fn multi_key() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
+            RemapRule::new(Button::Square, Target::Button(Button::Triangle)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::Cross, true);
+        s.set_button(Button::Square, true);
+        cfg.apply(&mut s);
+        assert!(!s.button(Button::Cross));
+        assert!(!s.button(Button::Square));
+        assert!(s.button(Button::Circle));
+        assert!(s.button(Button::Triangle));
+    }
+
+    #[test]
+    fn cross_map_both_pressed() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
+            RemapRule::new(Button::Circle, Target::Button(Button::Cross)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::Cross, true);
+        s.set_button(Button::Circle, true);
+        cfg.apply(&mut s);
+        // deferred targets: both circle and cross are set in Phase 2
+        assert!(s.button(Button::Cross));
+        assert!(s.button(Button::Circle));
+    }
+
+    #[test]
+    fn cross_map_one_pressed() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
+            RemapRule::new(Button::Circle, Target::Button(Button::Cross)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::Cross, true);
+        cfg.apply(&mut s);
+        assert!(!s.button(Button::Cross));
+        assert!(s.button(Button::Circle));
+    }
+
+    #[test]
+    fn self_map_passthrough() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Target::Button(Button::Cross)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::Cross, true);
+        cfg.apply(&mut s);
+        assert!(s.button(Button::Cross)); // self-map preserves
+    }
+
+    #[test]
+    fn block() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Target::Block),
+        ]);
+        let mut s = state();
+        s.set_button(Button::Cross, true);
+        s.set_button(Button::Circle, true);
+        cfg.apply(&mut s);
+        assert!(!s.button(Button::Cross));
+        assert!(s.button(Button::Circle)); // untouched
+    }
+
+    #[test]
+    fn trigger_l2_full() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Target::TriggerFull(Trigger::L2)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::Cross, true);
+        cfg.apply(&mut s);
+        assert!(!s.button(Button::Cross));
+        assert!(s.button(Button::L2));
+        assert_eq!(s.l2_analog, 255);
+    }
+
+    #[test]
+    fn trigger_r2_full() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Circle, Target::TriggerFull(Trigger::R2)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::Circle, true);
+        cfg.apply(&mut s);
+        assert!(!s.button(Button::Circle));
+        assert!(s.button(Button::R2));
+        assert_eq!(s.r2_analog, 255);
+    }
+
+    #[test]
+    fn stick_directions() {
+        fn ls_y(s: &GamepadState) -> u8 { s.left_stick_y }
+        fn ls_x(s: &GamepadState) -> u8 { s.left_stick_x }
+        fn rs_y(s: &GamepadState) -> u8 { s.right_stick_y }
+        fn rs_x(s: &GamepadState) -> u8 { s.right_stick_x }
+
+        let cases: Vec<(StickDir, fn(&GamepadState) -> u8, u8)> = vec![
+            (StickDir::LS_Up,    ls_y, 0),
+            (StickDir::LS_Down,  ls_y, 255),
+            (StickDir::LS_Left,  ls_x, 0),
+            (StickDir::LS_Right, ls_x, 255),
+            (StickDir::RS_Up,    rs_y, 0),
+            (StickDir::RS_Down,  rs_y, 255),
+            (StickDir::RS_Left,  rs_x, 0),
+            (StickDir::RS_Right, rs_x, 255),
+        ];
+        let base = state();
+        for (dir, getter, expected) in cases {
+            let mut s = base.clone();
+            s.set_button(Button::Cross, true);
+            let cfg = MappingConfig::from_rules(vec![
+                RemapRule::new(Button::Cross, Target::Stick(dir.clone())),
+            ]);
+            cfg.apply(&mut s);
+            assert!(!s.button(Button::Cross));
+            assert_eq!(getter(&s), expected, "dir={:?}", dir);
+        }
+    }
+
+    #[test]
+    fn trigger_source_clears_analog() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::L2, Target::Button(Button::Cross)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::L2, true);
+        s.l2_analog = 128;
+        cfg.apply(&mut s);
+        assert!(!s.button(Button::L2));
+        assert!(s.button(Button::Cross));
+        assert_eq!(s.l2_analog, 0); // analog cleared
+    }
+
+    #[test]
+    fn r2_source_clears_analog() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::R2, Target::Button(Button::Circle)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::R2, true);
+        s.r2_analog = 200;
+        cfg.apply(&mut s);
+        assert!(!s.button(Button::R2));
+        assert!(s.button(Button::Circle));
+        assert_eq!(s.r2_analog, 0);
+    }
+
+    #[test]
+    fn no_matching_source_unchanged() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::Square, true);
+        cfg.apply(&mut s);
+        assert!(s.button(Button::Square)); // untouched
+        assert!(!s.button(Button::Circle)); // no remap triggered
+    }
+
+    #[test]
+    fn snapshot_isolation() {
+        // A→B and B→A should use physical state, not intermediate results
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
+            RemapRule::new(Button::Circle, Target::Button(Button::Square)),
+        ]);
+        let mut s = state();
+        s.set_button(Button::Cross, true);
+        // Circle NOT pressed physically
+        cfg.apply(&mut s);
+        // cross→circle fires (cross was pressed)
+        // circle→square should NOT fire (circle was NOT physically pressed)
+        assert!(!s.button(Button::Cross));
+        assert!(s.button(Button::Circle));
+        assert!(!s.button(Button::Square)); // not triggered via cascade
+    }
+}

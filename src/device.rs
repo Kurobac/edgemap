@@ -108,7 +108,7 @@ pub struct HidrawDevice {
     fd: OwnedFd,
     pub info: DeviceInfo,
     sysfs_path: Option<PathBuf>,
-    restored_paths: Vec<(PathBuf, u32)>,
+    restored_paths: Vec<(PathBuf, u32, String)>,
 }
 
 impl HidrawDevice {
@@ -243,10 +243,21 @@ impl HidrawDevice {
         }
     }
 
-    fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32)>) -> io::Result<()> {
+    fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io::Result<()> {
         let orig = fs::metadata(path)?.permissions().mode();
+
+        let acl_data = std::process::Command::new("getfacl")
+            .args(["--absolute-names", &path.to_string_lossy()])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+
+        let _ = std::process::Command::new("setfacl")
+            .args(["-b", &path.to_string_lossy()])
+            .output();
+
         fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))?;
-        restored.push((path.to_path_buf(), orig));
+        restored.push((path.to_path_buf(), orig, acl_data));
         Ok(())
     }
 
@@ -301,12 +312,27 @@ impl HidrawDevice {
     }
 
     fn restore_permissions(&self) {
-        for (path, orig_mode) in &self.restored_paths {
+        for (path, orig_mode, acl_data) in &self.restored_paths {
             if let Err(e) = fs::set_permissions(path, std::fs::Permissions::from_mode(*orig_mode))
             {
                 log::warn!("Failed to restore permissions on {:?}: {e}", path);
             } else {
                 log::info!("Restored permissions on {:?}", path);
+            }
+
+            if !acl_data.is_empty() {
+                let restore_path = format!("{}.acltmp", path.to_string_lossy());
+                if let Err(e) = fs::write(&restore_path, acl_data) {
+                    log::warn!("Failed to write ACL temp file {:?}: {e}", restore_path);
+                    continue;
+                }
+                let output = std::process::Command::new("setfacl")
+                    .args(["--restore", &restore_path])
+                    .output();
+                if let Err(ref e) = output {
+                    log::warn!("Failed to restore ACL on {:?}: {e}", path);
+                }
+                let _ = fs::remove_file(&restore_path);
             }
         }
     }

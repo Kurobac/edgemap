@@ -568,6 +568,11 @@ impl Proxy {
                                 if mod_held {
                                     state.set_button(c.modifier, false);
                                     state.set_button(c.key, false);
+                                    match c.modifier {
+                                        Button::L2 => state.l2_analog = 0,
+                                        Button::R2 => state.r2_analog = 0,
+                                        _ => {}
+                                    }
                                     match c.key {
                                         Button::L2 => state.l2_analog = 0,
                                         Button::R2 => state.r2_analog = 0,
@@ -575,9 +580,13 @@ impl Proxy {
                                     }
                                 }
                                 let trigger = mod_held && key_held;
-                                if trigger { c.active = true; }
-                                else if c.active { c.active = false; }
-                                combo_triggers.push((&c.output, trigger));
+                                if trigger {
+                                    c.active = true;
+                                    combo_triggers.push((&c.output, true));
+                                } else if c.active {
+                                    c.active = false;
+                                    combo_triggers.push((&c.output, false));
+                                }
                             }
                         }
 

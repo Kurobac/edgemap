@@ -454,6 +454,12 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
         if Button::from_name(name).is_some() {
             return Err(format!("Macro name '{name}' conflicts with a standard button name"));
         }
+        if resolve_target(name).is_some() {
+            return Err(format!("Macro name '{name}' conflicts with a built-in target"));
+        }
+        if m.mode != "hold" && m.mode != "single" {
+            return Err(format!("Macro '{name}': mode must be 'hold' or 'single'"));
+        }
         if m.sequence.is_empty() {
             return Err(format!("Macro '{name}': sequence must not be empty"));
         }
@@ -859,5 +865,17 @@ mod tests {
     fn macro_turbo_combo_mutex() {
         let e = validate(&parse("[left_paddle]\nremap = \"combo\"\nturbo = true\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"circle\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
         assert!(e.contains("turbo and macros are mutually exclusive"));
+    }
+
+    #[test]
+    fn macro_mode_invalid() {
+        let e = validate(&parse("[left_paddle]\nremap = \"m\"\n[macros.m]\nmode = \"banana\"\n[[macros.m.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
+        assert!(e.contains("mode must be 'hold' or 'single'"));
+    }
+
+    #[test]
+    fn macro_name_target_conflict() {
+        let e = validate(&parse("[left_paddle]\nremap = \"l2_full\"\n[macros.l2_full]\n[[macros.l2_full.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
+        assert!(e.contains("conflicts with a built-in target"));
     }
 }

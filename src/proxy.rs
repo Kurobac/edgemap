@@ -1,4 +1,5 @@
 use std::io;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -296,10 +297,12 @@ pub struct Proxy {
     turbo_runtimes: Vec<TurboRuntime>,
     combo_runtimes: Vec<ComboRuntime>,
     macro_runtimes: Vec<MacroRuntime>,
+    fifo_fd: OwnedFd,
 }
 
 impl Proxy {
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str) -> Self {
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, fifo_file: std::fs::File) -> Self {
+        let fifo_fd = OwnedFd::from(fifo_file);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
             let turbos: Vec<_> = m.turbo_configs.iter()
@@ -313,7 +316,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn skip_restore(&mut self) {
@@ -432,6 +435,15 @@ impl Proxy {
             return ExitReason::UserShutdown;
         }
 
+        let fifo_bfd = unsafe { BorrowedFd::borrow_raw(self.fifo_fd.as_raw_fd()) };
+        let fifo_event = EpollEvent::new(
+            EpollFlags::EPOLLIN,
+            3,
+        );
+        if let Err(e) = ep_fd.add(&fifo_bfd, fifo_event) {
+            warn!("Failed to add FIFO to epoll: {e} (control pipe unavailable)");
+        }
+
         info!("Proxy running. Press Ctrl+C to stop.");
 
         let mut seq: u8 = 0;
@@ -458,6 +470,8 @@ impl Proxy {
                                 error!("UHID handler error: {e}");
                                 break;
                             }
+                        } else if fd_num == 3 {
+                            self.handle_fifo_command();
                         }
                     }
                 }
@@ -477,6 +491,40 @@ impl Proxy {
             ExitReason::DeviceGone
         } else {
             ExitReason::UserShutdown
+        }
+    }
+
+    fn handle_fifo_command(&mut self) {
+        let mut buf = [0u8; 256];
+        loop {
+            let n = unsafe {
+                libc::read(
+                    self.fifo_fd.as_raw_fd(),
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len(),
+                )
+            };
+            if n <= 0 {
+                break;
+            }
+            let data = &buf[..n as usize];
+            for line in data.split(|b| *b == b'\n') {
+                let line = line.trim_ascii();
+                if line.is_empty() {
+                    continue;
+                }
+                if line == b"reload" {
+                    info!("FIFO: reload requested");
+                    self.reload_config();
+                } else if let Some(path) = line.strip_prefix(b"switch-config ") {
+                    let path_str = String::from_utf8_lossy(path).trim().to_string();
+                    info!("FIFO: switch-config to {}", path_str);
+                    self.config_path = path_str;
+                    self.reload_config();
+                } else {
+                    debug!("FIFO: unknown command: {}", String::from_utf8_lossy(line));
+                }
+            }
         }
     }
 

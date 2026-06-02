@@ -10,9 +10,55 @@ mod uhid;
 
 use log::{error, info, warn};
 use std::env;
+use std::os::fd::FromRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+
+static FIFO_DIR: &str = "/run/dseuhid";
+static FIFO_PATH: &str = "/run/dseuhid/control";
+static PID_PATH: &str = "/run/dseuhid/pid";
+
+fn setup_fifo() -> std::fs::File {
+    std::fs::create_dir_all(FIFO_DIR).unwrap_or_else(|e| {
+        eprintln!("error: cannot create {}: {e}", FIFO_DIR);
+        std::process::exit(1);
+    });
+    // Remove any stale FIFO from previous unclean exit
+    let _ = std::fs::remove_file(FIFO_PATH);
+    let r = unsafe { libc::mkfifo(FIFO_PATH.as_ptr() as *const libc::c_char, 0o666) };
+    if r != 0 {
+        eprintln!("error: cannot create FIFO at {FIFO_PATH}: {}", std::io::Error::last_os_error());
+        std::process::exit(1);
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(FIFO_PATH)
+        .unwrap_or_else(|e| {
+            eprintln!("error: cannot open FIFO: {e}");
+            std::process::exit(1);
+        });
+    std::fs::write(PID_PATH, std::process::id().to_string()).ok();
+    file
+}
+
+fn teardown_fifo() {
+    let _ = std::fs::remove_file(FIFO_PATH);
+    let _ = std::fs::remove_file(PID_PATH);
+}
+
+fn dup_fifo_fd(fifo_fd: &std::fs::File) -> std::fs::File {
+    use std::os::fd::AsRawFd;
+    let raw = fifo_fd.as_raw_fd();
+    let fd = unsafe { libc::dup(raw) };
+    if fd < 0 {
+        error!("Failed to dup FIFO fd: {}", std::io::Error::last_os_error());
+    }
+    unsafe { std::fs::File::from_raw_fd(fd) }
+}
 
 fn parse_config_path() -> String {
     let args: Vec<String> = env::args().collect();
@@ -94,6 +140,8 @@ fn main() {
         "Using built-in DualSense HID descriptor ({} bytes)",
         report_desc.len()
     );
+
+    let fifo_fd = setup_fifo();
 
     'outer: loop {
         let dev_info = loop {
@@ -204,7 +252,7 @@ fn main() {
             }
         }));
 
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, &config_path);
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, &config_path, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
             proxy::ExitReason::DeviceGone => {
                 proxy.skip_restore();
@@ -219,5 +267,6 @@ fn main() {
         }
     }
 
+    teardown_fifo();
     info!("Shutdown complete.");
 }

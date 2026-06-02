@@ -195,21 +195,36 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 | 30 | Combo→macro reset every frame, stuck at 0ms | L2 macro detection (read L1, trigger suppressed by combo) deactivated macro; combo injection simultaneously activated it | `5053099` (MacroSource::Combo) |
 | 31 | Macro output only on first frame, then invisible | `tick()` only wrote button on press event; subsequent frames state was recreated from physical buf, no maintain | `5053099` (per-frame maintain) |
 
-## TODO
+## Future Plans
 
-### High Priority
-- [x] **Dead code cleanup**: 25 compiler warnings — done in v0.0.8
-- [x] **Pipeline refactor**: three-layer architecture (L1→L2→L3) — done in v0.0.9
-- [x] **Combo**: modifier key combinations — done in v0.0.10
-- [x] **Macro**: timed key sequences — done in v0.0.11
+### Completed — v0.1.0 milestone
 
-### Medium Priority
-- [ ] **D-Bus interface**: zbus session bus server for runtime control, edgemap CLI client
+- [x] Dead code cleanup (v0.0.8)
+- [x] Pipeline refactor: three-layer architecture (v0.0.9)
+- [x] Combo: modifier key combinations (v0.0.10)
+- [x] Macro: timed key sequences, hold & single modes, combo→macro (v0.0.11)
+- [x] `--config-path` flag for custom config file (v0.1.0+1)
+- [x] Systemd service unit (v0.1.0+1)
+- [x] Compact default config template (v0.1.0+2)
 
-### Low Priority
-- [ ] **Trigger source mapping**: analog threshold-based (half-press vs full-press events)
-- [ ] **Touchpad 4-zone**: expand from left/right to quadrant grid
-- [ ] **Regular DualSense support**: re-enable PID 0x0CE6
+### Planned — Next Features
+
+| Priority | Feature | Complexity | Description |
+|----------|---------|-----------|-------------|
+| High | **FIFO control daemon** | Medium | `/run/dseuhid/control` named pipe, epoll monitor, non-root `echo "reload" \| "switch-config /path"` |
+| High | **CLI subcommands** | Low | `dseuhid validate`, `dseuhid dump`, FIFO command CLI wrappers |
+| Low | **Regular DualSense** | Low | Re-enable PID 0x0CE6; verify HID descriptor compatibility |
+| Low | **Trigger source mapping** | Medium | Analog threshold events (half-press vs full-press) |
+| Low | **Touchpad 4-zone** | Low | Expand left/right to quadrant grid |
+
+### Explicitly Abandoned
+
+| Feature | Reason |
+|---------|--------|
+| D-Bus interface (zbus) | Introduces async runtime, excessive complexity for marginal benefit |
+| inotify auto-reload | Manual SIGHUP / FIFO sufficient |
+| GUI config generator | Standalone tool, not daemon responsibility |
+| Multiple controllers | DualSense Edge firmware limitation |
 
 ## Commit History
 

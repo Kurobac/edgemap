@@ -622,6 +622,11 @@ impl Proxy {
                             }
                         }
 
+                        // L2: REMAP (reads L1, writes state)
+                        let m = self.mapping.read().unwrap();
+                        m.apply(&l1, &mut state);
+                        drop(m);
+
                         // L2: COMBO injection (writes state, or manages Combo-source macros)
                         for (target, active) in &combo_triggers {
                             match target {
@@ -639,11 +644,6 @@ impl Proxy {
                                 _ => apply_target_to_state(&mut state, target, *active),
                             }
                         }
-
-                        // L2: REMAP (reads L1, writes state)
-                        let m = self.mapping.read().unwrap();
-                        m.apply(&l1, &mut state);
-                        drop(m);
 
                         // L2: MACRO injection (writes macro step buttons to state)
                         for m in &mut self.macro_runtimes {

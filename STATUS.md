@@ -19,7 +19,8 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.0.7 | `6616c24` | Turbo (hold-to-repeat) + `none`→`block` rename + SIGHUP startup fix |
 | v0.0.8 | `83e2460` | Code cleanup: 0 warnings, 43 tests, AGENTS.md, StickDir naming |
 | v0.0.9 | `45f5dc7` | **Three-layer pipeline refactor** (L1 filter → L2 generate → L3 output) |
-| v0.0.10 | `[HEAD]` | **Combo** (modifier key combinations, L1 suppress + L2 inject) |
+| v0.0.10 | `3394651` | **Combo** (modifier key combinations, L1 suppress + L2 inject) |
+| v0.0.11 | `5053099` | **Macro** (timed key sequences, hold & single modes, combo→macro) |
 
 ## Implemented Features
 
@@ -67,10 +68,10 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 ### Configuration System
 - TOML format (compatible with edgemap's field layout)
 - `[button_name] remap = "target"` sections
-- Validation: unknown source buttons, unknown targets, split mode rules
+- Validation: unknown source buttons, unknown targets, split mode rules, combo/macro rules
 - Default config auto-generated at `/etc/dseuhid/config.toml`
 - Missing section warnings (all 22 buttons checked at startup)
-- Reserved fields: `combo`/`macro` parsing stubs present, not yet implemented
+- Case-sensitive section names (uppercase rejected)
 
 ### Hot Reload
 - SIGHUP (`kill -HUP <pid>`) triggers config re-read
@@ -102,7 +103,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | `[l2] remap="cross" turbo=true` | Turbo toggle of digital cross (L2 analog cleared) |
 | `[cross] remap="l2" turbo=true` | Turbo toggle of digital L2 (analog=0, only digital) |
 | `[cross] turbo=true` (no remap) | Self-turbo: cross toggle itself |
-| `[cross] remap="block" turbo=true` | Turbo toggle consumed by block L1 filter (no visible output; toggle drives future combo) |
+| `[cross] remap="block" turbo=true` | Turbo toggle consumed by block L1 filter (no visible output; toggle drives combo key) |
 
 ### Pipeline Architecture (v0.0.9+)
 Three-layer per-frame processing model:
@@ -115,7 +116,6 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - **Block** (`remap="block"`) now in L1: clears digital + analog (L2/R2)
 - **Remap** (`MappingConfig::apply`) reads frozen L1, writes virtual output
 - Downstream layers never affect upstream; L2 components are parallel and isolated
-- Reserved slots in L2 for macro (v0.0.11 planned)
 
 ### Combo System (v0.0.10)
 - **Modifier key combinations**: hold DSE button + press standard key → mapped output
@@ -124,7 +124,17 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - L2: injection writes combo outputs in parallel with remap (both read L1, no cross-talk)
 - Turbo+combo allowed: turbo toggle visible to combo detection, output follows turbo phase
 - Config validation: remap/combo mutual exclusion, key/output validation, duplicate key reject, self-key reject, FN+face reject, touchpad partition reject
+- Combo output can point to macro name (`Target::Macro`) for direct macro activation
 - **Known limitation**: d-pad (hat switch) cannot encode 3+ simultaneous directions; conflicting dpad outputs collapse to center per HID spec
+
+### Macro System (v0.0.11)
+- **Timed key sequences**: press trigger button → macro plays back step sequence with per-step press_ms/release_ms timing
+- Format: `[button] remap="macro_name"` + `[macros.macro_name]` with `sequence = [...]` and optional `mode`
+- Two modes: `hold` (hold-to-loop, release-to-stop) and `single` (one-shot, keeps running after release)
+- L2: macro detection reads L1 (Physical source) or combo injection (Combo source via `Target::Macro`)
+- L2: macro injection writes step buttons every frame (per-frame maintain, same principle as turbo bug #23 fix)
+- Config validation: empty sequence reject, release_ms > press_ms, macro name vs button name conflict, same-key turbo+macro mutual exclusion
+- Hot reload: macro runtimes rebuilt on SIGHUP
 
 ### Device Detection
 - Scan `/dev/hidraw*`, ioctl HIDIOCGRAWINFO for VID/PID
@@ -134,12 +144,12 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - Multi-device: warn if more than one Edge detected
 - EIO cooldown: 2-second sleep after disconnect
 
-### Unit Tests (44 tests, all passing)
+### Unit Tests (66 tests, all passing)
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| `mapping.rs` | 12 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, block-as-L1-suppression |
+| `mapping.rs` | 12 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation |
 | `report.rs` | 11 | byte position for all button groups (face/shoulder/system/Edge), all-button roundtrip, byte11 preservation, stick/trigger values, seq |
-| `config.rs` | 20 | valid sources/targets, trigger/stick targets, unknown validation, mic/edge exclusions, missing passthrough, default config parse, block→blocked_buttons, turbo+block allowed, uppercase rejection |
+| `config.rs` | 42 | valid sources/targets, trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
 | `device.rs` | 1 | sysfs path resolution |
 
 ### Tools
@@ -184,22 +194,27 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 ## TODO
 
 ### High Priority
-- [x] **Dead code cleanup**: 25 compiler warnings (unused functions, camel case, imports) — done in v0.0.8
+- [x] **Dead code cleanup**: 25 compiler warnings — done in v0.0.8
 - [x] **Pipeline refactor**: three-layer architecture (L1→L2→L3) — done in v0.0.9
+- [x] **Combo**: modifier key combinations — done in v0.0.10
+- [x] **Macro**: timed key sequences — done in v0.0.11
 
 ### Medium Priority
-- [ ] **Combo**: modifier key combinations (predefined key→output sequence)
-- [ ] **Macro**: timed key sequences, uinput injection for keyboard events
 - [ ] **D-Bus interface**: zbus session bus server for runtime control, edgemap CLI client
 
 ### Low Priority
 - [ ] **Trigger source mapping**: analog threshold-based (half-press vs full-press events)
 - [ ] **Touchpad 4-zone**: expand from left/right to quadrant grid
-- [ ] **Regular DualSense support**: re-enable PID 0x0CE6 (was removed for simplicity)
+- [ ] **Regular DualSense support**: re-enable PID 0x0CE6
 
 ## Commit History
 
 ```
+5053099 feat: macro (timed key sequences, hold & single modes)         [v0.0.11]
+ec8d6ea perf: batch ACL restore via stdin (1 setfacl instead of N)
+3394651 fix: turbo+combo coexistence (build combos for turbo buttons)  [v0.0.10]
+cbfd298 feat: combo (L1 detect+suppress + L2 inject), 56 tests
+53461dd docs: update STATUS.md for v0.0.9
 45f5dc7 refactor: v0.0.9 three-layer pipeline (L1→L2→L3)             [v0.0.9]
 83e2460 chore: rename StickDir variants to UpperCamelCase             [v0.0.8]
 2ff84c9 chore: clean up compiler warnings (30→0), add AGENTS.md

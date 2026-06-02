@@ -585,7 +585,6 @@ impl Proxy {
                                     combo_triggers.push((&c.output, true));
                                 } else if c.active {
                                     c.active = false;
-                                    combo_triggers.push((&c.output, false));
                                 }
                             }
                         }
@@ -628,20 +627,30 @@ impl Proxy {
                         drop(m);
 
                         // L2: COMBO injection (writes state, or manages Combo-source macros)
-                        for (target, active) in &combo_triggers {
+                        for (target, _active) in &combo_triggers {
                             match target {
                                 Target::Macro(name) => {
                                     for m in &mut self.macro_runtimes {
                                         if m.name == *name && m.source == MacroSource::Combo {
-                                            if *active {
-                                                m.activate(now);
-                                            } else if m.active && matches!(m.mode, MacroMode::Hold) {
-                                                m.deactivate(&mut state);
-                                            }
+                                            m.activate(now);
                                         }
                                     }
                                 }
-                                _ => apply_target_to_state(&mut state, target, *active),
+                                _ => apply_target_to_state(&mut state, target, true),
+                            }
+                        }
+                        // deactivate Combo-source macros whose combo is no longer triggered
+                        for c in &self.combo_runtimes {
+                            if !c.active {
+                                if let Target::Macro(name) = &c.output {
+                                    for m in &mut self.macro_runtimes {
+                                        if m.name == *name && m.source == MacroSource::Combo
+                                            && m.active && matches!(m.mode, MacroMode::Hold)
+                                        {
+                                            m.deactivate(&mut state);
+                                        }
+                                    }
+                                }
                             }
                         }
 

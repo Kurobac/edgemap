@@ -1,6 +1,6 @@
 use std::io;
 
-fn main() {
+pub fn run() {
     println!("DSE Button Monitor");
     println!("Press buttons, Ctrl+C to exit.\n");
 

@@ -2,8 +2,10 @@ mod config;
 mod descriptor;
 mod device;
 mod mapping;
+mod monitor;
 mod proxy;
 mod report;
+mod touchdemo;
 mod uhid;
 
 use log::{error, info, warn};
@@ -31,11 +33,54 @@ fn parse_config_path() -> String {
     "/etc/dseuhid/config.toml".into()
 }
 
+fn print_usage() {
+    eprintln!(
+        "dseuhid {} — DualSense Edge UHID Proxy",
+        env!("CARGO_PKG_VERSION")
+    );
+    eprintln!();
+    eprintln!("Usage: dseuhid [OPTIONS] [COMMAND]");
+    eprintln!();
+    eprintln!("Commands:");
+    eprintln!("  monitor     Raw HID button debug tool");
+    eprintln!("  touchdemo   Touchpad coordinate debug tool");
+    eprintln!("  version     Print version and exit");
+    eprintln!("  help        Print this help");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  -c, --config-path <path>  Config file (default: /etc/dseuhid/config.toml)");
+    eprintln!();
+    eprintln!("Without a command, starts the UHID proxy daemon (requires root).");
+}
+
 use device::find_dualsense;
 use proxy::Proxy;
 use uhid::UhidDevice;
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() >= 2 {
+        match args[1].as_str() {
+            "monitor" | "mon" => {
+                monitor::run();
+                return;
+            }
+            "touchdemo" | "touch" => {
+                touchdemo::run();
+                return;
+            }
+            "version" | "--version" | "-V" => {
+                println!("dseuhid {}", env!("CARGO_PKG_VERSION"));
+                return;
+            }
+            "help" | "--help" | "-h" => {
+                print_usage();
+                return;
+            }
+            _ => {}
+        }
+    }
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let config_path = parse_config_path();

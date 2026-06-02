@@ -1,7 +1,7 @@
 use std::io;
 use std::time::{Duration, Instant};
 
-fn main() {
+pub fn run() {
     println!("Touchpad Demo — press touchpad and move finger\n");
 
     let path = match find_dualsense_edge() {
@@ -75,7 +75,6 @@ fn print(label: &str, f: &Finger) {
     }
 }
 
-// Reuse device detection from monitor
 fn find_dualsense_edge() -> Option<String> {
     let dir = std::fs::read_dir("/dev").ok()?;
     for entry in dir.flatten() {

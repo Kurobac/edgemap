@@ -116,7 +116,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - **Turbo** runs in L1 before freeze: reads physical snapshot, writes to state
 - **Block** (`remap="block"`) now in L1: clears digital + analog (L2/R2)
 - **Remap** (`MappingConfig::apply`) reads frozen L1, writes virtual output
-- Downstream layers never affect upstream; L2 components are parallel and isolated
+- Downstream layers never affect upstream; L2 components are parallel and isolated //todo 需要重构以达到真分离，目前仍在同写一张表
 
 ### Combo System (v0.0.10)
 - **Modifier key combinations**: hold DSE button + press standard key → mapped output
@@ -231,7 +231,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 | D-Bus interface (zbus) | Introduces async runtime, excessive complexity for marginal benefit |
 | inotify auto-reload | Manual SIGHUP / FIFO sufficient |
 | GUI config generator | Standalone tool, not daemon responsibility |
-| Multiple controllers | DualSense Edge firmware limitation |
+| Multiple controllers | 就是不想做 |
 
 ## Commit History
 

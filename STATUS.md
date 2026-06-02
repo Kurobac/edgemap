@@ -19,6 +19,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.0.7 | `6616c24` | Turbo (hold-to-repeat) + `none`→`block` rename + SIGHUP startup fix |
 | v0.0.8 | `83e2460` | Code cleanup: 0 warnings, 43 tests, AGENTS.md, StickDir naming |
 | v0.0.9 | `45f5dc7` | **Three-layer pipeline refactor** (L1 filter → L2 generate → L3 output) |
+| v0.0.10 | `[HEAD]` | **Combo** (modifier key combinations, L1 suppress + L2 inject) |
 
 ## Implemented Features
 
@@ -114,7 +115,16 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - **Block** (`remap="block"`) now in L1: clears digital + analog (L2/R2)
 - **Remap** (`MappingConfig::apply`) reads frozen L1, writes virtual output
 - Downstream layers never affect upstream; L2 components are parallel and isolated
-- Reserved slots in L2 for combo injection and macro (v0.0.10 planned)
+- Reserved slots in L2 for macro (v0.0.11 planned)
+
+### Combo System (v0.0.10)
+- **Modifier key combinations**: hold DSE button + press standard key → mapped output
+- Format: `[modifier] remap="combo"` + `[[modifier.combos]]` entries
+- L1: detection reads post-turbo snapshot (isolation prevents cross-rule pollution), suppression clears modifier+key from state
+- L2: injection writes combo outputs in parallel with remap (both read L1, no cross-talk)
+- Turbo+combo allowed: turbo toggle visible to combo detection, output follows turbo phase
+- Config validation: remap/combo mutual exclusion, key/output validation, duplicate key reject, self-key reject, FN+face reject, touchpad partition reject
+- **Known limitation**: d-pad (hat switch) cannot encode 3+ simultaneous directions; conflicting dpad outputs collapse to center per HID spec
 
 ### Device Detection
 - Scan `/dev/hidraw*`, ioctl HIDIOCGRAWINFO for VID/PID

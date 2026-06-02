@@ -8,7 +8,7 @@ use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal
 use std::os::fd::BorrowedFd;
 
 use crate::device::HidrawDevice;
-use crate::mapping::{MappingConfig, Target, Trigger, TurboConfig};
+use crate::mapping::{ComboRule, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::{self, Button};
 use crate::uhid::UhidDevice;
 use std::time::Instant;
@@ -60,6 +60,24 @@ impl TurboRuntime {
             phase: false,
             press_time: Instant::now(),
             last_toggle: Instant::now(),
+        }
+    }
+}
+
+struct ComboRuntime {
+    modifier: Button,
+    key: Button,
+    output: Target,
+    active: bool,
+}
+
+impl ComboRuntime {
+    fn from_combo_rule(rule: &ComboRule) -> Self {
+        Self {
+            modifier: rule.modifier,
+            key: rule.key,
+            output: rule.output.clone(),
+            active: false,
         }
     }
 }
@@ -172,14 +190,22 @@ pub struct Proxy {
     last_snapshot: Option<crate::report::GamepadState>,
     last_output: Option<crate::report::GamepadState>,
     turbo_runtimes: Vec<TurboRuntime>,
+    combo_runtimes: Vec<ComboRuntime>,
 }
 
 impl Proxy {
     pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str) -> Self {
-        let turbo_runtimes = mapping.read().unwrap().turbo_configs.iter()
-            .map(TurboRuntime::from_config)
-            .collect();
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), last_snapshot: None, last_output: None, turbo_runtimes }
+        let (turbo_runtimes, combo_runtimes) = {
+            let m = mapping.read().unwrap();
+            let turbos: Vec<_> = m.turbo_configs.iter()
+                .map(TurboRuntime::from_config)
+                .collect();
+            let combos: Vec<_> = m.combo_configs.iter()
+                .map(ComboRuntime::from_combo_rule)
+                .collect();
+            (turbos, combos)
+        };
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes }
     }
 
     pub fn skip_restore(&mut self) {
@@ -224,6 +250,10 @@ impl Proxy {
         // rebuild turbo runtimes from the new mapping
         self.turbo_runtimes = self.mapping.read().unwrap().turbo_configs.iter()
             .map(TurboRuntime::from_config)
+            .collect();
+        // rebuild combo runtimes from the new mapping
+        self.combo_runtimes = self.mapping.read().unwrap().combo_configs.iter()
+            .map(ComboRuntime::from_combo_rule)
             .collect();
     }
 
@@ -416,8 +446,28 @@ impl Proxy {
                             }
                         }
 
-                        // TODO(v0.0.10): clone post-turbo snapshot for combo detection
-                        // TODO(v0.0.10): combo suppression (clears consumed sources)
+                        // L1: COMBO detection + suppression
+                        let mut combo_triggers: Vec<(&Target, bool)> = Vec::new();
+                        if !self.combo_runtimes.is_empty() {
+                            let pre_combo = state.clone();
+                            for c in &mut self.combo_runtimes {
+                                let mod_held = pre_combo.button(c.modifier);
+                                let key_held = pre_combo.button(c.key);
+                                if mod_held {
+                                    state.set_button(c.modifier, false);
+                                    state.set_button(c.key, false);
+                                    match c.key {
+                                        Button::L2 => state.l2_analog = 0,
+                                        Button::R2 => state.r2_analog = 0,
+                                        _ => {}
+                                    }
+                                }
+                                let trigger = mod_held && key_held;
+                                if trigger { c.active = true; }
+                                else if c.active { c.active = false; }
+                                combo_triggers.push((&c.output, trigger));
+                            }
+                        }
 
                         // L1: BLOCK suppression
                         let m = self.mapping.read().unwrap();
@@ -435,6 +485,11 @@ impl Proxy {
                         let l1 = state.clone();
 
                         // ========== L2: Virtual Input Generation ==========
+
+                        // L2: COMBO injection (reads combo_triggers, writes state)
+                        for (target, active) in &combo_triggers {
+                            apply_target_to_state(&mut state, target, *active);
+                        }
 
                         // L2: REMAP (reads L1, writes state)
                         let m = self.mapping.read().unwrap();

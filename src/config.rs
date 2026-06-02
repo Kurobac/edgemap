@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use crate::mapping::{MappingConfig, RemapRule, StickDir, Target, Trigger, TurboConfig};
+use crate::mapping::{ComboRule, MappingConfig, RemapRule, StickDir, Target, Trigger, TurboConfig};
 use crate::report::Button;
 
 #[derive(Debug, Default, Deserialize)]
@@ -64,6 +64,10 @@ fn is_valid_src(name: &str) -> bool {
 }
 
 fn is_valid_target(name: &str) -> bool {
+    // mode-switch targets (not button/trigger/stick, but valid remap values)
+    if matches!(name, "combo") {
+        return true;
+    }
     // special targets
     if matches!(
         name,
@@ -118,6 +122,7 @@ impl Config {
     pub fn to_mapping_config(&self) -> Result<MappingConfig, String> {
         let mut rules = Vec::new();
         let mut blocked_buttons = Vec::new();
+        let mut combo_configs = Vec::new();
         let mut split_touchpad = false;
 
         for (btn_name, btn_conf) in &self.buttons {
@@ -131,7 +136,19 @@ impl Config {
 
             if src == Button::Touchpad && btn_conf.remap.as_deref() == Some("split") {
                 split_touchpad = true;
-                continue; // handled below
+                continue;
+            }
+
+            // combo mode: build ComboRules from combos vec
+            if btn_conf.remap.as_deref() == Some("combo") {
+                for c in &btn_conf.combos {
+                    let key = Button::from_name(&c.key)
+                        .ok_or_else(|| format!("Unknown combo key '{}' in [{btn_name}]", c.key))?;
+                    let output = resolve_target(&c.output)
+                        .ok_or_else(|| format!("Unknown combo output '{}' in [{btn_name}]", c.output))?;
+                    combo_configs.push(ComboRule { modifier: src, key, output });
+                }
+                continue;
             }
 
             let dst = match btn_conf.remap.as_deref() {
@@ -175,6 +192,7 @@ impl Config {
         let mut mapping = MappingConfig::from_rules_split(rules, split_touchpad);
         mapping.turbo_configs = self.build_turbo_configs();
         mapping.blocked_buttons = blocked_buttons;
+        mapping.combo_configs = combo_configs;
         Ok(mapping)
     }
 
@@ -242,7 +260,57 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
 
         if btn_name == "touchpad" && remap == "split" {
             has_split = true;
-            continue; // validated below
+            continue;
+        }
+
+        // combo mode validations
+        let is_combo = btn_name != "touchpad_left" && btn_name != "touchpad_right" && remap == "combo";
+        let has_combos = !btn_conf.combos.is_empty();
+
+        // touchpad partitions cannot use combo mode
+        if matches!(btn_name.as_str(), "touchpad_left" | "touchpad_right") && remap == "combo" {
+            return Err(format!("[{btn_name}] touchpad partitions cannot use combo mode"));
+        }
+
+        if is_combo && btn_conf.combos.is_empty() {
+            return Err(format!("[{btn_name}] remap=\"combo\" requires at least one combo entry"));
+        }
+
+        if !is_combo && has_combos {
+            return Err(format!(
+                "[{btn_name}] remap and combos are mutually exclusive (use remap=\"combo\" with combos)"
+            ));
+        }
+
+        // combo key/output validation
+        let mut seen_keys = std::collections::HashSet::new();
+        let is_fn_modifier = btn_name == "left_fn" || btn_name == "right_fn";
+        for c in &btn_conf.combos {
+            let key_btn = match Button::from_name(&c.key) {
+                Some(b) => b,
+                None => return Err(format!("[{btn_name}] unknown combo key: {}", c.key)),
+            };
+            if key_btn.name() == btn_name.as_str() {
+                return Err(format!("[{btn_name}] combo key cannot be the same as the modifier button"));
+            }
+            if key_btn == Button::Mic || key_btn == Button::L2Analog || key_btn == Button::R2Analog
+                || key_btn == Button::TouchpadLeft || key_btn == Button::TouchpadRight
+            {
+                return Err(format!("[{btn_name}] invalid combo key: {}", c.key));
+            }
+            if !is_valid_target(&c.output) {
+                return Err(format!("[{btn_name}] unknown combo output: {}", c.output));
+            }
+            if !seen_keys.insert(&c.key) {
+                return Err(format!("[{btn_name}] duplicate combo key '{}'", c.key));
+            }
+            let is_face = matches!(c.key.as_str(), "cross" | "circle" | "square" | "triangle");
+            if is_fn_modifier && is_face {
+                return Err(format!(
+                    "[{btn_name}] FN+face combos ({}+{}) conflict with firmware profile switching",
+                    btn_name, c.key
+                ));
+            }
         }
 
         // turbo with trigger source + trigger target (analog transfer) is not allowed
@@ -316,6 +384,21 @@ version = 2
 #   [touchpad_right]
 #   remap = "circle"
 # In split mode, both touchpad_left and touchpad_right must be configured.
+#
+# Combo mode (modifier key combinations):
+#   [left_paddle]
+#   remap = "combo"
+#   [[left_paddle.combos]]
+#   key = "cross"
+#   output = "circle"
+#   [[left_paddle.combos]]
+#   key = "square"
+#   output = "dpad_left"
+# Hold modifier + press key → output injected.
+# Multiple combos per modifier supported.
+# Restrictions: remap="combo" is a mode switch (cannot combine with other remap values).
+#   FN buttons cannot combo with face buttons (firmware conflict).
+#   Combo key must differ from the modifier button.
 
 # --- Standard buttons (default: self) ---
 [cross]
@@ -515,5 +598,83 @@ mod tests {
         assert_eq!(cfg.version, 2);
         assert_eq!(cfg.buttons.len(), 22);
         assert!(validate(&cfg).is_ok());
+    }
+
+    // --- combo tests ---
+
+    #[test]
+    fn valid_combo_config() {
+        let cfg = parse("[left_paddle]\nremap = \"combo\"\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"circle\"\n");
+        assert!(validate(&cfg).is_ok());
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert!(mapping.rules.is_empty());
+        assert_eq!(mapping.combo_configs.len(), 1);
+    }
+
+    #[test]
+    fn valid_combo_multiple_keys() {
+        let cfg = parse("[left_paddle]\nremap = \"combo\"\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"circle\"\n[[left_paddle.combos]]\nkey = \"square\"\noutput = \"triangle\"\n");
+        assert!(validate(&cfg).is_ok());
+        assert_eq!(cfg.to_mapping_config().unwrap().combo_configs.len(), 2);
+    }
+
+    #[test]
+    fn combo_empty() {
+        let e = validate(&parse("[left_paddle]\nremap = \"combo\"\n")).unwrap_err();
+        assert!(e.contains("requires at least one combo entry"));
+    }
+
+    #[test]
+    fn combo_remap_mutex() {
+        let e = validate(&parse("[left_paddle]\nremap = \"cross\"\n[[left_paddle.combos]]\nkey = \"square\"\noutput = \"circle\"\n")).unwrap_err();
+        assert!(e.contains("remap and combos are mutually exclusive"));
+    }
+
+    #[test]
+    fn combo_unknown_key() {
+        let e = validate(&parse("[left_paddle]\nremap = \"combo\"\n[[left_paddle.combos]]\nkey = \"banana\"\noutput = \"cross\"\n")).unwrap_err();
+        assert!(e.contains("unknown combo key"));
+    }
+
+    #[test]
+    fn combo_unknown_output() {
+        let e = validate(&parse("[left_paddle]\nremap = \"combo\"\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"banana\"\n")).unwrap_err();
+        assert!(e.contains("unknown combo output"));
+    }
+
+    #[test]
+    fn combo_duplicate_key() {
+        let e = validate(&parse("[left_paddle]\nremap = \"combo\"\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"circle\"\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"square\"\n")).unwrap_err();
+        assert!(e.contains("duplicate combo key"));
+    }
+
+    #[test]
+    fn combo_self_key() {
+        let e = validate(&parse("[left_paddle]\nremap = \"combo\"\n[[left_paddle.combos]]\nkey = \"left_paddle\"\noutput = \"cross\"\n")).unwrap_err();
+        assert!(e.contains("combo key cannot be the same as the modifier"));
+    }
+
+    #[test]
+    fn combo_fn_face_rejected() {
+        let e = validate(&parse("[left_fn]\nremap = \"combo\"\n[[left_fn.combos]]\nkey = \"cross\"\noutput = \"circle\"\n")).unwrap_err();
+        assert!(e.contains("FN+face"));
+    }
+
+    #[test]
+    fn combo_paddle_face_ok() {
+        let cfg = parse("[left_paddle]\nremap = \"combo\"\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"circle\"\n");
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn combo_touchpad_partition_rejected() {
+        let e = validate(&parse("[touchpad]\nremap = \"split\"\n[touchpad_left]\nremap = \"combo\"\n[[touchpad_left.combos]]\nkey = \"cross\"\noutput = \"circle\"\n")).unwrap_err();
+        assert!(e.contains("touchpad partitions cannot use combo mode"));
+    }
+
+    #[test]
+    fn combo_block_rejected() {
+        let e = validate(&parse("[left_paddle]\nremap = \"block\"\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"circle\"\n")).unwrap_err();
+        assert!(e.contains("remap and combos are mutually exclusive"));
     }
 }

@@ -45,22 +45,30 @@ pub struct TurboConfig {
     pub delay_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ComboRule {
+    pub modifier: Button,
+    pub key: Button,
+    pub output: Target,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MappingConfig {
     pub rules: Vec<RemapRule>,
     pub split_touchpad: bool,
     pub turbo_configs: Vec<TurboConfig>,
     pub blocked_buttons: Vec<Button>,
+    pub combo_configs: Vec<ComboRule>,
 }
 
 impl MappingConfig {
     #[allow(dead_code)]
     pub fn from_rules(rules: Vec<RemapRule>) -> Self {
-        Self { rules, split_touchpad: false, turbo_configs: Vec::new(), blocked_buttons: Vec::new() }
+        Self { rules, split_touchpad: false, turbo_configs: Vec::new(), blocked_buttons: Vec::new(), combo_configs: Vec::new() }
     }
 
     pub fn from_rules_split(rules: Vec<RemapRule>, split_touchpad: bool) -> Self {
-        Self { rules, split_touchpad, turbo_configs: Vec::new(), blocked_buttons: Vec::new() }
+        Self { rules, split_touchpad, turbo_configs: Vec::new(), blocked_buttons: Vec::new(), combo_configs: Vec::new() }
     }
 
     pub fn apply(&self, l1: &GamepadState, state: &mut GamepadState) {

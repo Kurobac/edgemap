@@ -1,5 +1,6 @@
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
@@ -248,6 +249,7 @@ impl HidrawDevice {
             return;
         }
         info!("restore {} device nodes", self.restored_paths.len());
+        let mut acl_batch = String::new();
         for (path, orig_mode, acl_data) in &self.restored_paths {
             if !path.exists() {
                 continue;
@@ -260,19 +262,26 @@ impl HidrawDevice {
             }
 
             if !acl_data.is_empty() {
-                let restore_path = format!("{}.acltmp", path.to_string_lossy());
-                if let Err(e) = fs::write(&restore_path, acl_data) {
-                    log::warn!("Failed to write ACL temp file {:?}: {e}", restore_path);
-                    continue;
-                }
-                let output = std::process::Command::new("setfacl")
-                    .args(["--restore", &restore_path])
-                    .output();
-                if let Err(ref e) = output {
-                    log::warn!("Failed to restore ACL on {:?}: {e}", path);
-                }
-                let _ = fs::remove_file(&restore_path);
+                acl_batch.push_str(acl_data);
             }
+        }
+
+        if !acl_batch.is_empty() {
+            let mut child = match std::process::Command::new("setfacl")
+                .arg("--restore=-")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("Failed to spawn setfacl: {e}");
+                    return;
+                }
+            };
+            if let Err(e) = child.stdin.take().unwrap().write_all(acl_batch.as_bytes()) {
+                log::warn!("Failed to write ACL data to setfacl: {e}");
+            }
+            let _ = child.wait();
         }
     }
 }

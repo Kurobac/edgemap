@@ -501,50 +501,10 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
 
 pub fn default_content() -> &'static str {
     r#"# dseuhid config
+# See README for full documentation
 version = 2
 
-# Source (section name): any button below
-#   cross circle square triangle
-#   l1 l2 l3 r1 r2 r3
-#   options create ps
-#   dpad_up dpad_down dpad_left dpad_right
-#   touchpad touchpad_left touchpad_right
-#   left_paddle right_paddle left_fn right_fn
-#
-# Target options:
-#   Standard:  cross circle square triangle
-#              l1 l2 l3 r1 r2 r3
-#              options create ps touchpad
-#              dpad_up dpad_down dpad_left dpad_right
-#   Trigger:   l2_full r2_full
-#   Stick:     ls_up ls_down ls_left ls_right
-#              rs_up rs_down rs_left rs_right
-#
-# Split touchpad mode (use left/right partitions):
-#   [touchpad]
-#   remap = "split"
-#   [touchpad_left]
-#   remap = "cross"
-#   [touchpad_right]
-#   remap = "circle"
-# In split mode, both touchpad_left and touchpad_right must be configured.
-#
-# Combo mode (modifier key combinations):
-#   [left_paddle]
-#   remap = "combo"
-#   [[left_paddle.combos]]
-#   key = "cross"
-#   output = "circle"
-#   [[left_paddle.combos]]
-#   key = "square"
-#   output = "dpad_left"
-# Hold modifier + press key → output injected.
-# Multiple combos per modifier supported.
-# Restrictions: remap="combo" is a mode switch (cannot combine with other remap values).
-#   FN buttons cannot combo with face buttons (firmware conflict).
-#   Combo key must differ from the modifier button.
-
-# --- Standard buttons (default: self) ---
+# Face Buttons
 [cross]
 remap = "cross"
 [circle]
@@ -553,6 +513,8 @@ remap = "circle"
 remap = "square"
 [triangle]
 remap = "triangle"
+
+# Shoulder Buttons + Triggers
 [l1]
 remap = "l1"
 [r1]
@@ -561,16 +523,24 @@ remap = "r1"
 remap = "l2"
 [r2]
 remap = "r2"
+
+# Stick Buttons
 [l3]
 remap = "l3"
 [r3]
 remap = "r3"
-[options]
-remap = "options"
+
+# System Buttons
 [create]
 remap = "create"
+[options]
+remap = "options"
 [ps]
 remap = "ps"
+[touchpad]
+remap = "touchpad"
+
+# D-Pad
 [dpad_up]
 remap = "dpad_up"
 [dpad_down]
@@ -579,10 +549,8 @@ remap = "dpad_down"
 remap = "dpad_left"
 [dpad_right]
 remap = "dpad_right"
-[touchpad]
-remap = "touchpad"
 
-# --- DualSense Edge buttons ---
+# DualSense Edge — Back Paddles & Function Keys
 [left_paddle]
 remap = "l1"
 [right_paddle]

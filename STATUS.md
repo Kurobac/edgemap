@@ -190,6 +190,10 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 | 25 | `remap="none"` semantics confused with missing remap | `unwrap_or("none")` treated missing remap as explicit block | `9ad6dbb` |
 | 26 | `[cross] turbo=true` (no remap) silently skipped | `build_turbo_configs()` skipped `None` remap instead of self-targeting | `9ad6dbb` |
 | 27 | SIGHUP kills process when device not connected | `setup_reload_handler()` registered inside device loop; default handler terminated process | `6616c24` |
+| 28 | `turbo=true remap="combo"` combo configs skipped | `to_mapping_config()` turbo `continue` jumped over combo config building | `3394651` |
+| 29 | `turbo=true remap="combo"` turbo runtime not built | `build_turbo_configs()` `resolve_target("combo")` returned None | `3394651` |
+| 30 | Combo→macro reset every frame, stuck at 0ms | L2 macro detection (read L1, trigger suppressed by combo) deactivated macro; combo injection simultaneously activated it | `5053099` (MacroSource::Combo) |
+| 31 | Macro output only on first frame, then invisible | `tick()` only wrote button on press event; subsequent frames state was recreated from physical buf, no maintain | `5053099` (per-frame maintain) |
 
 ## TODO
 

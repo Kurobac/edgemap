@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use crate::mapping::{ComboRule, MappingConfig, RemapRule, StickDir, Target, Trigger, TurboConfig};
+use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, RemapRule, StickDir, Target, Trigger, TurboConfig};
 use crate::report::Button;
 
 #[derive(Debug, Default, Deserialize)]
@@ -43,7 +43,13 @@ pub struct ComboConfig {
 #[derive(Debug, Default, Deserialize)]
 #[allow(dead_code)]
 pub struct MacroConfig {
+    #[serde(default = "default_macro_mode")]
+    pub mode: String,
     pub sequence: Vec<MacroStep>,
+}
+
+fn default_macro_mode() -> String {
+    "hold".into()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -112,6 +118,16 @@ fn resolve_target(name: &str) -> Option<Target> {
     }
 }
 
+fn resolve_target_or_macro(name: &str, macros: &HashMap<String, MacroConfig>) -> Option<Target> {
+    resolve_target(name).or_else(|| {
+        if macros.contains_key(name) {
+            Some(Target::Macro(name.to_string()))
+        } else {
+            None
+        }
+    })
+}
+
 impl Config {
     pub fn load(path: &str) -> Result<Self, String> {
         let content =
@@ -135,7 +151,7 @@ impl Config {
                     for c in &btn_conf.combos {
                         let key = Button::from_name(&c.key)
                             .ok_or_else(|| format!("Unknown combo key '{}' in [{btn_name}]", c.key))?;
-                        let output = resolve_target(&c.output)
+                        let output = resolve_target_or_macro(&c.output, &self.macros)
                             .ok_or_else(|| format!("Unknown combo output '{}' in [{btn_name}]", c.output))?;
                         combo_configs.push(ComboRule { modifier: src, key, output });
                     }
@@ -153,7 +169,7 @@ impl Config {
                 for c in &btn_conf.combos {
                     let key = Button::from_name(&c.key)
                         .ok_or_else(|| format!("Unknown combo key '{}' in [{btn_name}]", c.key))?;
-                    let output = resolve_target(&c.output)
+                    let output = resolve_target_or_macro(&c.output, &self.macros)
                         .ok_or_else(|| format!("Unknown combo output '{}' in [{btn_name}]", c.output))?;
                     combo_configs.push(ComboRule { modifier: src, key, output });
                 }
@@ -166,7 +182,7 @@ impl Config {
                     blocked_buttons.push(src);
                     continue;
                 }
-                Some(target) => resolve_target(target)
+                Some(target) => resolve_target_or_macro(target, &self.macros)
                     .ok_or_else(|| format!("Unknown target '{target}' for button '{btn_name}'"))?,
             };
             rules.push(RemapRule::new(src, dst));
@@ -202,6 +218,7 @@ impl Config {
         mapping.turbo_configs = self.build_turbo_configs();
         mapping.blocked_buttons = blocked_buttons;
         mapping.combo_configs = combo_configs;
+        mapping.macro_configs = self.build_macro_configs();
         Ok(mapping)
     }
 
@@ -230,6 +247,82 @@ impl Config {
                 delay_ms: btn_conf.turbo_delay_ms,
             });
         }
+        configs
+    }
+
+    pub fn build_macro_configs(&self) -> Vec<MacroRule> {
+        let mut configs: Vec<MacroRule> = Vec::new();
+
+        // Physical trigger: remap points directly to a macro name
+        for (btn_name, btn_conf) in &self.buttons {
+            if btn_conf.turbo {
+                continue;
+            }
+            let trigger = match Button::from_name(btn_name) {
+                Some(b) => b,
+                None => continue,
+            };
+            let remap = btn_conf.remap.as_deref().unwrap_or("");
+            let macro_name = if matches!(remap, "block" | "combo") || remap.is_empty() {
+                continue;
+            } else {
+                remap
+            };
+            let mcfg = match self.macros.get(macro_name) {
+                Some(m) => m,
+                None => continue,
+            };
+            let mode = match mcfg.mode.as_str() {
+                "single" => MacroMode::Single,
+                _ => MacroMode::Hold,
+            };
+            let steps: Vec<crate::mapping::MacroStep> = mcfg.sequence.iter().map(|s| {
+                crate::mapping::MacroStep {
+                    button: Button::from_name(&s.key).unwrap_or(Button::Cross),
+                    press_ms: s.press_ms,
+                    release_ms: s.release_ms,
+                }
+            }).collect();
+            configs.push(MacroRule {
+                trigger,
+                name: macro_name.to_string(),
+                mode,
+                steps,
+                source: MacroSource::Physical,
+            });
+        }
+
+        // Combo trigger: combo output points to a macro name
+        for (_btn_name, btn_conf) in &self.buttons {
+            if !matches!(btn_conf.remap.as_deref(), Some("combo")) {
+                continue;
+            }
+            for c in &btn_conf.combos {
+                let mcfg = match self.macros.get(&c.output) {
+                    Some(m) => m,
+                    None => continue,
+                };
+                let mode = match mcfg.mode.as_str() {
+                    "single" => MacroMode::Single,
+                    _ => MacroMode::Hold,
+                };
+                let steps: Vec<crate::mapping::MacroStep> = mcfg.sequence.iter().map(|s| {
+                    crate::mapping::MacroStep {
+                        button: Button::from_name(&s.key).unwrap_or(Button::Cross),
+                        press_ms: s.press_ms,
+                        release_ms: s.release_ms,
+                    }
+                }).collect();
+                configs.push(MacroRule {
+                    trigger: Button::Cross,
+                    name: c.output.clone(),
+                    mode,
+                    steps,
+                    source: MacroSource::Combo,
+                });
+            }
+        }
+
         configs
     }
 }
@@ -307,7 +400,7 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             {
                 return Err(format!("[{btn_name}] invalid combo key: {}", c.key));
             }
-            if !is_valid_target(&c.output) {
+            if !is_valid_target(&c.output) && !cfg.macros.contains_key(&c.output) {
                 return Err(format!("[{btn_name}] unknown combo output: {}", c.output));
             }
             if !seen_keys.insert(&c.key) {
@@ -330,6 +423,18 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             }
         }
 
+        // turbo + macro mutual exclusion (same button, including combo→macro)
+        if btn_conf.turbo {
+            let has_macro_output = match btn_conf.remap.as_deref() {
+                Some(r) if cfg.macros.contains_key(r) => true,
+                Some("combo") => btn_conf.combos.iter().any(|c| cfg.macros.contains_key(&c.output)),
+                _ => false,
+            };
+            if has_macro_output {
+                return Err(format!("[{btn_name}] turbo and macros are mutually exclusive"));
+            }
+        }
+
         if btn_name == "touchpad_left" {
             has_touch_left = true;
         }
@@ -337,8 +442,38 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             has_touch_right = true;
         }
 
-        if remap != "block" && !remap.is_empty() && !is_valid_target(remap) {
+        if remap != "block" && !remap.is_empty() && !is_valid_target(remap)
+            && !cfg.macros.contains_key(remap)
+        {
             return Err(format!("[{btn_name}] unknown target: {remap}"));
+        }
+    }
+
+    // macro-wide validation
+    for (name, m) in &cfg.macros {
+        if Button::from_name(name).is_some() {
+            return Err(format!("Macro name '{name}' conflicts with a standard button name"));
+        }
+        if m.sequence.is_empty() {
+            return Err(format!("Macro '{name}': sequence must not be empty"));
+        }
+        for step in &m.sequence {
+            let key_btn = Button::from_name(&step.key);
+            if key_btn.is_none() {
+                return Err(format!("Macro '{name}': unknown key '{}'", step.key));
+            }
+            let key_btn = key_btn.unwrap();
+            if key_btn == Button::Mic || key_btn == Button::L2Analog || key_btn == Button::R2Analog
+                || key_btn == Button::TouchpadLeft || key_btn == Button::TouchpadRight
+            {
+                return Err(format!("Macro '{name}': invalid key '{}'", step.key));
+            }
+            if step.release_ms <= step.press_ms {
+                return Err(format!(
+                    "Macro '{name}' step '{}': release_ms ({}) must be > press_ms ({})",
+                    step.key, step.release_ms, step.press_ms
+                ));
+            }
         }
     }
 
@@ -685,5 +820,76 @@ mod tests {
     fn combo_block_rejected() {
         let e = validate(&parse("[left_paddle]\nremap = \"block\"\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"circle\"\n")).unwrap_err();
         assert!(e.contains("remap and combos are mutually exclusive"));
+    }
+
+    // --- macro tests ---
+
+    #[test]
+    fn valid_macro_hold() {
+        let cfg = parse("[left_paddle]\nremap = \"m\"\n[macros.m]\nmode = \"hold\"\n[[macros.m.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 200\n");
+        assert!(validate(&cfg).is_ok());
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert_eq!(mapping.macro_configs.len(), 1);
+        assert!(matches!(mapping.macro_configs[0].mode, MacroMode::Hold));
+    }
+
+    #[test]
+    fn valid_macro_single() {
+        let cfg = parse("[left_paddle]\nremap = \"m\"\n[macros.m]\nmode = \"single\"\n[[macros.m.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 200\n");
+        assert!(validate(&cfg).is_ok());
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert!(matches!(mapping.macro_configs[0].mode, MacroMode::Single));
+    }
+
+    #[test]
+    fn macro_default_mode_hold() {
+        let cfg = parse("[left_paddle]\nremap = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 200\n");
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert!(matches!(mapping.macro_configs[0].mode, MacroMode::Hold));
+    }
+
+    #[test]
+    fn macro_empty_sequence() {
+        let e = validate(&parse("[left_paddle]\nremap = \"m\"\n[macros.m]\nsequence = []\n")).unwrap_err();
+        assert!(e.contains("must not be empty"));
+    }
+
+    #[test]
+    fn macro_release_le_press() {
+        let e = validate(&parse("[left_paddle]\nremap = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"cross\"\npress_ms = 100\nrelease_ms = 50\n")).unwrap_err();
+        assert!(e.contains("must be > press_ms"));
+    }
+
+    #[test]
+    fn macro_unknown_key() {
+        let e = validate(&parse("[left_paddle]\nremap = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"banana\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
+        assert!(e.contains("unknown key"));
+    }
+
+    #[test]
+    fn macro_name_conflict() {
+        let e = validate(&parse("[left_paddle]\nremap = \"cross\"\n[macros.cross]\n[[macros.cross.sequence]]\nkey = \"circle\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
+        assert!(e.contains("conflicts with a standard button name"));
+    }
+
+    #[test]
+    fn macro_turbo_mutex() {
+        let e = validate(&parse("[left_paddle]\nremap = \"m\"\nturbo = true\n[macros.m]\n[[macros.m.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
+        assert!(e.contains("turbo and macros are mutually exclusive"));
+    }
+
+    #[test]
+    fn macro_combo_output() {
+        let cfg = parse("[left_paddle]\nremap = \"combo\"\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"circle\"\npress_ms = 0\nrelease_ms = 200\n");
+        assert!(validate(&cfg).is_ok());
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert_eq!(mapping.combo_configs.len(), 1);
+        assert!(matches!(mapping.combo_configs[0].output, Target::Macro(_)));
+    }
+
+    #[test]
+    fn macro_turbo_combo_mutex() {
+        let e = validate(&parse("[left_paddle]\nremap = \"combo\"\nturbo = true\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"circle\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
+        assert!(e.contains("turbo and macros are mutually exclusive"));
     }
 }

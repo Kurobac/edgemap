@@ -8,7 +8,7 @@ use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal
 use std::os::fd::BorrowedFd;
 
 use crate::device::HidrawDevice;
-use crate::mapping::{ComboRule, MappingConfig, Target, Trigger, TurboConfig};
+use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::{self, Button};
 use crate::uhid::UhidDevice;
 use std::time::Instant;
@@ -33,6 +33,7 @@ fn apply_target_to_state(state: &mut crate::report::GamepadState, target: &Targe
                 StickDir::RsRight => if on { state.right_stick_x = 255 } else { state.right_stick_x = 128 },
             }
         }
+        Target::Macro(_) => {}
     }
 }
 
@@ -78,6 +79,109 @@ impl ComboRuntime {
             key: rule.key,
             output: rule.output.clone(),
             active: false,
+        }
+    }
+}
+
+struct MacroStepRuntime {
+    button: Button,
+    press_ms: u64,
+    release_ms: u64,
+    pressed: bool,
+    done: bool,
+}
+
+struct MacroRuntime {
+    name: String,
+    trigger: Button,
+    steps: Vec<MacroStepRuntime>,
+    active: bool,
+    mode: MacroMode,
+    source: MacroSource,
+    step_start: Instant,
+}
+
+impl MacroRuntime {
+    fn from_macro_rule(rule: &MacroRule) -> Self {
+        Self {
+            name: rule.name.clone(),
+            trigger: rule.trigger,
+            steps: rule.steps.iter().map(|s| MacroStepRuntime {
+                button: s.button,
+                press_ms: s.press_ms,
+                release_ms: s.release_ms,
+                pressed: false,
+                done: false,
+            }).collect(),
+            active: false,
+            mode: rule.mode.clone(),
+            source: rule.source.clone(),
+            step_start: Instant::now(),
+        }
+    }
+
+    fn activate(&mut self, now: Instant) {
+        if self.active {
+            return; // single-shot: ignore re-activation
+        }
+        self.active = true;
+        self.step_start = now;
+        for step in &mut self.steps {
+            step.pressed = false;
+            step.done = false;
+        }
+    }
+
+    fn deactivate(&mut self, state: &mut crate::report::GamepadState) {
+        for step in &mut self.steps {
+            if step.pressed {
+                state.set_button(step.button, false);
+            }
+            step.pressed = false;
+            step.done = false;
+        }
+        self.active = false;
+    }
+
+    fn tick(&mut self, state: &mut crate::report::GamepadState, now: Instant) {
+        let elapsed = now.duration_since(self.step_start).as_millis() as u64;
+        let mut all_done = true;
+        for step in &mut self.steps {
+            if step.done {
+                continue;
+            }
+            if elapsed >= step.press_ms && !step.pressed {
+                step.pressed = true;
+                state.set_button(step.button, true);
+                debug!("macro '{}': +{elapsed}ms press {}", self.name, step.button.name());
+            }
+            if elapsed >= step.release_ms && step.pressed {
+                step.pressed = false;
+                step.done = true;
+                state.set_button(step.button, false);
+                debug!("macro '{}': +{elapsed}ms release {}", self.name, step.button.name());
+            } else if !step.done {
+                all_done = false;
+            }
+            if step.pressed {
+                state.set_button(step.button, true);
+            }
+        }
+        if all_done {
+            match self.mode {
+                MacroMode::Hold => {
+                    debug!("macro '{}': loop, resetting", self.name);
+                    self.step_start = now;
+                    for step in &mut self.steps {
+                        step.pressed = false;
+                        step.done = false;
+                    }
+                }
+                MacroMode::Single => {
+                    debug!("macro '{}': completed", self.name);
+                    self.deactivate(state);
+                }
+            }
         }
     }
 }
@@ -191,11 +295,12 @@ pub struct Proxy {
     last_output: Option<crate::report::GamepadState>,
     turbo_runtimes: Vec<TurboRuntime>,
     combo_runtimes: Vec<ComboRuntime>,
+    macro_runtimes: Vec<MacroRuntime>,
 }
 
 impl Proxy {
     pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str) -> Self {
-        let (turbo_runtimes, combo_runtimes) = {
+        let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
             let turbos: Vec<_> = m.turbo_configs.iter()
                 .map(TurboRuntime::from_config)
@@ -203,9 +308,12 @@ impl Proxy {
             let combos: Vec<_> = m.combo_configs.iter()
                 .map(ComboRuntime::from_combo_rule)
                 .collect();
-            (turbos, combos)
+            let macros: Vec<_> = m.macro_configs.iter()
+                .map(MacroRuntime::from_macro_rule)
+                .collect();
+            (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes }
     }
 
     pub fn skip_restore(&mut self) {
@@ -254,6 +362,10 @@ impl Proxy {
         // rebuild combo runtimes from the new mapping
         self.combo_runtimes = self.mapping.read().unwrap().combo_configs.iter()
             .map(ComboRuntime::from_combo_rule)
+            .collect();
+        // rebuild macro runtimes from the new mapping
+        self.macro_runtimes = self.mapping.read().unwrap().macro_configs.iter()
+            .map(MacroRuntime::from_macro_rule)
             .collect();
     }
 
@@ -486,9 +598,37 @@ impl Proxy {
 
                         // ========== L2: Virtual Input Generation ==========
 
-                        // L2: COMBO injection (reads combo_triggers, writes state)
+                        // L2: MACRO detection (reads L1, Physical source only)
+                        let now = Instant::now();
+                        for m in &mut self.macro_runtimes {
+                            if m.source != MacroSource::Physical {
+                                continue;
+                            }
+                            let pressed = l1.button(m.trigger);
+                            if pressed && !m.active {
+                                m.activate(now);
+                            }
+                            if !pressed && m.active && matches!(m.mode, MacroMode::Hold) {
+                                m.deactivate(&mut state);
+                            }
+                        }
+
+                        // L2: COMBO injection (writes state, or manages Combo-source macros)
                         for (target, active) in &combo_triggers {
-                            apply_target_to_state(&mut state, target, *active);
+                            match target {
+                                Target::Macro(name) => {
+                                    for m in &mut self.macro_runtimes {
+                                        if m.name == *name && m.source == MacroSource::Combo {
+                                            if *active {
+                                                m.activate(now);
+                                            } else if m.active && matches!(m.mode, MacroMode::Hold) {
+                                                m.deactivate(&mut state);
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => apply_target_to_state(&mut state, target, *active),
+                            }
                         }
 
                         // L2: REMAP (reads L1, writes state)
@@ -496,10 +636,25 @@ impl Proxy {
                         m.apply(&l1, &mut state);
                         drop(m);
 
-                        // TODO(v0.0.10): macro detection + injection
+                        // L2: MACRO injection (writes macro step buttons to state)
+                        for m in &mut self.macro_runtimes {
+                            if m.active {
+                                m.tick(&mut state, now);
+                            }
+                        }
 
                         // ========== L3: Output ==========
                         report::apply_state_to_report(&mut buf, &state, *seq);
+                        // per-frame output at trace level
+                        {
+                            let mut btn_names: Vec<&str> = Vec::new();
+                            for btn in ALL_BUTTONS.iter() {
+                                if state.button(*btn) {
+                                    btn_names.push(btn.name());
+                                }
+                            }
+                            trace!("out: [{}]", btn_names.join(" "));
+                        }
                         self.log_button_diff(&physical_snapshot, &state);
                     } else {
                         warn!("parse_input_report failed, raw forwarding (mapping lost for this frame)");

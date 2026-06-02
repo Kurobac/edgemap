@@ -23,6 +23,7 @@ pub enum Target {
     Button(Button),
     TriggerFull(Trigger),
     Stick(StickDir),
+    Macro(String),
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +53,34 @@ pub struct ComboRule {
     pub output: Target,
 }
 
+#[derive(Debug, Clone)]
+pub enum MacroMode {
+    Hold,
+    Single,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MacroSource {
+    Physical,
+    Combo,
+}
+
+#[derive(Debug, Clone)]
+pub struct MacroStep {
+    pub button: Button,
+    pub press_ms: u64,
+    pub release_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MacroRule {
+    pub trigger: Button,
+    pub name: String,
+    pub mode: MacroMode,
+    pub steps: Vec<MacroStep>,
+    pub source: MacroSource,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MappingConfig {
     pub rules: Vec<RemapRule>,
@@ -59,16 +88,17 @@ pub struct MappingConfig {
     pub turbo_configs: Vec<TurboConfig>,
     pub blocked_buttons: Vec<Button>,
     pub combo_configs: Vec<ComboRule>,
+    pub macro_configs: Vec<MacroRule>,
 }
 
 impl MappingConfig {
     #[allow(dead_code)]
     pub fn from_rules(rules: Vec<RemapRule>) -> Self {
-        Self { rules, split_touchpad: false, turbo_configs: Vec::new(), blocked_buttons: Vec::new(), combo_configs: Vec::new() }
+        Self { rules, split_touchpad: false, turbo_configs: Vec::new(), blocked_buttons: Vec::new(), combo_configs: Vec::new(), macro_configs: Vec::new() }
     }
 
     pub fn from_rules_split(rules: Vec<RemapRule>, split_touchpad: bool) -> Self {
-        Self { rules, split_touchpad, turbo_configs: Vec::new(), blocked_buttons: Vec::new(), combo_configs: Vec::new() }
+        Self { rules, split_touchpad, turbo_configs: Vec::new(), blocked_buttons: Vec::new(), combo_configs: Vec::new(), macro_configs: Vec::new() }
     }
 
     pub fn apply(&self, l1: &GamepadState, state: &mut GamepadState) {
@@ -155,6 +185,7 @@ impl MappingConfig {
                         StickDir::RsRight => state.right_stick_x = 255,
                     }
                 }
+                Target::Macro(_) => {}
             }
         }
 

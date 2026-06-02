@@ -117,6 +117,7 @@ impl Config {
 
     pub fn to_mapping_config(&self) -> Result<MappingConfig, String> {
         let mut rules = Vec::new();
+        let mut blocked_buttons = Vec::new();
         let mut split_touchpad = false;
 
         for (btn_name, btn_conf) in &self.buttons {
@@ -135,7 +136,10 @@ impl Config {
 
             let dst = match btn_conf.remap.as_deref() {
                 None => continue,
-                Some("block") => Target::Block,
+                Some("block") => {
+                    blocked_buttons.push(src);
+                    continue;
+                }
                 Some(target) => resolve_target(target)
                     .ok_or_else(|| format!("Unknown target '{target}' for button '{btn_name}'"))?,
             };
@@ -170,6 +174,7 @@ impl Config {
 
         let mut mapping = MappingConfig::from_rules_split(rules, split_touchpad);
         mapping.turbo_configs = self.build_turbo_configs();
+        mapping.blocked_buttons = blocked_buttons;
         Ok(mapping)
     }
 
@@ -184,7 +189,7 @@ impl Config {
                 None => continue,
             };
             let dst = match btn_conf.remap.as_deref() {
-                Some("block") => continue,
+                Some("block") => Target::Button(src),
                 None => Target::Button(src),
                 Some(target) => match resolve_target(target) {
                     Some(t) => t,
@@ -225,6 +230,13 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
                  touchpad touchpad_left touchpad_right left_paddle right_paddle left_fn right_fn)"
             ));
         }
+        // reject same-as-lowercase-but-different-case section names
+        // (e.g. [Cross] is rejected, [left_fn] alias is fine)
+        if let Some(btn) = Button::from_name(btn_name) {
+            if btn_name.to_lowercase() == btn.name() && btn_name != btn.name() {
+                return Err(format!("[{btn_name}] section names must be lowercase (use \"{}\")", btn.name()));
+            }
+        }
         let btn_conf = &cfg.buttons[btn_name];
         let remap = btn_conf.remap.as_deref().unwrap_or("");
 
@@ -239,10 +251,6 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             if target_is_trigger {
                 return Err(format!("[{btn_name}] turbo with trigger target '{remap}' is not supported"));
             }
-        }
-
-        if btn_conf.turbo && remap == "block" {
-            return Err(format!("[{btn_name}] turbo cannot be combined with remap=\"block\""));
         }
 
         if btn_name == "touchpad_left" {
@@ -460,11 +468,24 @@ mod tests {
     }
 
     #[test]
-    fn block_creates_rule() {
+    fn block_in_blocked_buttons() {
         let cfg = parse("[cross]\nremap = \"block\"\n");
         assert!(validate(&cfg).is_ok());
         let mapping = cfg.to_mapping_config().unwrap();
-        assert_eq!(mapping.rules.len(), 1);
+        assert!(mapping.rules.is_empty());
+        assert_eq!(mapping.blocked_buttons, vec![Button::Cross]);
+    }
+
+    #[test]
+    fn turbo_block_allowed() {
+        let cfg = parse("[cross]\nremap = \"block\"\nturbo = true\n");
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn uppercase_section_rejected() {
+        assert!(validate(&parse("[Cross]\nremap = \"circle\"\n"))
+            .unwrap_err().contains("section names must be lowercase"));
     }
 
     #[test]

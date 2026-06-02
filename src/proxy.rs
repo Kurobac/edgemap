@@ -33,7 +33,6 @@ fn apply_target_to_state(state: &mut crate::report::GamepadState, target: &Targe
                 StickDir::RsRight => if on { state.right_stick_x = 255 } else { state.right_stick_x = 128 },
             }
         }
-        Target::Block => {}
     }
 }
 
@@ -348,9 +347,9 @@ impl Proxy {
                     *seq = seq.wrapping_add(1);
 
                     if let Some(mut state) = report::parse_input_report(&buf) {
-                        let snapshot = state.clone();
+                        let physical_snapshot = state.clone();
 
-                        // touchpad split mode and mapping apply under read lock
+                        // touchpad split mode under read lock
                         let m = self.mapping.read().unwrap();
                         if m.split_touchpad {
                             let pressed = buf[10] & 0x02 != 0;
@@ -368,14 +367,13 @@ impl Proxy {
                                 state.set_button(Button::Touchpad, false);
                             }
                         }
-
-                        m.apply(&mut state);
                         drop(m);
 
-                        // turbo: override targets based on hold-to-repeat
+                        // ========== L1: Physical Input Filtering ==========
+
+                        // L1: TURBO (reads physical_snapshot, writes state)
                         for t in &mut self.turbo_runtimes {
-                            let pressed = snapshot.button(t.src);
-                            // always suppress source button when turbo is active
+                            let pressed = physical_snapshot.button(t.src);
                             if t.active || pressed {
                                 state.set_button(t.src, false);
                                 match t.src {
@@ -413,15 +411,41 @@ impl Proxy {
                                     debug!("turbo {:?}: toggle → {}", t.src, t.phase);
                                 }
                             }
-                            // maintain target state every frame while active
                             if t.active {
                                 apply_target_to_state(&mut state, &t.dst, t.phase);
                             }
                         }
 
+                        // TODO(v0.0.10): clone post-turbo snapshot for combo detection
+                        // TODO(v0.0.10): combo suppression (clears consumed sources)
+
+                        // L1: BLOCK suppression
+                        let m = self.mapping.read().unwrap();
+                        for btn in &m.blocked_buttons {
+                            state.set_button(*btn, false);
+                            match *btn {
+                                Button::L2 => state.l2_analog = 0,
+                                Button::R2 => state.r2_analog = 0,
+                                _ => {}
+                            }
+                        }
+                        drop(m);
+
+                        // freeze L1 output
+                        let l1 = state.clone();
+
+                        // ========== L2: Virtual Input Generation ==========
+
+                        // L2: REMAP (reads L1, writes state)
+                        let m = self.mapping.read().unwrap();
+                        m.apply(&l1, &mut state);
+                        drop(m);
+
+                        // TODO(v0.0.10): macro detection + injection
+
+                        // ========== L3: Output ==========
                         report::apply_state_to_report(&mut buf, &state, *seq);
-                        // log button changes at debug level
-                        self.log_button_diff(&snapshot, &state);
+                        self.log_button_diff(&physical_snapshot, &state);
                     } else {
                         warn!("parse_input_report failed, raw forwarding (mapping lost for this frame)");
                         buf[7] = *seq;

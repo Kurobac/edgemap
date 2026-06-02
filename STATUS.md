@@ -1,4 +1,4 @@
-# dseuhid — Project Status (2026-06-01)
+# dseuhid — Project Status (2026-06-03)
 
 ## Overview
 
@@ -17,6 +17,8 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.0.5 | `40fcbe4` | Touchpad split mode + missing-button warnings |
 | v0.0.6 | `9aa83b8` | Hot reload (SIGHUP) + trigger analog transfer fix |
 | v0.0.7 | `6616c24` | Turbo (hold-to-repeat) + `none`→`block` rename + SIGHUP startup fix |
+| v0.0.8 | `83e2460` | Code cleanup: 0 warnings, 43 tests, AGENTS.md, StickDir naming |
+| v0.0.9 | `45f5dc7` | **Three-layer pipeline refactor** (L1 filter → L2 generate → L3 output) |
 
 ## Implemented Features
 
@@ -91,8 +93,6 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | `[l2] remap="l2" turbo=true` | Trigger self-map × turbo (analog conflict) |
 | `[l2] remap="r2" turbo=true` | Trigger swap × turbo (analog transfer conflict) |
 | `[l2] turbo=true` (no remap) | Implicit self-map = trigger self × turbo (same as above) |
-| `[cross] remap="block" turbo=true` | Block × turbo (no target to toggle) |
-| `[l2] remap="none/block" turbo=true` | Same as above + trigger analog leak risk |
 
 **Turbo edge cases allowed:**
 | Config | Behavior |
@@ -101,6 +101,20 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | `[l2] remap="cross" turbo=true` | Turbo toggle of digital cross (L2 analog cleared) |
 | `[cross] remap="l2" turbo=true` | Turbo toggle of digital L2 (analog=0, only digital) |
 | `[cross] turbo=true` (no remap) | Self-turbo: cross toggle itself |
+| `[cross] remap="block" turbo=true` | Turbo toggle consumed by block L1 filter (no visible output; toggle drives future combo) |
+
+### Pipeline Architecture (v0.0.9+)
+Three-layer per-frame processing model:
+```
+Layer 1 (physical filter): parse → touchpad → TURBO → BLOCK → freeze(L1)
+Layer 2 (virtual generate): REMAP (reads L1, writes state) [+ combo/macro slots]
+Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
+```
+- **Turbo** runs in L1 before freeze: reads physical snapshot, writes to state
+- **Block** (`remap="block"`) now in L1: clears digital + analog (L2/R2)
+- **Remap** (`MappingConfig::apply`) reads frozen L1, writes virtual output
+- Downstream layers never affect upstream; L2 components are parallel and isolated
+- Reserved slots in L2 for combo injection and macro (v0.0.10 planned)
 
 ### Device Detection
 - Scan `/dev/hidraw*`, ioctl HIDIOCGRAWINFO for VID/PID
@@ -110,12 +124,13 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - Multi-device: warn if more than one Edge detected
 - EIO cooldown: 2-second sleep after disconnect
 
-### Unit Tests (41 tests, all passing)
+### Unit Tests (44 tests, all passing)
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| `mapping.rs` | 13 | single/multi-key remap, cross-map, self-map, block, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation |
+| `mapping.rs` | 12 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, block-as-L1-suppression |
 | `report.rs` | 11 | byte position for all button groups (face/shoulder/system/Edge), all-button roundtrip, byte11 preservation, stick/trigger values, seq |
-| `config.rs` | 17 | valid sources/targets, trigger/stick/block targets, unknown validation, mic/edge exclusions, missing passthrough, default config parse |
+| `config.rs` | 20 | valid sources/targets, trigger/stick targets, unknown validation, mic/edge exclusions, missing passthrough, default config parse, block→blocked_buttons, turbo+block allowed, uppercase rejection |
+| `device.rs` | 1 | sysfs path resolution |
 
 ### Tools
 | Tool | Binary | Description |
@@ -159,7 +174,8 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 ## TODO
 
 ### High Priority
-- [ ] **Dead code cleanup**: 25 compiler warnings (unused functions, camel case, imports)
+- [x] **Dead code cleanup**: 25 compiler warnings (unused functions, camel case, imports) — done in v0.0.8
+- [x] **Pipeline refactor**: three-layer architecture (L1→L2→L3) — done in v0.0.9
 
 ### Medium Priority
 - [ ] **Combo**: modifier key combinations (predefined key→output sequence)
@@ -174,6 +190,10 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 ## Commit History
 
 ```
+45f5dc7 refactor: v0.0.9 three-layer pipeline (L1→L2→L3)             [v0.0.9]
+83e2460 chore: rename StickDir variants to UpperCamelCase             [v0.0.8]
+2ff84c9 chore: clean up compiler warnings (30→0), add AGENTS.md
+b413c6c update agents.md
 6616c24 fix: install SIGHUP handler at startup, not inside device loop  [v0.0.7]
 6acf69e docs: update STATUS.md for v0.0.6, turbo, hot reload
 9ad6dbb fix: rename none→block, fix self-turbo for missing remap

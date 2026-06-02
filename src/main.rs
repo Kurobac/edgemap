@@ -7,9 +7,29 @@ mod report;
 mod uhid;
 
 use log::{error, info, warn};
+use std::env;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+
+fn parse_config_path() -> String {
+    let args: Vec<String> = env::args().collect();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-c" | "--config-path" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: --config-path requires a path argument");
+                    std::process::exit(1);
+                }
+                return args[i + 1].clone();
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    "/etc/dseuhid/config.toml".into()
+}
 
 use device::find_dualsense;
 use proxy::Proxy;
@@ -17,6 +37,8 @@ use uhid::UhidDevice;
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    let config_path = parse_config_path();
 
     info!("DualSense Edge UHID proxy starting");
     proxy::setup_signal_handler();
@@ -94,19 +116,19 @@ fn main() {
 
         info!("Proxy starting");
 
-        let config_path = "/etc/dseuhid/config.toml";
-        if !Path::new(config_path).exists() {
+        let default_path = "/etc/dseuhid/config.toml";
+        if config_path == default_path && !Path::new(&config_path).exists() {
             if let Err(e) = std::fs::create_dir_all("/etc/dseuhid") {
                 warn!("Cannot create /etc/dseuhid: {e}");
             }
-            if let Err(e) = std::fs::write(config_path, config::default_content()) {
+            if let Err(e) = std::fs::write(&config_path, config::default_content()) {
                 warn!("Cannot create default config at {config_path}: {e}");
             } else {
                 info!("Created default config at {config_path}");
             }
         }
 
-        let mapping = Arc::new(RwLock::new(match config::Config::load(config_path) {
+        let mapping = Arc::new(RwLock::new(match config::Config::load(&config_path) {
             Ok(cfg) => {
                 if let Err(e) = config::validate(&cfg) {
                     error!("Config validation failed: {e}");
@@ -137,7 +159,7 @@ fn main() {
             }
         }));
 
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path);
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, &config_path);
         match proxy.run() {
             proxy::ExitReason::DeviceGone => {
                 proxy.skip_restore();

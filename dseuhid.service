@@ -1,0 +1,13 @@
+[Unit]
+Description=DualSense Edge UHID Proxy
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dseuhid
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

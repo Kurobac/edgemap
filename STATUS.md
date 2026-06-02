@@ -21,6 +21,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.0.9 | `45f5dc7` | **Three-layer pipeline refactor** (L1 filter → L2 generate → L3 output) |
 | v0.0.10 | `3394651` | **Combo** (modifier key combinations, L1 suppress + L2 inject) |
 | v0.0.11 | `5053099` | **Macro** (timed key sequences, hold & single modes, combo→macro) |
+| v0.1.0 | `[tag]` | **Feature complete**: turbo + combo + macro + remap, 3-layer pipeline, --config-path, systemd unit |
 
 ## Implemented Features
 
@@ -194,6 +195,12 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 | 29 | `turbo=true remap="combo"` turbo runtime not built | `build_turbo_configs()` `resolve_target("combo")` returned None | `3394651` |
 | 30 | Combo→macro reset every frame, stuck at 0ms | L2 macro detection (read L1, trigger suppressed by combo) deactivated macro; combo injection simultaneously activated it | `5053099` (MacroSource::Combo) |
 | 31 | Macro output only on first frame, then invisible | `tick()` only wrote button on press event; subsequent frames state was recreated from physical buf, no maintain | `5053099` (per-frame maintain) |
+| 32 | Inactive combo cleared physical button input | `combo_triggers` unconditionally pushed `(target, false)` every frame, L2 injection cleared buttons even when combo not triggered | `f1752a6` (only push on activation) |
+| 33 | Remap source-clear wiped combo-injected button | COMBO injection before REMAP → remap Phase 1 `state.set_button(src, false)` erased combo output | `3f095db` (swap COMBO after REMAP) |
+| 34 | Combo injection `push(false)` caused premature release | `push(&c.output, false)` on combo deactivation overrode multi-source buttons (remap/passthrough keeping button active) | `f1752a6` (combo never clears) |
+| 35 | Combo modifier L2/R2 analog leaked | L1 combo suppression cleared modifier digital bit but not `l2_analog`/`r2_analog` | `9bed9de` |
+| 36 | Macro mode silent fallthrough | `mode = "banana"` passed validation and defaulted to `Hold` silently | `9bed9de` (reject unknown mode) |
+| 37 | Macro name shadowed built-in target | `macros.l2_full` passed validation, `resolve_target` always matched `TriggerFull(L2)` first, macro unreachable | `9bed9de` (reject target conflicts) |
 
 ## Future Plans
 
@@ -229,9 +236,17 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 ## Commit History
 
 ```
-5053099 feat: macro (timed key sequences, hold & single modes)         [v0.0.11]
+f1752a6 fix: combo injection only pushes activation (never clears)      [v0.1.0+3]
+3f095db fix: swap COMBO after REMAP (prevent source-clear wipe)         [v0.1.0+2]
+9bed9de fix: combo_triggers state change + modifier analog + macro val. [v0.1.0+1]
+0464210 docs: future plans roadmap (FIFO, CLI, abandoned features)
+ea3675c docs: compact default config template (6 groups)
+4207d1c feat: --config-path flag + systemd unit                         [v0.1.0]
+3544281 docs: add bugfixes #28-31
+48d7c7f docs: update STATUS.md for v0.0.11
+5053099 feat: macro (timed key sequences, hold & single modes)          [v0.0.11]
 ec8d6ea perf: batch ACL restore via stdin (1 setfacl instead of N)
-3394651 fix: turbo+combo coexistence (build combos for turbo buttons)  [v0.0.10]
+3394651 fix: turbo+combo coexistence (build combos for turbo buttons)   [v0.0.10]
 cbfd298 feat: combo (L1 detect+suppress + L2 inject), 56 tests
 53461dd docs: update STATUS.md for v0.0.9
 45f5dc7 refactor: v0.0.9 three-layer pipeline (L1→L2→L3)             [v0.0.9]

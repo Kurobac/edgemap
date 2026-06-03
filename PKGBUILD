@@ -1,5 +1,5 @@
 pkgname=edgemap
-pkgver=0.5.0
+pkgver=0.5.1
 pkgrel=1
 pkgdesc="DualSense Edge UHID proxy — remap, combo, macro, profile auto-switching"
 arch=('x86_64')

@@ -49,13 +49,16 @@ fn edgemap_config_dir() -> PathBuf {
     PathBuf::from(".")
 }
 
-fn expand_tilde(path: &str) -> String {
-    if path.starts_with('~') {
+fn resolve_config_path(raw: &str, base_dir: &Path) -> String {
+    if raw.starts_with('/') {
+        return raw.to_string();
+    }
+    if raw.starts_with('~') {
         if let Ok(home) = env::var("HOME") {
-            return home + &path[1..];
+            return home + &raw[1..];
         }
     }
-    path.to_string()
+    base_dir.join(raw).to_string_lossy().into()
 }
 
 static DAEMON_RUNNING: AtomicBool = AtomicBool::new(true);
@@ -265,7 +268,7 @@ fn cmd_daemon(args: &[String]) -> ! {
     let mut i = 2;
     while i < args.len() {
         if args[i] == "--config" && i + 1 < args.len() {
-            edgemap_config_path = PathBuf::from(expand_tilde(&args[i + 1]));
+            edgemap_config_path = PathBuf::from(resolve_config_path(&args[i + 1], &edgemap_config_dir()));
             i += 1;
         } else {
             eprintln!("error: unknown argument '{}'", args[i]);
@@ -293,7 +296,7 @@ fn cmd_daemon(args: &[String]) -> ! {
             }
             log::info!("Created {}", default_remap_path.display());
         }
-        let edgemap_toml = format!("config = \"{}\"\n", default_remap_path.display());
+        let edgemap_toml = "config = \"default.toml\"\n".to_string();
         if let Err(e) = std::fs::write(&edgemap_config_path, edgemap_toml) {
             log::error!("cannot write {}: {e}", edgemap_config_path.display());
             std::process::exit(1);
@@ -315,7 +318,7 @@ fn cmd_daemon(args: &[String]) -> ! {
             std::process::exit(1);
         }
     };
-    let remap_path = expand_tilde(&edgemap_cfg.config);
+    let remap_path = resolve_config_path(&edgemap_cfg.config, dir);
 
     if !Path::new(&remap_path).exists() {
         log::error!("config not found: {remap_path}");

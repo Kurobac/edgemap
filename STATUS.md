@@ -170,45 +170,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 
 ## Bugfixes (chronological)
 
-| # | Bug | Root Cause | Commit |
-|---|-----|-----------|--------|
-| 1 | ACL lost after exit | `setfacl -b` removed ACL, restore didn't re-apply | `18e826e` + `b5ad76a` |
-| 2 | WebHID/CP2077 SET_REPORT timeout | UHID didn't reply SET_REPORT_REPLY → kernel timeout EIO → Chrome abandoned device | `450cc4d` |
-| 3 | All output reports silently dropped | `rtype == USB_OUTPUT_REPORT_ID` always false (rtype is UHID type, not HID report ID) | `56c6528` |
-| 4 | SET_REPORT replied OK but data not forwarded | `send_set_report_reply(id,0)` but data never written to real hardware | `373efce` |
-| 5 | Hotplug: EIO → exit instead of reconnect | No outer loop | `fb39885` |
-| 6 | Ctrl+C during reconnect wait ignored | Inner wait loop didn't check RUNNING flag | `fb39885` |
-| 7 | restore_permissions panic on DeviceGone | Node already removed, path doesn't exist | `fb39885` skip_restore + exists check |
-| 8 | Remap broke FN/back buttons | `parse_input_report` / `apply_state_to_report` read/write byte 11 (should be byte 10) | `27ae79a` |
-| 9 | FN/back buttons left/right swapped | Byte 10 high nibble bit→label mapping was wrong: 0x10=FnLeft not RightPaddle, 0x40=LeftPaddle not LeftFn | `6e3ceec` |
-| 10 | Cross-mapping (A→B + B→A) random result | `apply()` used same `state` for reads and writes → rule1 output contaminated rule2 input | `86bcf92` (snapshots clone) |
-| 11 | Multi-key simultaneous missing outputs | Deferred button targets set immediately within rule loop → later rule.clear() undid them | `86bcf92` (two-phase apply) |
-| 12 | PS/Mic button leak | `apply_state_to_report` preserved `raw[10] & 0x0F` → low nibble from previous frame leaked | `6e3ceec` |
-| 13 | Trigger analog leak | `apply()` cleared L2/R2 digital bit but not `l2_analog`/`r2_analog` | `6e3ceec` |
-| 14 | GET_REPORT/SET_REPORT/UHID Output spam at debug | Default `debug!` level flooded logs | `bc6defa` → `trace!` |
-| 15 | Device found log duplicated | Both `find_dualsense()` and `main.rs` logged the same info | `bc6defa` |
-| 16 | UHID virtual device matched by find_dualsense | No physical/UHID distinction → could proxy own virtual device recursively | `42bf5ca` |
-| 17 | Touchpad coordinate wrong (x=3800 out of range) | Byte offset: `touchdata` starts at byte 33, not 34; nibble: low nibble = x_hi, not high nibble | `81b330d` |
-| 18 | Split mode allowed without both partitions | Validation missing | `81b330d` |
-| 19 | Split mode allowed with touchpad section missing | `contains_key("touchpad")` guard was too specific | `48739ae` |
-| 20 | Trigger self-map lost analog | `apply()` unconditionally cleared L2/R2 analog on all targets | `8ad808b` |
-| 21 | Trigger swap (L2→R2) lost analog | Self-map fix only handled self, not cross-trigger | `9aa83b8` |
-| 22 | Turbo source button leaked through | `to_mapping_config()` skips turbo buttons → no RemapRule to suppress source | `ef20805` |
-| 23 | Turbo target not maintained between frames | Only applied on toggle event, not every frame | `ef20805` |
-| 24 | Turbo on L2/R2 source leaked analog | Source suppression only cleared digital bit, not analog | `ef20805` |
-| 25 | `remap="none"` semantics confused with missing remap | `unwrap_or("none")` treated missing remap as explicit block | `9ad6dbb` |
-| 26 | `[cross] turbo=true` (no remap) silently skipped | `build_turbo_configs()` skipped `None` remap instead of self-targeting | `9ad6dbb` |
-| 27 | SIGHUP kills process when device not connected | `setup_reload_handler()` registered inside device loop; default handler terminated process | `6616c24` |
-| 28 | `turbo=true remap="combo"` combo configs skipped | `to_mapping_config()` turbo `continue` jumped over combo config building | `3394651` |
-| 29 | `turbo=true remap="combo"` turbo runtime not built | `build_turbo_configs()` `resolve_target("combo")` returned None | `3394651` |
-| 30 | Combo→macro reset every frame, stuck at 0ms | L2 macro detection (read L1, trigger suppressed by combo) deactivated macro; combo injection simultaneously activated it | `5053099` (MacroSource::Combo) |
-| 31 | Macro output only on first frame, then invisible | `tick()` only wrote button on press event; subsequent frames state was recreated from physical buf, no maintain | `5053099` (per-frame maintain) |
-| 32 | Inactive combo cleared physical button input | `combo_triggers` unconditionally pushed `(target, false)` every frame, L2 injection cleared buttons even when combo not triggered | `f1752a6` (only push on activation) |
-| 33 | Remap source-clear wiped combo-injected button | COMBO injection before REMAP → remap Phase 1 `state.set_button(src, false)` erased combo output | `3f095db` (swap COMBO after REMAP) |
-| 34 | Combo injection `push(false)` caused premature release | `push(&c.output, false)` on combo deactivation overrode multi-source buttons (remap/passthrough keeping button active) | `f1752a6` (combo never clears) |
-| 35 | Combo modifier L2/R2 analog leaked | L1 combo suppression cleared modifier digital bit but not `l2_analog`/`r2_analog` | `9bed9de` |
-| 36 | Macro mode silent fallthrough | `mode = "banana"` passed validation and defaulted to `Hold` silently | `9bed9de` (reject unknown mode) |
-| 37 | Macro name shadowed built-in target | `macros.l2_full` passed validation, `resolve_target` always matched `TriggerFull(L2)` first, macro unreachable | `9bed9de` (reject target conflicts) |
+See [BUGFIX.md](./BUGFIX.md) for the complete list — 49 entries covering v0.0.1 through v0.4.2, with root causes and fixes.
 
 ## Future Plans
 

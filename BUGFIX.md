@@ -1,13 +1,158 @@
 # BUGFIX.md — edgemap
 
-## #1–#37: See STATUS.md `## Bugfixes` section
+## #1–#37: v0.0.1–v0.1.0 (UHID core, remap, turbo, combo, macro)
 
-These cover v0.0.1 through v0.1.0 — UHID proxy core, remap, turbo, combo, macro, config validation.
-Link: [STATUS.md#bugfixes-chronological](./STATUS.md#bugfixes-chronological)
+### #1 — ACL lost after exit
+**Root cause:** `setfacl -b` removed ACL, restore didn't re-apply.
+**Fix:** Save ACL before hiding, restore on exit. (`18e826e` + `b5ad76a`)
+
+### #2 — WebHID/CP2077 SET_REPORT timeout
+**Root cause:** UHID didn't reply SET_REPORT_REPLY → kernel timeout EIO → Chrome abandoned device.
+**Fix:** Reply `UHID_SET_REPORT_REPLY` to every SET_REPORT. (`450cc4d`)
+
+### #3 — All output reports silently dropped
+**Root cause:** `rtype == USB_OUTPUT_REPORT_ID` always false (rtype is UHID type, not HID report ID).
+**Fix:** Check actual report type correctly. (`56c6528`)
+
+### #4 — SET_REPORT replied OK but data not forwarded
+**Root cause:** `send_set_report_reply(id, 0)` but data never written to real hardware.
+**Fix:** Forward SET_REPORT data to physical device via hidraw. (`373efce`)
+
+### #5 — Hotplug: EIO → exit instead of reconnect
+**Root cause:** No outer loop.
+**Fix:** Wrap device detection + proxy in outer reconnect loop. (`fb39885`)
+
+### #6 — Ctrl+C during reconnect wait ignored
+**Root cause:** Inner wait loop didn't check RUNNING flag.
+**Fix:** Check RUNNING in all wait loops. (`fb39885`)
+
+### #7 — restore_permissions panic on DeviceGone
+**Root cause:** Node already removed, path doesn't exist.
+**Fix:** `skip_restore()` + exists check before restore. (`fb39885`)
+
+### #8 — Remap broke FN/back buttons
+**Root cause:** `parse_input_report` / `apply_state_to_report` read/wrote byte 11 (should be byte 10).
+**Fix:** Correct byte position to byte 10. (`27ae79a`)
+
+### #9 — FN/back buttons left/right swapped
+**Root cause:** Byte 10 high nibble bit→label mapping was wrong: 0x10=FnLeft not RightPaddle, 0x40=LeftPaddle not LeftFn.
+**Fix:** Correct mapping: FnLeft=0x10, FnRight=0x20, LeftPaddle=0x40, RightPaddle=0x80. (`6e3ceec`)
+
+### #10 — Cross-mapping (A→B + B→A) random result
+**Root cause:** `apply()` used same `state` for reads and writes → rule1 output contaminated rule2 input.
+**Fix:** Clone state as snapshot before rules evaluate (snapshot isolation). (`86bcf92`)
+
+### #11 — Multi-key simultaneous missing outputs
+**Root cause:** Deferred button targets set immediately within rule loop → later `rule.clear()` undid them.
+**Fix:** Two-phase apply: Phase 1 clears sources + collects targets, Phase 2 sets all atomically. (`86bcf92`)
+
+### #12 — PS/Mic button leak
+**Root cause:** `apply_state_to_report` preserved `raw[10] & 0x0F` → low nibble from previous frame leaked.
+**Fix:** Zero high nibble in byte 10 before writing Edge button bits. (`6e3ceec`)
+
+### #13 — Trigger analog leak
+**Root cause:** `apply()` cleared L2/R2 digital bit but not `l2_analog`/`r2_analog`.
+**Fix:** Clear analog values when clearing trigger source button. (`6e3ceec`)
+
+### #14 — GET_REPORT/SET_REPORT/UHID Output spam at debug
+**Root cause:** Default `debug!` level flooded logs.
+**Fix:** Demote to `trace!` level. (`bc6defa`)
+
+### #15 — Device found log duplicated
+**Root cause:** Both `find_dualsense()` and `main.rs` logged the same info.
+**Fix:** Remove duplicate log. (`bc6defa`)
+
+### #16 — UHID virtual device matched by find_dualsense
+**Root cause:** No physical/UHID distinction → could proxy own virtual device recursively.
+**Fix:** Check `/sys/class/hidraw/N/device/uevent` for `DRIVER=uhid`. (`42bf5ca`)
+
+### #17 — Touchpad coordinate wrong (x=3800 out of range)
+**Root cause:** Byte offset: `touchdata` starts at byte 33, not 34; nibble: low nibble = x_hi, not high nibble.
+**Fix:** Correct byte offset and nibble extraction. (`81b330d`)
+
+### #18 — Split mode allowed without both partitions
+**Root cause:** Validation missing.
+**Fix:** Require both `touchpad_left` and `touchpad_right` sections when split mode enabled. (`81b330d`)
+
+### #19 — Split mode allowed with touchpad section missing
+**Root cause:** `contains_key("touchpad")` guard was too specific.
+**Fix:** Accept split mode without explicit touchpad section. (`48739ae`)
+
+### #20 — Trigger self-map lost analog
+**Root cause:** `apply()` unconditionally cleared L2/R2 analog on all targets.
+**Fix:** Preserve analog on self-map (L2→L2, R2→R2). (`8ad808b`)
+
+### #21 — Trigger swap (L2→R2) lost analog
+**Root cause:** Self-map fix only handled self, not cross-trigger.
+**Fix:** Transfer analog values on trigger swap. (`9aa83b8`)
+
+### #22 — Turbo source button leaked through
+**Root cause:** `to_mapping_config()` skips turbo buttons → no RemapRule to suppress source.
+**Fix:** L1 turbo suppresses source button directly. (`ef20805`)
+
+### #23 — Turbo target not maintained between frames
+**Root cause:** Only applied on toggle event, not every frame.
+**Fix:** Per-frame maintain: `if step.pressed { state.set_button(..., true); }` every frame. (`ef20805`)
+
+### #24 — Turbo on L2/R2 source leaked analog
+**Root cause:** Source suppression only cleared digital bit, not analog.
+**Fix:** Clear `l2_analog`/`r2_analog` when turbo suppresses L2/R2 source. (`ef20805`)
+
+### #25 — `remap="none"` semantics confused with missing remap
+**Root cause:** `unwrap_or("none")` treated missing remap as explicit block.
+**Fix:** Rename `none` → `block`. Missing remap = passthrough (no suppression). (`9ad6dbb`)
+
+### #26 — `[cross] turbo=true` (no remap) silently skipped
+**Root cause:** `build_turbo_configs()` skipped `None` remap instead of self-targeting.
+**Fix:** Self-target when remap is missing and turbo is enabled. (`9ad6dbb`)
+
+### #27 — SIGHUP kills process when device not connected
+**Root cause:** `setup_reload_handler()` registered inside device loop; default handler terminated process.
+**Fix:** Install SIGHUP handler at startup, not inside the device loop. (`6616c24`)
+
+### #28 — `turbo=true remap="combo"` combo configs skipped
+**Root cause:** `to_mapping_config()` turbo `continue` jumped over combo config building.
+**Fix:** Stop skipping combo config build for turbo buttons. (`3394651`)
+
+### #29 — `turbo=true remap="combo"` turbo runtime not built
+**Root cause:** `build_turbo_configs()` `resolve_target("combo")` returned None.
+**Fix:** Allow combo target in turbo resolve. (`3394651`)
+
+### #30 — Combo→macro reset every frame, stuck at 0ms
+**Root cause:** L2 macro detection (read L1, trigger suppressed by combo) deactivated macro; combo injection simultaneously activated it.
+**Fix:** Introduce `MacroSource` enum (Physical vs Combo). Combo manages its own macros exclusively. (`5053099`)
+
+### #31 — Macro output only on first frame, then invisible
+**Root cause:** `tick()` only wrote button on press event; subsequent frames state was recreated from physical buf, no maintain.
+**Fix:** Per-frame maintain (same pattern as turbo bugfix #23). (`5053099`)
+
+### #32 — Inactive combo cleared physical button input
+**Root cause:** `combo_triggers` unconditionally pushed `(target, false)` every frame, L2 injection cleared buttons even when combo not triggered.
+**Fix:** Only push on activation, never push deactivation. (`f1752a6`)
+
+### #33 — Remap source-clear wiped combo-injected button
+**Root cause:** COMBO injection before REMAP → remap Phase 1 `state.set_button(src, false)` erased combo output.
+**Fix:** Swap order: COMBO injection after REMAP. (`3f095db`)
+
+### #34 — Combo injection `push(false)` caused premature release
+**Root cause:** `push(&c.output, false)` on combo deactivation overrode multi-source buttons.
+**Fix:** Combo injection never clears — only pushes activation, not deactivation. State re-parse handles cleanup naturally. (`f1752a6`)
+
+### #35 — Combo modifier L2/R2 analog leaked
+**Root cause:** L1 combo suppression cleared modifier digital bit but not `l2_analog`/`r2_analog`.
+**Fix:** Clear analog for L2/R2 combo modifiers. (`9bed9de`)
+
+### #36 — Macro mode silent fallthrough
+**Root cause:** `mode = "banana"` passed validation and defaulted to `Hold` silently.
+**Fix:** Reject unknown mode values. (`9bed9de`)
+
+### #37 — Macro name shadowed built-in target
+**Root cause:** `macros.l2_full` passed validation, `resolve_target` always matched `TriggerFull(L2)` first, macro unreachable.
+**Fix:** Reject macro names that conflict with built-in target names. (`9bed9de`)
 
 ---
 
-## New entries (v0.2.0–v0.4.0)
+## #38–#49: v0.2.0–v0.4.0 (edgemap daemon, packaging)
 
 ### #38 — mkfifo/chmod `ENAMETOOLONG` / garbage filenames
 **Root cause:** `&str::as_ptr()` is not null-terminated. `libc::mkfifo()` and `libc::chmod()` scan memory past the string until hitting a random zero byte, producing either `ENAMETOOLONG` or files with garbage-suffixed names.

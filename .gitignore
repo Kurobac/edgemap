@@ -1,4 +1,5 @@
 /target
+*.kate-swp
 .SRCINFO
 *.log
 *.tar.zst

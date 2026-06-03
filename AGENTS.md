@@ -38,7 +38,7 @@ No lint, typecheck, or CI config exists.
 | `src/descriptor.rs` | Fixed 389-byte HID report descriptor |
 | `src/monitor.rs` | `dseuhid monitor` — raw HID button + analog stick debug (threshold 5, 80ms throttle, reads physical hidraw directly) |
 | `src/touchdemo.rs` | `dseuhid touchdemo` — touchpad coordinate debug + zone detection |
-| `src/bin/edgemap.rs` | User-side CLI (`validate`, `create-config`, `reload`, `switch-config`), no root, communicates via FIFO |
+| `src/bin/edgemap.rs` | User-side CLI (`validate`, `create-config`, `reload`, `switch-config`), no root. Daemon mode (`d`/`daemon`): auto-create `~/.config/edgemap/` configs, profile auto-switch by process matching, mtime-based hot reload, `notify-send` desktop notifications. Communicates via FIFO. |
 
 ## Three-layer pipeline (L1 → L2 → L3)
 
@@ -65,6 +65,7 @@ Order inside `handle_hidraw_input()`:
 - **Config**: no default path. `-c`/`--config-path` optional — if omitted, starts in passthrough mode. edgemap is the intended way to manage config.
 - **Hot reload**: `kill -HUP <pid>` or `echo reload > /run/dseuhid/control` — re-reads config, rebuilds all runtimes.
 - **FIFO control**: `/run/dseuhid/control` (0666), PID at `/run/dseuhid/pid`. Commands: `reload`, `switch-config <path>`. Non-root users can write to it. FIFO fd is dup'd for safe reconnects.
+- **edgemap daemon**: auto-creates `~/.config/edgemap/edgemap.toml` + `default.toml` on first run. Profiles in `[profiles.*]` sections with `match_process` (comm exact) and/or `match_cmdline` (substring), first match in declaration order wins. Mtime-based hot reload when edgemap.toml changes. Sends `notify-send` on config switch.
 - **Byte 10 high nibble** = DSE Edge buttons: FnLeft=0x10, FnRight=0x20, LeftPaddle=0x40, RightPaddle=0x80. Byte 11 low nibble must be preserved, high nibble zeroed.
 - **Two-phase apply** (`mapping.rs`): Phase 1 clears source + collects targets, Phase 2 sets all targets atomically. Prevents cross-map (A→B, B→A) collisions.
 - **Snapshot isolation**: `apply()` clones state before rules evaluate — rules read snapshot, write to live state. Prevents rule ordering artifacts.
@@ -84,6 +85,7 @@ Order inside `handle_hidraw_input()`:
 - Macro format: `[button] remap="macro_name"` + `[macros.macro_name]` with `sequence = [...]` and optional `mode = "hold"`/`"single"`. Combo output can be a macro name (`Target::Macro(String)`, `MacroSource::Combo`).
 - Macro names must not shadow built-in targets (e.g. `l2_full` conflicts with `TriggerFull(L2)`).
 - Known HID limitation: d-pad hat switch cannot encode 3+ simultaneous directions.
+- edgemap profile format: `[profiles.<name>]` with `config = "<path>"` (relative to `~/.config/edgemap/`, `~`, or absolute) + `match_process` / `match_cmdline` (case-insensitive, both optional; AND logic if both set). Profiles matched in TOML declaration order.
 
 ## Migration reference
 

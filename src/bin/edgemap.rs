@@ -330,6 +330,96 @@ fn cmd_switch_config(args: &[String]) -> ! {
     send_fifo_command(cmd.as_bytes())
 }
 
+struct DaemonState {
+    base_config: String,
+    base_config_raw: String,
+    profiles: Vec<(String, ProfileConfig)>,
+    valid_profiles: Vec<(String, String)>,
+    dir: PathBuf,
+}
+
+fn extract_profile_order(raw: &str) -> Vec<String> {
+    raw.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            trimmed.strip_prefix("[profiles.")
+                .and_then(|rest| rest.strip_suffix(']'))
+                .map(|s| s.to_string())
+        })
+        .collect()
+}
+
+fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let root: toml::Value = toml::from_str(&content)
+        .map_err(|e| format!("cannot parse {}: {e}", path.display()))?;
+    let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+
+    let base_config_raw = root.get("config")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default.toml")
+        .to_string();
+    let base_config = resolve_config_path(&base_config_raw, &dir);
+
+    if !Path::new(&base_config).exists() {
+        return Err(format!("config not found: {base_config}\n(specified in {})", path.display()));
+    }
+    let base = config::Config::load(&base_config).map_err(|e| e)?;
+    config::validate(&base).map_err(|e| e)?;
+
+    let mut profiles: Vec<(String, ProfileConfig)> = Vec::new();
+    if let Some(t) = root.get("profiles").and_then(|v| v.as_table()) {
+        for (name, val) in t.iter() {
+            match val.clone().try_into::<ProfileConfig>() {
+                Ok(cfg) => profiles.push((name.clone(), cfg)),
+                Err(e) => log::warn!("invalid profile '{name}': {e}, skipping"),
+            }
+        }
+    }
+
+    // sort by declaration order in the TOML file
+    let decl_order = extract_profile_order(&content);
+    profiles.sort_by_key(|(name, _)| {
+        decl_order.iter().position(|n| n == name).unwrap_or(usize::MAX)
+    });
+
+    let mut valid_profiles: Vec<(String, String)> = Vec::new();
+    for (name, pcfg) in &profiles {
+        let p_path = resolve_config_path(&pcfg.config, &dir);
+        if !Path::new(&p_path).exists() {
+            log::warn!("profile '{name}': config not found at {p_path}, skipping");
+            continue;
+        }
+        match config::Config::load(&p_path) {
+            Err(e) => { log::warn!("profile '{name}': {e}, skipping"); continue; }
+            Ok(cfg) => {
+                if let Err(e) = config::validate(&cfg) {
+                    log::warn!("profile '{name}': {e}, skipping");
+                    continue;
+                }
+            }
+        }
+        if pcfg.match_process.is_empty() && pcfg.match_cmdline.is_empty() {
+            log::warn!("profile '{name}': no match_process or match_cmdline, skipping");
+            continue;
+        }
+        valid_profiles.push((name.clone(), p_path));
+    }
+
+    if !profiles.is_empty() {
+        log::info!("{} profile(s) loaded, {} valid", profiles.len(), valid_profiles.len());
+    }
+
+    Ok(DaemonState {
+        base_config,
+        base_config_raw,
+        profiles,
+        valid_profiles,
+        dir,
+    })
+}
+
 fn cmd_daemon(args: &[String]) -> ! {
     let mut edgemap_config_path = edgemap_config_dir().join("edgemap.toml");
 
@@ -373,78 +463,18 @@ fn cmd_daemon(args: &[String]) -> ! {
         log::info!("Created {}", edgemap_config_path.display());
     }
 
-    let edgemap_toml_content = match std::fs::read_to_string(&edgemap_config_path) {
+    let config_path = edgemap_config_path.clone();
+    let mut state = match load_edgemap_config(&config_path) {
         Ok(s) => s,
         Err(e) => {
-            log::error!("cannot read {}: {e}", edgemap_config_path.display());
+            log::error!("{e}");
             std::process::exit(1);
         }
     };
 
-    let root: toml::Value = match toml::from_str(&edgemap_toml_content) {
-        Ok(v) => v,
-        Err(e) => {
-            log::error!("cannot parse {}: {e}", edgemap_config_path.display());
-            std::process::exit(1);
-        }
-    };
-
-    let base_config_raw = root.get("config")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default.toml");
-    let base_config = resolve_config_path(base_config_raw, dir);
-
-    let mut profiles: Vec<(String, ProfileConfig)> = Vec::new();
-    if let Some(t) = root.get("profiles").and_then(|v| v.as_table()) {
-        for (name, val) in t.iter() {
-            match val.clone().try_into::<ProfileConfig>() {
-                Ok(cfg) => profiles.push((name.clone(), cfg)),
-                Err(e) => log::warn!("invalid profile '{name}': {e}, skipping"),
-            }
-        }
-    }
-
-    // validate base config
-    if !Path::new(&base_config).exists() {
-        log::error!("config not found: {base_config}");
-        log::error!("(specified in {})", edgemap_config_path.display());
-        std::process::exit(1);
-    }
-    let base_cfg = match config::Config::load(&base_config) {
-        Ok(c) => c,
-        Err(e) => { log::error!("{e}"); std::process::exit(1); }
-    };
-    if let Err(e) = config::validate(&base_cfg) {
-        log::error!("{e}");
-        std::process::exit(1);
-    }
-
-    // validate and expand profile config paths, warn on invalid
-    let mut valid_profiles: Vec<(String, String)> = Vec::new();
-    for (name, pcfg) in &profiles {
-        let path = resolve_config_path(&pcfg.config, dir);
-        if !Path::new(&path).exists() {
-            log::warn!("profile '{name}': config not found at {path}, skipping");
-            continue;
-        }
-        match config::Config::load(&path) {
-            Err(e) => { log::warn!("profile '{name}': {e}, skipping"); continue; }
-            Ok(cfg) => {
-                if let Err(e) = config::validate(&cfg) {
-                    log::warn!("profile '{name}': {e}, skipping");
-                    continue;
-                }
-            }
-        }
-        if pcfg.match_process.is_empty() && pcfg.match_cmdline.is_empty() {
-            log::warn!("profile '{name}': no match_process or match_cmdline, skipping");
-            continue;
-        }
-        valid_profiles.push((name.clone(), path));
-    }
-    if !profiles.is_empty() {
-        log::info!("{} profile(s) loaded, {} valid", profiles.len(), valid_profiles.len());
-    }
+    let mut last_mtime = std::fs::metadata(&config_path)
+        .and_then(|m| m.modified())
+        .ok();
 
     // signal handlers
     unsafe {
@@ -455,7 +485,7 @@ fn cmd_daemon(args: &[String]) -> ! {
     }
 
     log::info!("daemon started");
-    log::info!("config: {}", edgemap_config_path.display());
+    log::info!("config: {}", config_path.display());
 
     let alive = check_dseuhid_alive();
     if !alive {
@@ -465,6 +495,22 @@ fn cmd_daemon(args: &[String]) -> ! {
     let mut current_config = String::new();
 
     while DAEMON_RUNNING.load(Ordering::SeqCst) {
+        // hot reload on mtime change
+        if let Ok(meta) = std::fs::metadata(&config_path) {
+            if let Ok(mtime) = meta.modified() {
+                if last_mtime.map_or(true, |t| mtime != t) {
+                    match load_edgemap_config(&config_path) {
+                        Ok(s) => {
+                            state = s;
+                            log::info!("edgemap config reloaded");
+                        }
+                        Err(e) => log::error!("reload failed, keeping previous config: {e}"),
+                    }
+                    last_mtime = Some(mtime);
+                }
+            }
+        }
+
         let alive = check_dseuhid_alive();
         if !alive {
             if !current_config.is_empty() {
@@ -475,18 +521,18 @@ fn cmd_daemon(args: &[String]) -> ! {
             continue;
         }
 
-        let wanted = if valid_profiles.is_empty() {
-            base_config.clone()
+        let wanted = if state.valid_profiles.is_empty() {
+            state.base_config.clone()
         } else {
-            find_matching_profile(&profiles, dir, base_config_raw)
-                .unwrap_or(base_config.clone())
+            find_matching_profile(&state.profiles, &state.dir, &state.base_config_raw)
+                .unwrap_or(state.base_config.clone())
         };
 
         if wanted != current_config {
             let cmd = format!("switch-config {}", wanted);
             if try_send_fifo_command(cmd.as_bytes()) {
-                let label = profiles.iter()
-                    .find(|(_, pc)| resolve_config_path(&pc.config, dir) == wanted)
+                let label = state.profiles.iter()
+                    .find(|(_, pc)| resolve_config_path(&pc.config, &state.dir) == wanted)
                     .map(|(name, _)| format!("profile '{name}'"))
                     .unwrap_or_else(|| "default config".to_string());
                 log::info!("applied {label}: {wanted}");

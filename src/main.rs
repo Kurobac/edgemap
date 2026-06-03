@@ -154,6 +154,16 @@ fn main() {
         report_desc.len()
     );
 
+    // check for existing instance
+    if let Ok(pid_str) = std::fs::read_to_string(PID_PATH) {
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            if unsafe { libc::kill(pid, 0) } == 0 {
+                error!("another dseuhid instance is running (PID {pid})");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let fifo_fd = setup_fifo();
 
     'outer: loop {

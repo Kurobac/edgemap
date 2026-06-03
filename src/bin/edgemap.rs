@@ -53,6 +53,18 @@ fn edgemap_config_dir() -> PathBuf {
     PathBuf::from(".")
 }
 
+fn edgemap_state_dir() -> PathBuf {
+    if let Ok(xdg) = env::var("XDG_STATE_HOME") {
+        if !xdg.is_empty() {
+            return PathBuf::from(xdg).join("edgemap");
+        }
+    }
+    if let Ok(home) = env::var("HOME") {
+        return PathBuf::from(home).join(".local").join("state").join("edgemap");
+    }
+    PathBuf::from(".")
+}
+
 fn resolve_config_path(raw: &str, base_dir: &Path) -> String {
     if raw.starts_with('/') {
         return raw.to_string();
@@ -439,6 +451,16 @@ fn cmd_daemon(args: &[String]) -> ! {
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    let pid_path = edgemap_state_dir().join("edgemap.pid");
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            if unsafe { libc::kill(pid, 0) } == 0 {
+                log::error!("another edgemap daemon is already running (PID {pid})");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let dir = edgemap_config_path.parent().unwrap_or(Path::new("."));
 
     if !edgemap_config_path.exists() {
@@ -486,6 +508,10 @@ fn cmd_daemon(args: &[String]) -> ! {
 
     log::info!("daemon started");
     log::info!("config: {}", config_path.display());
+    if let Some(parent) = pid_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&pid_path, std::process::id().to_string()).ok();
 
     let alive = check_dseuhid_alive();
     if !alive {
@@ -544,6 +570,7 @@ fn cmd_daemon(args: &[String]) -> ! {
     }
 
     log::info!("daemon stopped");
+    let _ = std::fs::remove_file(&pid_path);
     std::process::exit(0);
 }
 

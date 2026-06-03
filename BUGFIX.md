@@ -63,3 +63,8 @@ Link: [STATUS.md#bugfixes-chronological](./STATUS.md#bugfixes-chronological)
 **Root cause:** Neither dseuhid nor edgemap checked for existing instances before starting. Running a second `sudo dseuhid` would remove the first's FIFO and interfere with device discovery.
 
 **Fix:** Singleton detection via PID file + `kill(pid, 0)` liveness check. dseuhid uses `/run/dseuhid/pid` (FHS), edgemap uses `~/.local/state/edgemap/edgemap.pid` (XDG_STATE_HOME). PID cleaned on graceful exit. (`23863e5`)
+
+### #49 — Unvalidated profile path sent to dseuhid causing load failure
+**Root cause:** `find_matching_profile()` used `state.profiles` (all declared profiles) instead of only validated ones. A profile whose `config` file doesn't exist or failed validation could still match and send an invalid `switch-config` path to dseuhid.
+
+**Fix:** Filter `state.profiles` by `state.valid_profiles` before passing to `find_matching_profile()`. Only profiles with existing, valid config files participate in matching.

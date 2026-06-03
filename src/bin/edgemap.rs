@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 const FIFO_PATH: &str = "/run/dseuhid/control";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ProfileConfig {
     config: String,
     #[serde(default)]
@@ -550,7 +550,11 @@ fn cmd_daemon(args: &[String]) -> ! {
         let wanted = if state.valid_profiles.is_empty() {
             state.base_config.clone()
         } else {
-            find_matching_profile(&state.profiles, &state.dir, &state.base_config_raw)
+            let valid: Vec<_> = state.profiles.iter()
+                .filter(|(name, _)| state.valid_profiles.iter().any(|(vn, _)| vn == name))
+                .cloned()
+                .collect();
+            find_matching_profile(&valid, &state.dir, &state.base_config_raw)
                 .unwrap_or(state.base_config.clone())
         };
 
@@ -561,6 +565,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                     .find(|(_, pc)| resolve_config_path(&pc.config, &state.dir) == wanted)
                     .map(|(name, _)| format!("profile '{name}'"))
                     .unwrap_or_else(|| "default config".to_string());
+                log::info!("dseuhid connected");
                 log::info!("applied {label}: {wanted}");
                 send_notification("edgemap", &format!("Switched to {label}"));
                 current_config = wanted;

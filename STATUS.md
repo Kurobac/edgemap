@@ -25,6 +25,8 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.2.0 | `552def2` | **edgemap CLI**: validate, create-config, reload, switch-config; FIFO + subcommand refactor; bugfixes #32-#37 |
 | v0.3.0 | `bb9ccda` | **edgemap daemon**: auto-create config, alive-detect dseuhid, auto-inject remap on connect |
 | v0.4.0 | `e404df1` | **edgemap profile auto-switch**: process matching (comm/cmdline), mtime hot reload, notify-send |
+| v0.4.1 | `23863e5` | **singleton detection**: PID file + kill(0) for dseuhid + edgemap, BUGFIX.md |
+| v0.4.2 | `[tag]` | **PKGBUILD + GPLv3**: packaging, user service, install scripts, bugfixes #48-#49 |
 
 ## Implemented Features
 
@@ -250,6 +252,9 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 ## Commit History
 
 ```
+c7dce37 docs: add singleton detection (#48) to BUGFIX.md                    [v0.4.1]
+23863e5 feat: singleton instance detection (dseuhid + edgemap)
+b20db57 docs: raise GUI priority to planned, add Future plans to AGENTS.md
 e404df1 feat: mtime-based hot reload, notify-send, profile order fix      [v0.4.0]
 1c4f8ec feat: auto-switch profiles by matching running processes
 87ebd24 refactor: resolve_config_path supports relative paths

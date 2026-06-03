@@ -17,6 +17,12 @@ cargo run --bin edgemap -- help  # edgemap CLI help
 
 No lint, typecheck, or CI config exists.
 
+Systemd units: `dseuhid.service` (system), `edgemap.service` (user).
+
+```bash
+makepkg -si              # build + install via PKGBUILD
+```
+
 ## important notice
 - 每次实现一小部分，保证可测试性。复杂逻辑前先写demo确认可行性。
 - 禁止擅自commit，commit前必须经过用户明确同意。更不要擅自tag！

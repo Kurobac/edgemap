@@ -6,7 +6,7 @@ Single-binary UHID proxy for DualSense Edge (PID 0x0DF2, USB only). Replaces ker
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 68 unit tests, all passing
+cargo test                # 135 tests total (68 dseuhid + 67 edgemap shared-module imports)
 cargo run                 # daemon, needs root (/dev/uhid + /dev/hidraw)
 cargo run -- monitor      # raw HID button + stick debug (no root needed)
 cargo run -- touchdemo    # touchpad coordinate debug (no root needed)

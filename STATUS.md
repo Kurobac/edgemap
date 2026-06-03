@@ -146,7 +146,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - Multi-device: warn if more than one Edge detected
 - EIO cooldown: 2-second sleep after disconnect
 
-### Unit Tests (66 tests, all passing)
+### Unit Tests (135 total: 68 dseuhid + 67 edgemap shared-module imports, all passing)
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `mapping.rs` | 12 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation |
@@ -162,6 +162,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 | `dseuhid touchdemo` | `src/touchdemo.rs` | Touchpad coordinate debug + zone detection |
 | `dseuhid help` | built-in | Usage + subcommand list |
 | `dseuhid version` | built-in | Print version |
+| `edgemap` | `src/bin/edgemap.rs` | User-side CLI: validate, create-config, reload, switch-config (no root, FIFO) |
 
 ## Bugfixes (chronological)
 

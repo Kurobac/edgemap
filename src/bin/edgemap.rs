@@ -20,8 +20,12 @@ use serde::Deserialize;
 const FIFO_PATH: &str = "/run/dseuhid/control";
 
 #[derive(Debug, Deserialize)]
-struct EdgemapConfig {
+struct ProfileConfig {
     config: String,
+    #[serde(default)]
+    match_process: String,
+    #[serde(default)]
+    match_cmdline: String,
 }
 
 fn print_usage() {
@@ -65,6 +69,14 @@ static DAEMON_RUNNING: AtomicBool = AtomicBool::new(true);
 
 extern "C" fn handle_daemon_signal(_sig: libc::c_int) {
     DAEMON_RUNNING.store(false, Ordering::SeqCst);
+}
+
+fn send_notification(summary: &str, body: &str) {
+    let _ = std::process::Command::new("notify-send")
+        .args([summary, body])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 fn check_dseuhid_alive() -> bool {
@@ -113,6 +125,63 @@ fn try_send_fifo_command(cmd: &[u8]) -> bool {
         return false;
     }
     true
+}
+
+fn read_comm(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .map(|s| s.trim().to_lowercase())
+}
+
+fn read_cmdline(pid: u32) -> Option<String> {
+    let data = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    if data.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&data).replace('\0', " ").to_lowercase())
+}
+
+fn profile_matches(pid: u32, profile: &ProfileConfig) -> bool {
+    if profile.match_process.is_empty() && profile.match_cmdline.is_empty() {
+        return false;
+    }
+    if !profile.match_process.is_empty() {
+        let comm = match read_comm(pid) {
+            Some(c) => c,
+            None => return false,
+        };
+        if comm != profile.match_process.to_lowercase() {
+            return false;
+        }
+    }
+    if !profile.match_cmdline.is_empty() {
+        let cmdline = match read_cmdline(pid) {
+            Some(c) => c,
+            None => return false,
+        };
+        if !cmdline.contains(&profile.match_cmdline.to_lowercase()) {
+            return false;
+        }
+    }
+    true
+}
+
+fn find_matching_profile(profiles: &[(String, ProfileConfig)], config_dir: &Path, base_config: &str) -> Option<String> {
+    let pids: Vec<u32> = match std::fs::read_dir("/proc") {
+        Ok(d) => d.flatten()
+            .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse().ok()))
+            .collect(),
+        Err(_) => return None,
+    };
+    for (profile_name, profile_cfg) in profiles {
+        for &pid in &pids {
+            if profile_matches(pid, profile_cfg) {
+                log::debug!("profile '{}' matched by pid {pid}", profile_name);
+                return Some(resolve_config_path(&profile_cfg.config, config_dir));
+            }
+        }
+    }
+    Some(resolve_config_path(base_config, config_dir))
 }
 
 fn cmd_validate(args: &[String]) -> ! {
@@ -311,33 +380,71 @@ fn cmd_daemon(args: &[String]) -> ! {
             std::process::exit(1);
         }
     };
-    let edgemap_cfg: EdgemapConfig = match toml::from_str(&edgemap_toml_content) {
-        Ok(c) => c,
+
+    let root: toml::Value = match toml::from_str(&edgemap_toml_content) {
+        Ok(v) => v,
         Err(e) => {
             log::error!("cannot parse {}: {e}", edgemap_config_path.display());
             std::process::exit(1);
         }
     };
-    let remap_path = resolve_config_path(&edgemap_cfg.config, dir);
 
-    if !Path::new(&remap_path).exists() {
-        log::error!("config not found: {remap_path}");
+    let base_config_raw = root.get("config")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default.toml");
+    let base_config = resolve_config_path(base_config_raw, dir);
+
+    let mut profiles: Vec<(String, ProfileConfig)> = Vec::new();
+    if let Some(t) = root.get("profiles").and_then(|v| v.as_table()) {
+        for (name, val) in t.iter() {
+            match val.clone().try_into::<ProfileConfig>() {
+                Ok(cfg) => profiles.push((name.clone(), cfg)),
+                Err(e) => log::warn!("invalid profile '{name}': {e}, skipping"),
+            }
+        }
+    }
+
+    // validate base config
+    if !Path::new(&base_config).exists() {
+        log::error!("config not found: {base_config}");
         log::error!("(specified in {})", edgemap_config_path.display());
         std::process::exit(1);
     }
-    let remap_cfg = match config::Config::load(&remap_path) {
+    let base_cfg = match config::Config::load(&base_config) {
         Ok(c) => c,
-        Err(e) => {
-            log::error!("{e}");
-            std::process::exit(1);
-        }
+        Err(e) => { log::error!("{e}"); std::process::exit(1); }
     };
-    if let Err(e) = config::validate(&remap_cfg) {
+    if let Err(e) = config::validate(&base_cfg) {
         log::error!("{e}");
         std::process::exit(1);
     }
 
-    let cmd = format!("switch-config {}", remap_path);
+    // validate and expand profile config paths, warn on invalid
+    let mut valid_profiles: Vec<(String, String)> = Vec::new();
+    for (name, pcfg) in &profiles {
+        let path = resolve_config_path(&pcfg.config, dir);
+        if !Path::new(&path).exists() {
+            log::warn!("profile '{name}': config not found at {path}, skipping");
+            continue;
+        }
+        match config::Config::load(&path) {
+            Err(e) => { log::warn!("profile '{name}': {e}, skipping"); continue; }
+            Ok(cfg) => {
+                if let Err(e) = config::validate(&cfg) {
+                    log::warn!("profile '{name}': {e}, skipping");
+                    continue;
+                }
+            }
+        }
+        if pcfg.match_process.is_empty() && pcfg.match_cmdline.is_empty() {
+            log::warn!("profile '{name}': no match_process or match_cmdline, skipping");
+            continue;
+        }
+        valid_profiles.push((name.clone(), path));
+    }
+    if !profiles.is_empty() {
+        log::info!("{} profile(s) loaded, {} valid", profiles.len(), valid_profiles.len());
+    }
 
     // signal handlers
     unsafe {
@@ -355,17 +462,37 @@ fn cmd_daemon(args: &[String]) -> ! {
         log::warn!("dseuhid not running, waiting...");
     }
 
-    let mut injected = false;
+    let mut current_config = String::new();
+
     while DAEMON_RUNNING.load(Ordering::SeqCst) {
         let alive = check_dseuhid_alive();
-        if alive && !injected {
-            if try_send_fifo_command(cmd.as_bytes()) {
-                log::info!("dseuhid connected, applied: {remap_path}");
-                injected = true;
+        if !alive {
+            if !current_config.is_empty() {
+                log::warn!("dseuhid disconnected");
+                current_config.clear();
             }
-        } else if !alive && injected {
-            log::warn!("dseuhid disconnected");
-            injected = false;
+            std::thread::sleep(Duration::from_secs(1));
+            continue;
+        }
+
+        let wanted = if valid_profiles.is_empty() {
+            base_config.clone()
+        } else {
+            find_matching_profile(&profiles, dir, base_config_raw)
+                .unwrap_or(base_config.clone())
+        };
+
+        if wanted != current_config {
+            let cmd = format!("switch-config {}", wanted);
+            if try_send_fifo_command(cmd.as_bytes()) {
+                let label = profiles.iter()
+                    .find(|(_, pc)| resolve_config_path(&pc.config, dir) == wanted)
+                    .map(|(name, _)| format!("profile '{name}'"))
+                    .unwrap_or_else(|| "default config".to_string());
+                log::info!("applied {label}: {wanted}");
+                send_notification("edgemap", &format!("Switched to {label}"));
+                current_config = wanted;
+            }
         }
         std::thread::sleep(Duration::from_secs(1));
     }

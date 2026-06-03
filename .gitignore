@@ -1,3 +1,7 @@
 /target
-/PIPELINE_DESIGN.md
-/REFACTOR_REVIEW.md
+.SRCINFO
+*.log
+*.tar.zst
+*.tar.xz
+pkg/
+src/

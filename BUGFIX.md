@@ -58,3 +58,8 @@ Link: [STATUS.md#bugfixes-chronological](./STATUS.md#bugfixes-chronological)
 **Root cause:** The tag was created before bumping the version string in `Cargo.toml`.
 
 **Fix:** Post-tag commit `e71b347` to sync the version. Future tags now ensure version is bumped first.
+
+### #48 — No singleton detection: multiple daemon instances coexist
+**Root cause:** Neither dseuhid nor edgemap checked for existing instances before starting. Running a second `sudo dseuhid` would remove the first's FIFO and interfere with device discovery.
+
+**Fix:** Singleton detection via PID file + `kill(pid, 0)` liveness check. dseuhid uses `/run/dseuhid/pid` (FHS), edgemap uses `~/.local/state/edgemap/edgemap.pid` (XDG_STATE_HOME). PID cleaned on graceful exit. (`23863e5`)

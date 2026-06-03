@@ -213,3 +213,8 @@
 **Root cause:** `find_matching_profile()` used `state.profiles` (all declared profiles) instead of only validated ones. A profile whose `config` file doesn't exist or failed validation could still match and send an invalid `switch-config` path to dseuhid.
 
 **Fix:** Filter `state.profiles` by `state.valid_profiles` before passing to `find_matching_profile()`. Only profiles with existing, valid config files participate in matching.
+
+### #50 — systemctl restart dseuhid not detected by edgemap
+**Root cause:** `systemctl restart` completes in <0.3s — faster than edgemap's 1s polling interval. `check_dseuhid_alive()` never saw the FIFO disappear, so `current_config` was never cleared and the profile was never re-injected.
+
+**Fix:** Track dseuhid's PID via `/run/dseuhid/pid`. When the PID changes (restart occurred), clear `current_config` to force re-injection on the next iteration. Covers restart, crash+restart, and first-start scenarios.

@@ -519,6 +519,7 @@ fn cmd_daemon(args: &[String]) -> ! {
     }
 
     let mut current_config = String::new();
+    let mut last_pid: Option<i32> = None;
 
     while DAEMON_RUNNING.load(Ordering::SeqCst) {
         // hot reload on mtime change
@@ -542,9 +543,20 @@ fn cmd_daemon(args: &[String]) -> ! {
             if !current_config.is_empty() {
                 log::warn!("dseuhid disconnected");
                 current_config.clear();
+                last_pid = None;
             }
             std::thread::sleep(Duration::from_secs(1));
             continue;
+        }
+
+        // detect dseuhid restart via PID change (systemctl restart is <1s)
+        if let Ok(pid_str) = std::fs::read_to_string("/run/dseuhid/pid") {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                if last_pid.map_or(true, |prev| pid != prev) {
+                    current_config.clear();
+                    last_pid = Some(pid);
+                }
+            }
         }
 
         let wanted = if state.valid_profiles.is_empty() {

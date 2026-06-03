@@ -1,10 +1,10 @@
-# dseuhid — Project Status (2026-06-03)
+# edgemap — Project Status (2026-06-03)
 
 ## Overview
 
-Single-binary UHID proxy for DualSense Edge wireless controller (PID 0x0DF2, USB only). Replaces the kernel `hid-playstation` driver with a userspace virtual HID device, applies button remapping frame-by-frame, and forwards all other HID data (gyro, touchpad, LED, rumble, adaptive trigger FFB, HD haptics via audio) transparently.
+UHID proxy for DualSense Edge wireless controller (PID 0x0DF2, USB only). Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Replaces the kernel `hid-playstation` driver with a userspace virtual HID device, applies button remapping frame-by-frame, and forwards all other HID data (gyro, touchpad, LED, rumble, adaptive trigger FFB, HD haptics via audio) transparently.
 
-Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/uhid` and `/dev/hidraw` access.
+Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/uhid` and `/dev/hidraw` access (daemon only).
 
 ## Version History
 

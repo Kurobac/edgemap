@@ -1,6 +1,6 @@
-# AGENTS.md — dseuhid
+# AGENTS.md — edgemap
 
-Single-binary UHID proxy for DualSense Edge (PID 0x0DF2, USB only). Replaces kernel `hid-playstation` driver — physical hidraw → three-layer pipeline (L1 filter → L2 generate → L3 output) → UHID virtual device. No async runtime, single epoll loop.
+DualSense Edge UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `edgemap` (user-side CLI). Replaces kernel `hid-playstation` driver — physical hidraw → three-layer pipeline (L1 filter → L2 generate → L3 output) → UHID virtual device. No async runtime, single epoll loop.
 
 ## Commands
 

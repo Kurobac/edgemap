@@ -107,7 +107,15 @@ use uhid::UhidDevice;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() >= 2 {
-        match args[1].as_str() {
+        // reject duplicate subcommands: all known subcommands take no extra args
+        let sub = args[1].as_str();
+        let known = matches!(sub, "monitor" | "mon" | "touchdemo" | "touch" | "version" | "--version" | "-V" | "help" | "--help" | "-h");
+        if known && args.len() > 2 {
+            eprintln!("error: '{}' takes no arguments", args[1]);
+            eprintln!("Run 'dseuhid help' for usage.");
+            std::process::exit(1);
+        }
+        match sub {
             "monitor" | "mon" => {
                 monitor::run();
                 return;

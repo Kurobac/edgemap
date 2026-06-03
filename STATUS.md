@@ -156,9 +156,11 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 ### Tools
 | Tool | Binary | Description |
 |------|--------|-------------|
-| `dseuhid` | main | UHID proxy daemon |
-| `monitor` | `src/bin/monitor.rs` | Raw HID button bit verification (no UHID) |
-| `touchdemo` | `src/bin/touchdemo.rs` | Touchpad coordinate debug + zone detection |
+| `dseuhid` | main | UHID proxy daemon (+ `monitor`, `touchdemo`, `version`, `help` subcommands) |
+| `dseuhid monitor` | `src/monitor.rs` | Raw HID button + stick debug (threshold 5, 80ms throttle) |
+| `dseuhid touchdemo` | `src/touchdemo.rs` | Touchpad coordinate debug + zone detection |
+| `dseuhid help` | built-in | Usage + subcommand list |
+| `dseuhid version` | built-in | Print version |
 
 ## Bugfixes (chronological)
 
@@ -213,13 +215,15 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - [x] `--config-path` flag for custom config file (v0.1.0+1)
 - [x] Systemd service unit (v0.1.0+1)
 - [x] Compact default config template (v0.1.0+2)
+- [x] CLI subcommands: monitor, touchdemo, version, help; unknown command rejection (v0.1.0+4)
+- [x] FIFO control daemon: `/run/dseuhid/control` named pipe, non-root reload + switch-config (v0.1.0+5)
+- [x] Monitor shows analog sticks (threshold 5, 80ms throttle) (v0.1.0+6)
+- [x] edgemap CLI: `validate`, `create-config`, `reload`, `switch-config` (no root, separate binary)
 
 ### Planned — Next Features
 
 | Priority | Feature | Complexity | Description |
 |----------|---------|-----------|-------------|
-| High | **FIFO control daemon** | Medium | `/run/dseuhid/control` named pipe, epoll monitor, non-root `echo "reload" \| "switch-config /path"` |
-| High | **CLI subcommands** | Low | `dseuhid validate`, `dseuhid dump`, FIFO command CLI wrappers |
 | Low | **Regular DualSense** | Low | Re-enable PID 0x0CE6; verify HID descriptor compatibility |
 | Low | **Trigger source mapping** | Medium | Analog threshold events (half-press vs full-press) |
 | Low | **Touchpad 4-zone** | Low | Expand left/right to quadrant grid |
@@ -236,6 +240,11 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 ## Commit History
 
 ```
+9211997 fix: chmod FIFO to 0666 after mkfifo (umask was cutting to 0644)
+90ce930 fix: unknown subcommand errors + monitor shows sticks
+39bab69 feat: FIFO control daemon (non-root reload + switch-config)
+d602532 refactor: monitor/touchdemo as subcommands + version/help     [v0.1.0+4]
+a909f94 docs: add bugfixes #32-37 (combo cleanup, remap wipe, macro validation)
 f1752a6 fix: combo injection only pushes activation (never clears)      [v0.1.0+3]
 3f095db fix: swap COMBO after REMAP (prevent source-clear wipe)         [v0.1.0+2]
 9bed9de fix: combo_triggers state change + modifier analog + macro val. [v0.1.0+1]

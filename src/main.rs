@@ -12,7 +12,6 @@ use log::{error, info, warn};
 use std::env;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -27,12 +26,13 @@ fn setup_fifo() -> std::fs::File {
     });
     // Remove stale FIFO from previous unclean exit, then create
     let _ = std::fs::remove_file(FIFO_PATH);
-    let r = unsafe { libc::mkfifo(FIFO_PATH.as_ptr() as *const libc::c_char, 0o666) };
+    let c_path = std::ffi::CString::new(FIFO_PATH).expect("FIFO_PATH contains null byte");
+    let r = unsafe { libc::mkfifo(c_path.as_ptr(), 0o666) };
     if r != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
         eprintln!("error: cannot create FIFO at {FIFO_PATH}: {}", std::io::Error::last_os_error());
         std::process::exit(1);
     }
-    unsafe { libc::chmod(FIFO_PATH.as_ptr() as *const libc::c_char, 0o666) };
+    unsafe { libc::chmod(c_path.as_ptr(), 0o666) };
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -61,7 +61,7 @@ fn dup_fifo_fd(fifo_fd: &std::fs::File) -> std::fs::File {
     unsafe { std::fs::File::from_raw_fd(fd) }
 }
 
-fn parse_config_path() -> String {
+fn parse_config_path() -> Option<String> {
     let args: Vec<String> = env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -71,13 +71,13 @@ fn parse_config_path() -> String {
                     eprintln!("error: --config-path requires a path argument");
                     std::process::exit(1);
                 }
-                return args[i + 1].clone();
+                return Some(args[i + 1].clone());
             }
             _ => {}
         }
         i += 1;
     }
-    "/etc/dseuhid/config.toml".into()
+    None
 }
 
 fn print_usage() {
@@ -95,7 +95,7 @@ fn print_usage() {
     eprintln!("  help        Print this help");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  -c, --config-path <path>  Config file (default: /etc/dseuhid/config.toml)");
+    eprintln!("  -c, --config-path <path>  Config file (passthrough if not set)");
     eprintln!();
     eprintln!("Without a command, starts the UHID proxy daemon (requires root).");
 }
@@ -222,50 +222,45 @@ fn main() {
 
         info!("Proxy starting");
 
-        let default_path = "/etc/dseuhid/config.toml";
-        if config_path == default_path && !Path::new(&config_path).exists() {
-            if let Err(e) = std::fs::create_dir_all("/etc/dseuhid") {
-                warn!("Cannot create /etc/dseuhid: {e}");
-            }
-            if let Err(e) = std::fs::write(&config_path, config::default_content()) {
-                warn!("Cannot create default config at {config_path}: {e}");
-            } else {
-                info!("Created default config at {config_path}");
-            }
-        }
-
-        let mapping = Arc::new(RwLock::new(match config::Config::load(&config_path) {
-            Ok(cfg) => {
-                if let Err(e) = config::validate(&cfg) {
-                    error!("Config validation failed: {e}");
-                    error!("Running with no remapping.");
-                    mapping::MappingConfig::default()
-                } else {
-                    match cfg.to_mapping_config() {
-                        Ok(m) => {
-                            info!("Loaded config from {config_path}");
-                            // warn for missing button sections
-                            for name in config::ALL_BUTTON_NAMES {
-                                if !cfg.buttons.contains_key(*name) {
-                                    warn!("{name}: not configured, passthrough");
-                                }
-                            }
-                            m
-                        }
+        let mapping = match &config_path {
+            Some(path) => {
+                info!("Loading config from {path}");
+                match config::Config::load(path) {
+                    Ok(cfg) => match config::validate(&cfg) {
                         Err(e) => {
-                            error!("Failed to build mapping: {e}");
-                            mapping::MappingConfig::default()
+                            error!("Config validation failed: {e}");
+                            std::process::exit(1);
                         }
+                        Ok(()) => match cfg.to_mapping_config() {
+                            Ok(m) => {
+                                for name in config::ALL_BUTTON_NAMES {
+                                    if !cfg.buttons.contains_key(*name) {
+                                        warn!("{name}: not configured, passthrough");
+                                    }
+                                }
+                                m
+                            }
+                            Err(e) => {
+                                error!("Failed to build mapping: {e}");
+                                std::process::exit(1);
+                            }
+                        },
+                    },
+                    Err(e) => {
+                        error!("Failed to load config: {e}");
+                        std::process::exit(1);
                     }
                 }
             }
-            Err(e) => {
-                error!("Failed to load config: {e}");
+            None => {
+                info!("No config specified, running in passthrough mode");
                 mapping::MappingConfig::default()
             }
-        }));
+        };
+        let mapping = Arc::new(RwLock::new(mapping));
 
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, &config_path, dup_fifo_fd(&fifo_fd));
+        let config_path_str = config_path.as_deref().unwrap_or("");
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
             proxy::ExitReason::DeviceGone => {
                 proxy.skip_restore();

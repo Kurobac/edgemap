@@ -324,6 +324,10 @@ impl Proxy {
     }
 
     fn reload_config(&mut self) {
+        if self.config_path.is_empty() {
+            info!("No config path set, skipping reload (running passthrough)");
+            return;
+        }
         let mut new_mapping = MappingConfig::default();
         let mut cfg_ok = false;
         match crate::config::Config::load(&self.config_path) {

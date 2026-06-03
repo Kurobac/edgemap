@@ -505,6 +505,7 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn default_content() -> &'static str {
     r#"# dseuhid config
 # See README for full documentation

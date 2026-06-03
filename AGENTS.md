@@ -62,7 +62,7 @@ Order inside `handle_hidraw_input()`:
 ## Quirks
 
 - **Root required** for daemon — `cargo test`, `cargo build`, subcommands work without root.
-- **Config**: default `/etc/dseuhid/config.toml` (auto-created on first run if missing). Custom via `-c`/`--config-path`.
+- **Config**: no default path. `-c`/`--config-path` optional — if omitted, starts in passthrough mode. edgemap is the intended way to manage config.
 - **Hot reload**: `kill -HUP <pid>` or `echo reload > /run/dseuhid/control` — re-reads config, rebuilds all runtimes.
 - **FIFO control**: `/run/dseuhid/control` (0666), PID at `/run/dseuhid/pid`. Commands: `reload`, `switch-config <path>`. Non-root users can write to it. FIFO fd is dup'd for safe reconnects.
 - **Byte 10 high nibble** = DSE Edge buttons: FnLeft=0x10, FnRight=0x20, LeftPaddle=0x40, RightPaddle=0x80. Byte 11 low nibble must be preserved, high nibble zeroed.

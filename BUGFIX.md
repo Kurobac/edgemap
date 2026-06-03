@@ -152,7 +152,7 @@
 
 ---
 
-## #38–#49: v0.2.0–v0.4.3 (edgemap daemon, packaging)
+## #38–#49: after v0.2.0 (edgemap daemon, packaging)
 
 ### #38 — mkfifo/chmod `ENAMETOOLONG` / garbage filenames
 **Root cause:** `&str::as_ptr()` is not null-terminated. `libc::mkfifo()` and `libc::chmod()` scan memory past the string until hitting a random zero byte, producing either `ENAMETOOLONG` or files with garbage-suffixed names.
@@ -213,3 +213,45 @@
 **Root cause:** `find_matching_profile()` used `state.profiles` (all declared profiles) instead of only validated ones. A profile whose `config` file doesn't exist or failed validation could still match and send an invalid `switch-config` path to dseuhid.
 
 **Fix:** Filter `state.profiles` by `state.valid_profiles` before passing to `find_matching_profile()`. Only profiles with existing, valid config files participate in matching.
+
+### #50 — systemctl restart dseuhid not detected by edgemap
+**Root cause:** `systemctl restart` completes in <0.3s — faster than edgemap's 1s polling interval. `check_dseuhid_alive()` never saw the FIFO disappear, so `current_config` was never cleared and the profile was never re-injected.
+
+**Fix:** Track dseuhid's PID via `/run/dseuhid/pid`. When the PID changes (restart occurred), clear `current_config` to force re-injection on the next iteration. Covers restart, crash+restart, and first-start scenarios.
+
+### #51 — Macro picker popped up on GUI startup (Qt/Breeze layout passthrough bug)
+**Root cause:** `QStatusBar.addPermanentWidget()` triggers an internal layout recalculation that propagates upward to QMainWindow. Under the Breeze theme, this causes `QAction.triggered` signals on the toolbar to fire spuriously during the layout pass, activating `_open_macros()` and showing MacroPicker at app startup.
+
+**Fix:** Wrap `act_macros.triggered.connect(...)` in `QTimer.singleShot(0, ...)`, deferring the signal connection until after the initial layout pass completes. This prevents Breeze from misfiring the trigger during layout recalculation.
+
+### #52 — GUI: New button did not reset config or rebuild UI
+**Root cause:** `_new_config()` only updated `self.current_file` and the profile button text — it did not actually reset `self.config` to defaults or rebuild the UI tables.
+
+**Fix:** Fully reset `self.config` to default mappings and call `_build_ui()` to regenerate all widgets. Also added dirty-detection (unsaved changes confirm dialog) powered by remap/turbo writeback to `self.config` on every widget change.
+
+### #53 — GUI: _build_ui() duplicated toolbars and profile buttons on each call
+**Root cause:** `_build_ui()` unconditionally created new QToolBar (`self.addToolBar()`) and QPushButton (`self.statusBar().addPermanentWidget()`), without removing previously-created instances.
+
+**Fix:** Check for existing `self.toolbar`/`self.profile_btn` before creating. Remove old toolbar via `self.removeToolBar()`. Reuse profile button — only rebuild its QMenu. Prevents widget accumulation on every `_build_ui()` call.
+
+### #54 — GUI: Turbo spinboxes changed values on mouse wheel scroll
+**Root cause:** QSpinBox defaults to mouse-wheel value increment/decrement.
+
+**Fix:** Set `spinbox.wheelEvent = lambda e: None` on all spinboxes (turbo I:/D: + MacroEditor press/release ms).
+
+### #55 — GUI: Focus randomly jumped to menu/profile buttons on startup
+**Root cause:** QToolButton and QPushButton are in Qt's tab-focus-chain; the first focusable widget grabs initial focus on window activation.
+
+**Fix:** Set `setFocusPolicy(Qt.FocusPolicy.NoFocus)` on both the menu QToolButton and the profile QPushButton.
+
+### #56 — GUI: New icon showed wrong image (Qt logo) in Breeze theme
+**Root cause:** `SP_TitleBarMenuButton` has no Breeze icon mapping — falls back to a generic Qt logo.
+
+**Fix:** Use `QIcon.fromTheme("application-menu")` for the menu icon and `QIcon.fromTheme("document-new")` for New. Freedesktop-compatible icon themes (including Breeze) provide correct icons for these names.
+
+### #57 — GUI: Profile button width broke with long filenames; menu misaligned
+**Root cause:** Profile button had no width constraint, and its QMenu was independently-sized.
+
+**Fix:** Set `setMinimumWidth(100)`, `setMaximumWidth(250)` on the button, and sync the menu width to the button's width via `aboutToShow.connect(lambda: menu.setMinimumWidth(btn.width()))`. Truncate displayed filenames > 32 chars (middle ellipsis).
+
+

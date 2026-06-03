@@ -13,6 +13,7 @@ cargo run -- touchdemo    # touchpad coordinate debug (no root needed)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
+python3 edgemap-gui-v6.py        # config editor GUI (PyQt6)
 ```
 
 No lint, typecheck, or CI config exists.
@@ -45,6 +46,7 @@ makepkg -si              # build + install via PKGBUILD
 | `src/monitor.rs` | `dseuhid monitor` — raw HID button + analog stick debug (threshold 5, 80ms throttle, reads physical hidraw directly) |
 | `src/touchdemo.rs` | `dseuhid touchdemo` — touchpad coordinate debug + zone detection |
 | `src/bin/edgemap.rs` | User-side CLI (`validate`, `create-config`, `reload`, `switch-config`), no root. Daemon mode (`d`/`daemon`): auto-create `~/.config/edgemap/` configs, profile auto-switch by process matching, mtime-based hot reload, `notify-send` desktop notifications. Communicates via FIFO. |
+| `edgemap-gui-v6.py` | PyQt6 config editor: two-column layout, button remap, turbo, combo/macro popup editors, macro manager, profile quick-switch, toolbar with KDE-native icons. |
 
 ## Three-layer pipeline (L1 → L2 → L3)
 
@@ -95,7 +97,6 @@ Order inside `handle_hidraw_input()`:
 
 ## Future plans
 
-- **GUI config editor** — standalone tool (not Rust-required), visual button remap + combo/macro editing
 - **Regular DualSense** (PID 0x0CE6) — re-enable descriptor-compatible support
 - **Trigger source mapping** — analog threshold events (half-press vs full-press) as remap sources
 - **Touchpad 4-zone** — expand left/right to quadrant grid

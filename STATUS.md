@@ -27,7 +27,8 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.4.0 | `e404df1` | **edgemap profile auto-switch**: process matching (comm/cmdline), mtime hot reload, notify-send |
 | v0.4.1 | `23863e5` | **singleton detection**: PID file + kill(0) for dseuhid + edgemap, BUGFIX.md |
 | v0.4.2 | `c547587` | **PKGBUILD + GPLv3**: packaging, user service, install scripts, bugfixes #48-#49 |
-| v0.4.3 | `[tag]` | **Documentation**: README.md, annotated config template, bugfix consolidation (STATUS.md → BUGFIX.md) |
+| v0.4.3 | `0f9436e` | **Documentation**: README.md, annotated config template, bugfix consolidation (STATUS.md → BUGFIX.md) |
+| v0.4.4 | `619a337` | **Bugfix #50**: detect dseuhid restart via PID change |
 
 ## Implemented Features
 
@@ -168,10 +169,11 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 | `dseuhid help` | built-in | Usage + subcommand list |
 | `dseuhid version` | built-in | Print version |
 | `edgemap` | `src/bin/edgemap.rs` | User-side CLI: validate, create-config, reload, switch-config (no root). Daemon mode (d/daemon): auto-create config, profile auto-switch, mtime hot reload, notify-send |
+| `edgemap-gui-v6.py` | GUI | PyQt6 config editor: two-column layout, remap/turbo/combo/macro editing, macro manager, toolbar with KDE-native icons |
 
 ## Bugfixes (chronological)
 
-See [BUGFIX.md](./BUGFIX.md) for the complete list — 49 entries covering v0.0.1 through v0.4.3, with root causes and fixes.
+See [BUGFIX.md](./BUGFIX.md) for the complete list.
 
 ## Future Plans
 
@@ -192,7 +194,8 @@ See [BUGFIX.md](./BUGFIX.md) for the complete list — 49 entries covering v0.0.
 - [x] edgemap auto-switch profiles by running processes (comm exact + cmdline substring)
 - [x] edgemap mtime-based hot reload + notify-send notifications
 - [x] Singleton instance detection (dseuhid + edgemap)
-- [x] BUGFIX.md (#1-#48 documented with root causes)
+- [x] BUGFIX.md (#1-#51 documented with root causes)
+- [x] GUI config editor (PyQt6, two-column layout, toolbar with KDE-native icons)
 
 ### Planned — Next Features
 
@@ -208,7 +211,7 @@ See [BUGFIX.md](./BUGFIX.md) for the complete list — 49 entries covering v0.0.
 |---------|--------|
 | D-Bus interface (zbus) | Introduces async runtime, excessive complexity for marginal benefit |
 | inotify auto-reload | edgemap mtime-based reload sufficient |
-| GUI config generator | Moved to planned — standalone tool, not daemon responsibility |
+| GUI config generator | Implemented — edgemap-gui-v6.py (PyQt6) |
 | Multiple controllers | Not planned. |
 
 ## Commit History

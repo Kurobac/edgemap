@@ -25,10 +25,10 @@ fn setup_fifo() -> std::fs::File {
         eprintln!("error: cannot create {}: {e}", FIFO_DIR);
         std::process::exit(1);
     });
-    // Remove any stale FIFO from previous unclean exit
+    // Remove stale FIFO from previous unclean exit, then create
     let _ = std::fs::remove_file(FIFO_PATH);
     let r = unsafe { libc::mkfifo(FIFO_PATH.as_ptr() as *const libc::c_char, 0o666) };
-    if r != 0 {
+    if r != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
         eprintln!("error: cannot create FIFO at {FIFO_PATH}: {}", std::io::Error::last_os_error());
         std::process::exit(1);
     }
@@ -123,7 +123,11 @@ fn main() {
                 print_usage();
                 return;
             }
-            _ => {}
+            _ => {
+                eprintln!("error: unknown command '{}'", args[1]);
+                eprintln!("Run 'dseuhid help' for usage.");
+                std::process::exit(1);
+            }
         }
     }
 

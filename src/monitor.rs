@@ -1,4 +1,5 @@
 use std::io;
+use std::time::{Duration, Instant};
 
 pub fn run() {
     println!("DSE Button Monitor");
@@ -17,20 +18,27 @@ pub fn run() {
     let mut first = true;
     let mut prev: [u8; 64] = [0; 64];
     let mut buf = [0u8; 64];
+    let mut last_print = Instant::now();
 
     loop {
         match read_hidraw(fd, &mut buf) {
             Ok(64) => {
+                let sticks_moved = (buf[1] as i16 - prev[1] as i16).abs() >= 5
+                    || (buf[2] as i16 - prev[2] as i16).abs() >= 5
+                    || (buf[3] as i16 - prev[3] as i16).abs() >= 5
+                    || (buf[4] as i16 - prev[4] as i16).abs() >= 5;
                 let changed = first
                     || buf[5] != prev[5] || buf[6] != prev[6] // triggers
-                    || buf[8..12] != prev[8..12]; // buttons
-                if changed {
+                    || buf[8..12] != prev[8..12] // buttons
+                    || sticks_moved;
+                if changed && (first || last_print.elapsed() >= Duration::from_millis(80)) {
                     if !first {
                         println!("{}", "-".repeat(60));
                     }
                     first = false;
                     print_report(&buf);
                     prev = buf;
+                    last_print = Instant::now();
                 }
             }
             Ok(_) => continue,
@@ -46,7 +54,9 @@ pub fn run() {
 }
 
 fn print_report(buf: &[u8; 64]) {
-    println!("L2:{:3} R2:{:3}  Seq:{}", buf[5], buf[6], buf[7]);
+    println!("L2:{:3} R2:{:3}  Seq:{}  LS:({:3},{:3}) RS:({:3},{:3})",
+        buf[5], buf[6], buf[7],
+        buf[1], buf[2], buf[3], buf[4]);
 
     let mut buttons = Vec::new();
 

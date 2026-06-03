@@ -26,7 +26,8 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.3.0 | `bb9ccda` | **edgemap daemon**: auto-create config, alive-detect dseuhid, auto-inject remap on connect |
 | v0.4.0 | `e404df1` | **edgemap profile auto-switch**: process matching (comm/cmdline), mtime hot reload, notify-send |
 | v0.4.1 | `23863e5` | **singleton detection**: PID file + kill(0) for dseuhid + edgemap, BUGFIX.md |
-| v0.4.2 | `[tag]` | **PKGBUILD + GPLv3**: packaging, user service, install scripts, bugfixes #48-#49 |
+| v0.4.2 | `c547587` | **PKGBUILD + GPLv3**: packaging, user service, install scripts, bugfixes #48-#49 |
+| v0.4.3 | `[tag]` | **Documentation**: README.md, annotated config template, bugfix consolidation (STATUS.md → BUGFIX.md) |
 
 ## Implemented Features
 
@@ -170,7 +171,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 
 ## Bugfixes (chronological)
 
-See [BUGFIX.md](./BUGFIX.md) for the complete list — 49 entries covering v0.0.1 through v0.4.2, with root causes and fixes.
+See [BUGFIX.md](./BUGFIX.md) for the complete list — 49 entries covering v0.0.1 through v0.4.3, with root causes and fixes.
 
 ## Future Plans
 
@@ -200,7 +201,6 @@ See [BUGFIX.md](./BUGFIX.md) for the complete list — 49 entries covering v0.0.
 | Medium | **GUI config editor** | Medium | Standalone tool, visual button remap + combo/macro editing. Not Rust-required — language chosen for ease of distribution |
 | Low | **Regular DualSense** | Low | Re-enable PID 0x0CE6; verify HID descriptor compatibility |
 | Low | **Trigger source mapping** | Medium | Analog threshold events (half-press vs full-press) |
-| Low | **Touchpad 4-zone** | Low | Expand left/right to quadrant grid |
 
 ### Explicitly Abandoned
 
@@ -209,11 +209,16 @@ See [BUGFIX.md](./BUGFIX.md) for the complete list — 49 entries covering v0.0.
 | D-Bus interface (zbus) | Introduces async runtime, excessive complexity for marginal benefit |
 | inotify auto-reload | edgemap mtime-based reload sufficient |
 | GUI config generator | Moved to planned — standalone tool, not daemon responsibility |
-| Multiple controllers | 就是不想做 |
+| Multiple controllers | Not planned. |
 
 ## Commit History
 
 ```
+172397b docs: move bugfixes #1-#37 from STATUS.md to BUGFIX.md          [v0.4.3]
+d3c35ee chore: add *.kate-swp to gitignore
+63ca3aa docs: add README.md with annotated config template
+0fb65d0 chore: update .gitignore — ignore makepkg artifacts
+c547587 feat: PKGBUILD + systemd units + GPLv3; bugfix #49 profile filtering  [v0.4.2]
 c7dce37 docs: add singleton detection (#48) to BUGFIX.md                    [v0.4.1]
 23863e5 feat: singleton instance detection (dseuhid + edgemap)
 b20db57 docs: raise GUI priority to planned, add Future plans to AGENTS.md
@@ -225,11 +230,11 @@ bb9ccda feat: edgemap daemon (auto-create + alive-detect + auto-inject)    [v0.3
 9211997 fix: chmod FIFO to 0666 after mkfifo (umask was cutting to 0644)
 90ce930 fix: unknown subcommand errors + monitor shows sticks
 39bab69 feat: FIFO control daemon (non-root reload + switch-config)
-d602532 refactor: monitor/touchdemo as subcommands + version/help     [v0.1.0+4]
+d602532 refactor: monitor/touchdemo as subcommands + version/help     
 a909f94 docs: add bugfixes #32-37 (combo cleanup, remap wipe, macro validation)
-f1752a6 fix: combo injection only pushes activation (never clears)      [v0.1.0+3]
-3f095db fix: swap COMBO after REMAP (prevent source-clear wipe)         [v0.1.0+2]
-9bed9de fix: combo_triggers state change + modifier analog + macro val. [v0.1.0+1]
+f1752a6 fix: combo injection only pushes activation (never clears)      
+3f095db fix: swap COMBO after REMAP (prevent source-clear wipe)         
+9bed9de fix: combo_triggers state change + modifier analog + macro val. 
 0464210 docs: future plans roadmap (FIFO, CLI, abandoned features)
 ea3675c docs: compact default config template (6 groups)
 4207d1c feat: --config-path flag + systemd unit                         [v0.1.0]

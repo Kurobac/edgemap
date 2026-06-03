@@ -1,6 +1,6 @@
 # BUGFIX.md — edgemap
 
-## #1–#37: v0.0.1–v0.1.0 (UHID core, remap, turbo, combo, macro)
+## #1–#37: before v0.2.0 (UHID core, remap, turbo, combo, macro)
 
 ### #1 — ACL lost after exit
 **Root cause:** `setfacl -b` removed ACL, restore didn't re-apply.
@@ -152,7 +152,7 @@
 
 ---
 
-## #38–#49: v0.2.0–v0.4.0 (edgemap daemon, packaging)
+## #38–#49: v0.2.0–v0.4.3 (edgemap daemon, packaging)
 
 ### #38 — mkfifo/chmod `ENAMETOOLONG` / garbage filenames
 **Root cause:** `&str::as_ptr()` is not null-terminated. `libc::mkfifo()` and `libc::chmod()` scan memory past the string until hitting a random zero byte, producing either `ENAMETOOLONG` or files with garbage-suffixed names.

@@ -520,6 +520,7 @@ fn cmd_daemon(args: &[String]) -> ! {
 
     let mut current_config = String::new();
     let mut last_pid: Option<i32> = None;
+    let mut last_uhid_mtime: Option<std::time::SystemTime> = None;
 
     while DAEMON_RUNNING.load(Ordering::SeqCst) {
         // hot reload on mtime change
@@ -555,6 +556,16 @@ fn cmd_daemon(args: &[String]) -> ! {
                 if last_pid.map_or(true, |prev| pid != prev) {
                     current_config.clear();
                     last_pid = Some(pid);
+                }
+            }
+        }
+
+        // detect dseuhid hotplug (UHID device recreated) via connected marker mtime
+        if let Ok(meta) = std::fs::metadata("/run/dseuhid/connected") {
+            if let Ok(mtime) = meta.modified() {
+                if last_uhid_mtime.map_or(true, |t| mtime != t) {
+                    current_config.clear();
+                    last_uhid_mtime = Some(mtime);
                 }
             }
         }

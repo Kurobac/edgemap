@@ -254,4 +254,9 @@
 
 **Fix:** Set `setMinimumWidth(100)`, `setMaximumWidth(250)` on the button, and sync the menu width to the button's width via `aboutToShow.connect(lambda: menu.setMinimumWidth(btn.width()))`. Truncate displayed filenames > 32 chars (middle ellipsis).
 
+### #58 — Hotplug not detected by edgemap — config not applied after USB reconnect
+**Root cause:** edgemap only tracked dseuhid's PID and FIFO liveness. On USB disconnect/reconnect, the UHID device is recreated but the PID stays the same and the FIFO never closes — so edgemap never knew to re-inject the config.
+
+**Fix:** dseuhid now writes `/run/dseuhid/connected` every time UHID is created. edgemap polls its mtime — any change triggers `current_config.clear()` → re-inject on next iteration. Covers USB hotplug, `systemctl restart`, and first-start.
+
 

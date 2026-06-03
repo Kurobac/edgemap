@@ -225,6 +225,8 @@ fn main() {
 
         info!("Created virtual HID device: {name}");
 
+        let _ = std::fs::write("/run/dseuhid/connected", b"");
+
         if let Err(e) = hidraw.restrict_evdev_nodes() {
             info!("Failed to restrict physical evdev nodes: {e}");
             info!("You may see two controllers in games — select the virtual one.");

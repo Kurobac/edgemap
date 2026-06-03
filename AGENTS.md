@@ -87,6 +87,13 @@ Order inside `handle_hidraw_input()`:
 - Known HID limitation: d-pad hat switch cannot encode 3+ simultaneous directions.
 - edgemap profile format: `[profiles.<name>]` with `config = "<path>"` (relative to `~/.config/edgemap/`, `~`, or absolute) + `match_process` / `match_cmdline` (case-insensitive, both optional; AND logic if both set). Profiles matched in TOML declaration order.
 
+## Future plans
+
+- **GUI config editor** — standalone tool (not Rust-required), visual button remap + combo/macro editing
+- **Regular DualSense** (PID 0x0CE6) — re-enable descriptor-compatible support
+- **Trigger source mapping** — analog threshold events (half-press vs full-press) as remap sources
+- **Touchpad 4-zone** — expand left/right to quadrant grid
+
 ## Migration reference
 
 Combo, macro, and turbo were originally in an InputPlumber-based companion at `/home/kurobac/Projects/ds/companion/`. All three features have been ported to dseuhid's direct-in-report approach (no D-Bus). The old companion is only useful for historical reference.

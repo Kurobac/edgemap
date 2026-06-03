@@ -226,11 +226,14 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - [x] edgemap daemon: auto-create config, alive-detect dseuhid, auto-inject remap
 - [x] edgemap auto-switch profiles by running processes (comm exact + cmdline substring)
 - [x] edgemap mtime-based hot reload + notify-send notifications
+- [x] Singleton instance detection (dseuhid + edgemap)
+- [x] BUGFIX.md (#1-#48 documented with root causes)
 
 ### Planned — Next Features
 
 | Priority | Feature | Complexity | Description |
 |----------|---------|-----------|-------------|
+| Medium | **GUI config editor** | Medium | Standalone tool, visual button remap + combo/macro editing. Not Rust-required — language chosen for ease of distribution |
 | Low | **Regular DualSense** | Low | Re-enable PID 0x0CE6; verify HID descriptor compatibility |
 | Low | **Trigger source mapping** | Medium | Analog threshold events (half-press vs full-press) |
 | Low | **Touchpad 4-zone** | Low | Expand left/right to quadrant grid |
@@ -240,8 +243,8 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 | Feature | Reason |
 |---------|--------|
 | D-Bus interface (zbus) | Introduces async runtime, excessive complexity for marginal benefit |
-| inotify auto-reload | Manual SIGHUP / FIFO sufficient |
-| GUI config generator | Standalone tool, not daemon responsibility |
+| inotify auto-reload | edgemap mtime-based reload sufficient |
+| GUI config generator | Moved to planned — standalone tool, not daemon responsibility |
 | Multiple controllers | 就是不想做 |
 
 ## Commit History

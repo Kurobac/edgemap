@@ -23,6 +23,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.0.11 | `5053099` | **Macro** (timed key sequences, hold & single modes, combo→macro) |
 | v0.1.0 | `4207d1c` | **Feature complete**: turbo + combo + macro + remap, 3-layer pipeline, --config-path, systemd unit |
 | v0.2.0 | `552def2` | **edgemap CLI**: validate, create-config, reload, switch-config; FIFO + subcommand refactor; bugfixes #32-#37 |
+| v0.3.0 | `bb9ccda` | **edgemap daemon**: auto-create config, alive-detect dseuhid, auto-inject remap on connect |
 
 ## Implemented Features
 
@@ -221,6 +222,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - [x] FIFO control daemon: `/run/dseuhid/control` named pipe, non-root reload + switch-config (v0.1.0+5)
 - [x] Monitor shows analog sticks (threshold 5, 80ms throttle) (v0.1.0+6)
 - [x] edgemap CLI: `validate`, `create-config`, `reload`, `switch-config` (no root, separate binary)
+- [x] edgemap daemon: auto-create config, alive-detect dseuhid, auto-inject remap
 
 ### Planned — Next Features
 
@@ -242,6 +244,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 ## Commit History
 
 ```
+bb9ccda feat: edgemap daemon (auto-create + alive-detect + auto-inject)    [v0.3.0]
 552def2 feat: edgemap CLI (validate, create-config, reload, switch-config)  [v0.2.0]
 9211997 fix: chmod FIFO to 0666 after mkfifo (umask was cutting to 0644)
 90ce930 fix: unknown subcommand errors + monitor shows sticks

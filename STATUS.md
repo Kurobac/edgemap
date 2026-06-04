@@ -31,6 +31,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.4.4 | `619a337` | **Bugfix #50**: detect dseuhid restart via PID change |
 | v0.5.0 | `d0f0c7b` | **GUI config editor** (PyQt6): UI shell — two-column layout, remap/turbo/combo/macro editing, profile quick-switch, toolbar |
 | v0.5.1 | `4568d13` | **Hotplug fix (#58)**: dseuhid writes /run/dseuhid/connected, edgemap re-injects config on USB reconnect |
+| v0.5.2 | `f0e263d` | **Deferred validation + hotplug redo**: profile config validated at injection time; connected/disconnected marker content; bulk validate; version=2 check |
 
 ## Implemented Features
 

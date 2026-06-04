@@ -259,4 +259,14 @@
 
 **Fix:** dseuhid now writes `/run/dseuhid/connected` every time UHID is created. edgemap polls its mtime — any change triggers `current_config.clear()` → re-inject on next iteration. Covers USB hotplug, `systemctl restart`, and first-start.
 
+### #59 — Profile config validation deferred to injection time
+**Root cause:** edgemap daemon validated all profile configs at startup. A profile referencing a non-existent or invalid config file was skipped entirely — requiring mtime-based edgemap.toml reload to re-add it after the config file was created.
+
+**Fix:** Defer config file existence and validation to `switch-config` injection time. Profiles are always loaded into `valid_profiles` regardless of config file state. If a config becomes valid later, it auto-recovers on the next daemon iteration without requiring an edgemap.toml reload. Invalid profiles gracefully fall back to base_config.
+
+### #60 — Hotplug detection reworked with connected/disconnected marker content
+**Root cause:** Original fix (#58) used mtime-only detection which couldn't distinguish device state — edgemap would attempt injection even when no controller was connected, generating spurious warnings.
+
+**Fix:** dseuhid now writes `"connected"` on UHID creation and `"disconnected"` on device loss. edgemap reads content: `"disconnected"` skips injection entirely, `"connected"` with mtime change triggers re-injection. Also adds Gamepad connect/disconnect desktop notifications.
+
 

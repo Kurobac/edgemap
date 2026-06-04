@@ -588,32 +588,52 @@ fn cmd_daemon(args: &[String]) -> ! {
 
         if wanted != current_config {
             // validate before injecting — catches profiles configured before
-            // their config files are created
-            let mut valid = false;
-            if Path::new(&wanted).exists() {
-                match config::Config::load(&wanted) {
-                    Ok(cfg) => valid = config::validate(&cfg).is_ok(),
-                    Err(e) => log::warn!("cannot load {wanted}: {e}"),
+            // their config files are created, or invalid save states
+            let is_valid = |p: &str| -> bool {
+                if !Path::new(p).exists() {
+                    log::warn!("config not found: {p}");
+                    return false;
                 }
-            } else {
-                log::warn!("config not found: {wanted}");
-            }
-            if !valid {
-                current_config = wanted;  // remember attempt, don't retry
-                std::thread::sleep(Duration::from_secs(1));
-                continue;
+                match config::Config::load(p) {
+                    Ok(cfg) => {
+                        if let Err(e) = config::validate(&cfg) {
+                            log::warn!("config invalid ({p}): {e}");
+                            false
+                        } else { true }
+                    }
+                    Err(e) => { log::warn!("cannot load {p}: {e}"); false }
+                }
+            };
+
+            let mut target = wanted.clone();
+            if !is_valid(&target) {
+                // profile config failed — try base_config as fallback
+                if target != state.base_config {
+                    log::warn!("profile config invalid, falling back to default");
+                    target = state.base_config.clone();
+                    if !is_valid(&target) {
+                        log::warn!("default config also invalid, keeping previous");
+                        std::thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
+                } else {
+                    // base_config itself is invalid — just warn, don't spam
+                    log::warn!("default config invalid, keeping previous");
+                    std::thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
             }
 
-            let cmd = format!("switch-config {}", wanted);
+            let cmd = format!("switch-config {}", target);
             if try_send_fifo_command(cmd.as_bytes()) {
                 let label = state.profiles.iter()
-                    .find(|(_, pc)| resolve_config_path(&pc.config, &state.dir) == wanted)
+                    .find(|(_, pc)| resolve_config_path(&pc.config, &state.dir) == target)
                     .map(|(name, _)| format!("profile '{name}'"))
                     .unwrap_or_else(|| "default config".to_string());
                 log::info!("dseuhid connected");
-                log::info!("applied {label}: {wanted}");
+                log::info!("applied {label}: {target}");
                 send_notification("edgemap", &format!("Switched to {label}"));
-                current_config = wanted;
+                current_config = target;
             }
         }
         std::thread::sleep(Duration::from_secs(1));

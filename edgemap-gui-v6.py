@@ -9,10 +9,10 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTableWidget, QTableWidgetItem,
     QHeaderView, QComboBox, QCheckBox, QSpinBox,
-    QPushButton, QLabel, QMenu, QMenuBar, QStatusBar,
+    QPushButton, QLabel, QMenu, QStatusBar,
     QWidget, QHBoxLayout, QVBoxLayout, QDialog, QDialogButtonBox,
     QRadioButton, QButtonGroup, QListWidget, QListWidgetItem,
-    QLineEdit, QMessageBox, QToolBar, QStyle, QSizePolicy, QToolButton,
+    QLineEdit, QMessageBox, QToolBar, QStyle, QSizePolicy,
     QFormLayout, QGroupBox, QFileDialog,
 )
 
@@ -654,34 +654,16 @@ class EdgemapEditor(QMainWindow):
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         style = QApplication.style()
 
-        # Menu button (Qt standard icon)
-        menu = QMenu()
-        menu.addAction("Open...", self._open_config)
-        menu.addAction("Save As...", self._save_as_config)
-        menu.addSeparator()
-        menu.addAction("Quit", self.close)
-        menu_btn = QToolButton()
-        menu_btn.setText("Menu")
-        menu_btn.setIcon(QIcon.fromTheme("application-menu"))
-        menu_btn.setAutoRaise(True)
-        menu_btn.setStyleSheet("QToolButton:hover { background: palette(alternate-base); } QToolButton:pressed { background: palette(alternate-base); }")
-        menu_btn.setPalette(tb.palette())
-        menu_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        menu_btn.setMenu(menu)
-        tb.addWidget(menu_btn)
-        tb.addSeparator()
-
         act_new = tb.addAction(QIcon.fromTheme("document-new"), "New")
         act_new.triggered.connect(self._new_config)
+        act_open = tb.addAction(QIcon.fromTheme("document-open"), "Open")
+        act_open.triggered.connect(self._open_config)
+        tb.addSeparator()
 
         act_revert = tb.addAction(style.standardIcon(QStyle.StandardPixmap.SP_DialogResetButton), "Revert")
         act_revert.triggered.connect(self._revert_changes)
         act_reset = tb.addAction(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "Reset")
         act_reset.triggered.connect(self._reset_defaults)
-        act_edgemap = tb.addAction(style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "edgemap")
-        act_edgemap.triggered.connect(self._open_edgemap_config)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -689,9 +671,12 @@ class EdgemapEditor(QMainWindow):
 
         act_macros = tb.addAction(style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView), "Macros")
         QTimer.singleShot(0, lambda: act_macros.triggered.connect(self._open_macros))
+        act_edgemap = tb.addAction(style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "edgemap")
+        act_edgemap.triggered.connect(self._open_edgemap_config)
         tb.addSeparator()
+        act_saveas = tb.addAction(QIcon.fromTheme("document-save-as"), "Save As")
+        act_saveas.triggered.connect(self._save_as_config)
         tb.addAction(style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "Save")
-        tb.addAction(style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton), "Apply")
 
         self.toolbar = tb
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)

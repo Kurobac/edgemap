@@ -298,6 +298,10 @@ class MacroEditor(QDialog):
         if not new_name:
             QMessageBox.warning(self, "Error", "Macro name cannot be empty.")
             return
+        if not re.fullmatch(r'[a-zA-Z0-9_-]+', new_name):
+            QMessageBox.warning(self, "Error",
+                "Macro name: only letters, digits, underscores and hyphens allowed.")
+            return
         if not self.steps:
             QMessageBox.warning(self, "Error", "Macro must have at least one step.")
             return
@@ -657,7 +661,7 @@ class EdgemapEditor(QMainWindow):
         act_new = tb.addAction(QIcon.fromTheme("document-new"), "New")
         act_new.triggered.connect(self._new_config)
         act_open = tb.addAction(QIcon.fromTheme("document-open"), "Open")
-        act_open.triggered.connect(self._open_config)
+        act_open.triggered.connect(lambda: self._open_config())
         tb.addSeparator()
 
         act_revert = tb.addAction(style.standardIcon(QStyle.StandardPixmap.SP_DialogResetButton), "Revert")

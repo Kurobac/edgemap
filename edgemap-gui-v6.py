@@ -1072,18 +1072,39 @@ class EdgemapEditor(QMainWindow):
                 lines.append("")
         return "\n".join(lines) + "\n"
 
+    def _validate_and_write(self, content, target_path):
+        tmp = "/tmp/edgemap_validate.toml"
+        with open(tmp, "w") as f:
+            f.write(content)
+        try:
+            result = subprocess.run(["edgemap", "v", tmp], capture_output=True, text=True, timeout=10)
+        except FileNotFoundError:
+            QMessageBox.warning(self, "Error", "edgemap binary not found in PATH.")
+            return False
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(self, "Error", "Validation timed out.")
+            return False
+        if result.returncode != 0:
+            QMessageBox.warning(self, "Error", f"Config validation failed:\n{result.stderr}")
+            return False
+        try:
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            with open(target_path, "w") as f:
+                f.write(content)
+            return True
+        except OSError as e:
+            QMessageBox.warning(self, "Error", f"Cannot save: {e}")
+            return False
+
     def _save_config(self):
         if not self.current_file:
             self._save_as_config()
             return
-        try:
-            content = self._build_toml()
-            with open(self.current_file, "w") as f:
-                f.write(content)
-            self._saved_config = copy.deepcopy(self.config)
-            self.statusBar().showMessage(f"Saved {self.current_file}")
-        except OSError as e:
-            QMessageBox.warning(self, "Error", f"Cannot save: {e}")
+        content = self._build_toml()
+        if not self._validate_and_write(content, self.current_file):
+            return
+        self._saved_config = copy.deepcopy(self.config)
+        self.statusBar().showMessage(f"Saved {self.current_file}")
 
     def _save_as_config(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -1093,20 +1114,17 @@ class EdgemapEditor(QMainWindow):
         )
         if not path:
             return
-        try:
-            content = self._build_toml()
-            with open(path, "w") as f:
-                f.write(content)
-            self.current_file = path
-            self._saved_config = copy.deepcopy(self.config)
-            self.profile_btn.setText(os.path.basename(path))
-            conf_dir = os.path.realpath(os.path.expanduser("~/.config/edgemap"))
-            if os.path.realpath(path).startswith(conf_dir + os.sep):
-                self.statusBar().showMessage("")
-            else:
-                self.statusBar().showMessage(path)
-        except OSError as e:
-            QMessageBox.warning(self, "Error", f"Cannot save: {e}")
+        content = self._build_toml()
+        if not self._validate_and_write(content, path):
+            return
+        self.current_file = path
+        self._saved_config = copy.deepcopy(self.config)
+        self.profile_btn.setText(os.path.basename(path))
+        conf_dir = os.path.realpath(os.path.expanduser("~/.config/edgemap"))
+        if os.path.realpath(path).startswith(conf_dir + os.sep):
+            self.statusBar().showMessage("")
+        else:
+            self.statusBar().showMessage(path)
 
     def _reset_defaults(self):
         reply = QMessageBox.question(self, "Reset", "Reset all buttons to defaults?",

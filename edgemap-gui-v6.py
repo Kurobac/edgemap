@@ -185,7 +185,8 @@ class MacroEditor(QDialog):
         self.is_new = not name
         display = name or "(new macro)"
         self.setWindowTitle(f"Macro: {display}")
-        self.resize(520, 310)
+        self.resize(500, 450)
+        self.setFixedSize(500, 450)
 
         md = macros.get(name, {}) if name else {}
         self.mode = md.get("mode", "hold")
@@ -218,8 +219,8 @@ class MacroEditor(QDialog):
         table = QTableWidget(0, 4)
         table.setHorizontalHeaderLabels(["Key", "Press", "Release", ""])
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        table.horizontalHeader().resizeSection(1, 64)
-        table.horizontalHeader().resizeSection(2, 64)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         table.horizontalHeader().resizeSection(3, 34)
         table.verticalHeader().setVisible(False)
@@ -329,6 +330,7 @@ class MacroPicker(QDialog):
         title = f"Select Macro{f' for {for_button}' if for_button else ''}"
         self.setWindowTitle(title)
         self.resize(440, 320)
+        self.setFixedSize(440, 320)
 
         layout = QVBoxLayout(self)
 
@@ -421,7 +423,8 @@ class EdgemapConfigDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle("edgemap.toml Editor")
-        self.resize(540, 400)
+        self.resize(620, 440)
+        self.setFixedSize(620, 440)
 
         self.path = os.path.expanduser("~/.config/edgemap/edgemap.toml")
 
@@ -452,8 +455,10 @@ class EdgemapConfigDialog(QDialog):
 
         # Default config
         fl = QFormLayout()
-        self.cfg_edit = QLineEdit(data["config"])
-        fl.addRow("Default config:", self.cfg_edit)
+        self.cfg_combo = QComboBox()
+        self.cfg_combo.setFixedWidth(200)
+        self._fill_config_combo(self.cfg_combo, data["config"])
+        fl.addRow("Default config:", self.cfg_combo)
         layout.addLayout(fl)
 
         # Profiles
@@ -471,17 +476,20 @@ class EdgemapConfigDialog(QDialog):
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
         self.prof_list.currentItemChanged.connect(self._on_select)
         gl.addWidget(self.prof_list, 1)
-
         pf = QFormLayout()
-        self.pf_config = QLineEdit()
+        self.pf_config = QComboBox()
+        self.pf_config.setFixedWidth(200)
         self.pf_process = QLineEdit()
+        self.pf_process.setFixedWidth(200)
         self.pf_cmdline = QLineEdit()
+        self.pf_cmdline.setFixedWidth(200)
         pf.addRow("Config:", self.pf_config)
         pf.addRow("Match process:", self.pf_process)
         pf.addRow("Match cmdline:", self.pf_cmdline)
-        hint = QLabel("Both fields set = AND logic")
-        hint.setStyleSheet("color: palette(mid); font-size: 10px; padding-left: 4px;")
-        pf.addRow(hint)
+        hint = QLabel("Both fields set = AND logic (both must match)")
+        hint.setStyleSheet("color: gray; font-size: 11pt; padding-left: 4px;")
+        hint.setWordWrap(True)
+        pf.addRow("", hint)
         gl.addLayout(pf, 2)
 
         layout.addWidget(grp)
@@ -513,7 +521,7 @@ class EdgemapConfigDialog(QDialog):
 
     def _save_selection(self, item):
         item.setData(Qt.ItemDataRole.UserRole, {
-            "config": self.pf_config.text(),
+            "config": self.pf_config.currentText(),
             "match_process": self.pf_process.text(),
             "match_cmdline": self.pf_cmdline.text(),
         })
@@ -524,7 +532,7 @@ class EdgemapConfigDialog(QDialog):
         if not current:
             return
         d = current.data(Qt.ItemDataRole.UserRole) or {}
-        self.pf_config.setText(d.get("config", "default.toml"))
+        self._fill_config_combo(self.pf_config, d.get("config", "default.toml"))
         self.pf_process.setText(d.get("match_process", ""))
         self.pf_cmdline.setText(d.get("match_cmdline", ""))
 
@@ -540,6 +548,15 @@ class EdgemapConfigDialog(QDialog):
         if not item:
             return
         self.prof_list.takeItem(self.prof_list.currentRow())
+
+    def _fill_config_combo(self, combo, current):
+        edir = os.path.expanduser("~/.config/edgemap")
+        combo.clear()
+        if os.path.isdir(edir):
+            for fn in sorted(os.listdir(edir)):
+                if fn.endswith(".toml") and fn != "edgemap.toml":
+                    combo.addItem(fn)
+        combo.setCurrentText(current or "default.toml")
 
     def _save(self):
         # Save current selection
@@ -583,7 +600,7 @@ class EdgemapConfigDialog(QDialog):
                 return
 
         # Build TOML
-        lines = [f'config = "{self.cfg_edit.text()}"']
+        lines = [f'config = "{self.cfg_combo.currentText()}"']
         if self.prof_list.count() > 0:
             lines.append("")
             for i in range(self.prof_list.count()):
@@ -621,6 +638,10 @@ class EdgemapEditor(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("")
         self._build_ui()
+
+        default = os.path.expanduser("~/.config/edgemap/default.toml")
+        if os.path.exists(default):
+            self._open_config(default)
 
     def _build_ui(self):
         # Remove existing toolbar before rebuilding
@@ -691,7 +712,7 @@ class EdgemapEditor(QMainWindow):
         outer.addLayout(tables)
 
         # Profile quick-switch (status bar)
-        if hasattr(self, 'profile_btn') and self.profile_btn and self.profile_btn.isVisible():
+        if hasattr(self, 'profile_btn') and self.profile_btn:
             # already exists — just refresh the menu
             self.profile_btn.menu().clear()
         else:

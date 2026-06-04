@@ -68,6 +68,10 @@ def load_config():
     except TOMLDecodeError as e:
         print(f"Warning: cannot parse {path}: {e}", file=sys.stderr)
         return {}
+    except OSError as e:
+        print(f"Warning: cannot read {path}: {e}", file=sys.stderr)
+        return {}
+        return {}
 
 
 class ComboDialog(QDialog):
@@ -241,10 +245,12 @@ class MacroEditor(QDialog):
         btn_row = QHBoxLayout()
         add = QPushButton("+ Add Step")
         add.clicked.connect(self._add)
+        add.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn_row.addWidget(add)
         btn_row.addStretch()
         self._save_btn = QPushButton("Save")
         self._save_btn.clicked.connect(self._save)
+        self._save_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn_row.addWidget(self._save_btn)
         layout.addLayout(btn_row)
 
@@ -351,6 +357,7 @@ class MacroPicker(QDialog):
         top.addStretch()
         add_btn = QPushButton("+ New")
         add_btn.clicked.connect(self._create_new)
+        add_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         top.addWidget(add_btn)
         layout.addLayout(top)
 
@@ -361,9 +368,11 @@ class MacroPicker(QDialog):
         btn_row = QHBoxLayout()
         edit_btn = QPushButton("Edit")
         edit_btn.clicked.connect(self._edit)
+        edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn_row.addWidget(edit_btn)
         del_btn = QPushButton("Delete")
         del_btn.clicked.connect(self._delete)
+        del_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn_row.addWidget(del_btn)
         btn_row.addStretch()
 
@@ -375,6 +384,8 @@ class MacroPicker(QDialog):
         layout.addLayout(btn_row)
 
         self._refresh()
+
+        QShortcut(QKeySequence(Qt.Key.Key_Delete), self).activated.connect(self._delete)
 
     def _refresh(self):
         self.list.clear()
@@ -410,8 +421,13 @@ class MacroPicker(QDialog):
         if not item:
             return
         name = item.data(Qt.ItemDataRole.UserRole)
+        row = self.list.currentRow()
         del self.macros[name]
         self._refresh()
+        new_row = min(row, self.list.count() - 1)
+        if new_row >= 0:
+            self.list.setCurrentRow(new_row)
+        self.list.setFocus()
 
     def _apply(self):
         item = self.list.currentItem()
@@ -457,6 +473,11 @@ class EdgemapConfigDialog(QDialog):
             except TOMLDecodeError as e:
                 QMessageBox.warning(self, "Error",
                     f"Cannot parse {self.path}:\n{e}\n\nOpening with minimal config.")
+                data["config"] = "default.toml"
+                data["profiles"] = {}
+            except OSError as e:
+                QMessageBox.warning(self, "Error",
+                    f"Cannot read {self.path}:\n{e}\n\nOpening with minimal config.")
                 data["config"] = "default.toml"
                 data["profiles"] = {}
         else:
@@ -1028,6 +1049,9 @@ class EdgemapEditor(QMainWindow):
         except TOMLDecodeError as e:
             QMessageBox.warning(self, "Error", f"Cannot parse {path}:\n{e}")
             return
+        except OSError as e:
+            QMessageBox.warning(self, "Error", f"Cannot read {path}:\n{e}")
+            return
 
         self.current_file = path
         self.profile_btn.setText(os.path.basename(path))
@@ -1090,8 +1114,12 @@ class EdgemapEditor(QMainWindow):
 
     def _validate_and_write(self, content, target_path):
         tmp = "/tmp/edgemap_validate.toml"
-        with open(tmp, "w") as f:
-            f.write(content)
+        try:
+            with open(tmp, "w") as f:
+                f.write(content)
+        except OSError as e:
+            QMessageBox.warning(self, "Error", f"Cannot write {tmp}: {e}")
+            return False
         try:
             result = subprocess.run(["edgemap", "v", tmp], capture_output=True, text=True, timeout=10)
         except FileNotFoundError:

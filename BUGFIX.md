@@ -269,4 +269,14 @@
 
 **Fix:** dseuhid now writes `"connected"` on UHID creation and `"disconnected"` on device loss. edgemap reads content: `"disconnected"` skips injection entirely, `"connected"` with mtime change triggers re-injection. Also adds Gamepad connect/disconnect desktop notifications.
 
+### #61 — ComboDialog: adding a new entry reset all existing entries to cross/circle
+**Root cause:** `_rebuild()` destroyed all QComboBox widgets via `setRowCount(0)` without first reading their current values. The QComboBox in their destructors may have emitted signals that mutated `self.combos` before the table was rebuilt, causing all entries to revert to their defaults.
+
+**Fix:** Read `currentText()` from each existing combo widget into `self.combos` BEFORE calling `setRowCount(0)`. The saved state is then used to populate the rebuilt rows correctly.
+
+### #62 — GUI: Open button crashed with TypeError (expected str, got bool)
+**Root cause:** `QAction.triggered` signal emits a `bool` (checked) parameter. Connecting it directly to `_open_config(path=None)` passed `path=False`, causing `subprocess.run(["edgemap","v",False])` to fail.
+
+**Fix:** Wrap the connection in a lambda that discards the bool: `act_open.triggered.connect(lambda: self._open_config())`. Profile menu connections already used `lambda p=path:` and were unaffected.
+
 

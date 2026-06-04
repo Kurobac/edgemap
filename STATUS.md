@@ -1,8 +1,8 @@
-# edgemap — Project Status (2026-06-03)
+# edgemap — Project Status (2026-06-05)
 
 ## Overview
 
-UHID proxy for DualSense Edge wireless controller (PID 0x0DF2, USB only). Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Replaces the kernel `hid-playstation` driver with a userspace virtual HID device, applies button remapping frame-by-frame, and forwards all other HID data (gyro, touchpad, LED, rumble, adaptive trigger FFB, HD haptics via audio) transparently.
+UHID proxy for DualSense and DualSense Edge wireless controllers (PID 0x0CE6 / 0x0DF2, USB only). Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Replaces the kernel `hid-playstation` driver with a userspace virtual HID device, applies button remapping frame-by-frame, and forwards all other HID data (gyro, touchpad, LED, rumble, adaptive trigger FFB, HD haptics via audio) transparently.
 
 Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/uhid` and `/dev/hidraw` access (daemon only).
 
@@ -33,6 +33,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.5.1 | `4568d13` | **Hotplug fix (#58)**: dseuhid writes /run/dseuhid/connected, edgemap re-injects config on USB reconnect |
 | v0.5.2 | `f0e263d` | **Deferred validation + hotplug redo**: profile config validated at injection time; connected/disconnected marker content; bulk validate; version=2 check |
 | v0.6.0 | `ebddfab` | **GUI config editor (PyQt6)**: full Save/Save As, edgemap.toml editor, profile quick-switch, toolbar, keyboard shortcuts, macro/combo editors |
+| v0.7.0 | — | **Regular DualSense support (0x0CE6)**: device detection for both DS and DSE; HID report descriptor read from physical device via HIDIOCGRDESC; `--force-dualsense` flag to virtualize dualsense edge as regular DS |
 
 ## Implemented Features
 
@@ -151,9 +152,11 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 ### Device Detection
 - Scan `/dev/hidraw*`, ioctl HIDIOCGRAWINFO for VID/PID
 - Physical-only: reject UHID virtual devices (check `/sys/class/hidraw/N/device/uevent`)
-- Edge-only: skip regular DualSense (PID 0x0CE6)
+- Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported
+- HID report descriptor read from physical device via HIDIOCGRDESC, `DS_EDGE_USB_DESCRIPTOR` fallback
+- `--force-dualsense` flag: override virtual device to regular DS (PID 0x0CE6 + `DS_USB_DESCRIPTOR`)
 - State validation: read first input report on open()
-- Multi-device: warn if more than one Edge detected
+- Multi-device: warn if more than one DualSense detected
 - EIO cooldown: 2-second sleep after disconnect
 
 ### Unit Tests (135 total: 68 dseuhid + 67 edgemap shared-module imports, all passing)
@@ -167,7 +170,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 ### Tools
 | Tool | Binary | Description |
 |------|--------|-------------|
-| `dseuhid` | main | UHID proxy daemon (+ `monitor`, `touchdemo`, `version`, `help` subcommands) |
+| `dseuhid` | main | UHID proxy daemon (+ `--force-dualsense` flag, `monitor`, `touchdemo`, `version`, `help` subcommands) |
 | `dseuhid monitor` | `src/monitor.rs` | Raw HID button + stick debug (threshold 5, 80ms throttle) |
 | `dseuhid touchdemo` | `src/touchdemo.rs` | Touchpad coordinate debug + zone detection |
 | `dseuhid help` | built-in | Usage + subcommand list |
@@ -205,7 +208,6 @@ See [BUGFIX.md](./BUGFIX.md) for the complete list.
 
 | Priority | Feature | Complexity | Description |
 |----------|---------|-----------|-------------|
-| Low | **Regular DualSense** | Low | Re-enable PID 0x0CE6; verify HID descriptor compatibility |
 | Low | **Trigger source mapping** | Medium | Analog threshold events (half-press vs full-press) |
 
 ### Explicitly Abandoned
@@ -216,68 +218,3 @@ See [BUGFIX.md](./BUGFIX.md) for the complete list.
 | inotify auto-reload | edgemap mtime-based reload sufficient |
 | GUI config generator | Implemented — edgemap-gui-v6.py (PyQt6) |
 | Multiple controllers | Not planned. |
-
-## Commit History
-
-```
-172397b docs: move bugfixes #1-#37 from STATUS.md to BUGFIX.md          [v0.4.3]
-d3c35ee chore: add *.kate-swp to gitignore
-63ca3aa docs: add README.md with annotated config template
-0fb65d0 chore: update .gitignore — ignore makepkg artifacts
-c547587 feat: PKGBUILD + systemd units + GPLv3; bugfix #49 profile filtering  [v0.4.2]
-c7dce37 docs: add singleton detection (#48) to BUGFIX.md                    [v0.4.1]
-23863e5 feat: singleton instance detection (dseuhid + edgemap)
-b20db57 docs: raise GUI priority to planned, add Future plans to AGENTS.md
-e404df1 feat: mtime-based hot reload, notify-send, profile order fix      [v0.4.0]
-1c4f8ec feat: auto-switch profiles by matching running processes
-87ebd24 refactor: resolve_config_path supports relative paths
-bb9ccda feat: edgemap daemon (auto-create + alive-detect + auto-inject)    [v0.3.0]
-552def2 feat: edgemap CLI (validate, create-config, reload, switch-config)  [v0.2.0]
-9211997 fix: chmod FIFO to 0666 after mkfifo (umask was cutting to 0644)
-90ce930 fix: unknown subcommand errors + monitor shows sticks
-39bab69 feat: FIFO control daemon (non-root reload + switch-config)
-d602532 refactor: monitor/touchdemo as subcommands + version/help     
-a909f94 docs: add bugfixes #32-37 (combo cleanup, remap wipe, macro validation)
-f1752a6 fix: combo injection only pushes activation (never clears)      
-3f095db fix: swap COMBO after REMAP (prevent source-clear wipe)         
-9bed9de fix: combo_triggers state change + modifier analog + macro val. 
-0464210 docs: future plans roadmap (FIFO, CLI, abandoned features)
-ea3675c docs: compact default config template (6 groups)
-4207d1c feat: --config-path flag + systemd unit                         [v0.1.0]
-3544281 docs: add bugfixes #28-31
-48d7c7f docs: update STATUS.md for v0.0.11
-5053099 feat: macro (timed key sequences, hold & single modes)          [v0.0.11]
-ec8d6ea perf: batch ACL restore via stdin (1 setfacl instead of N)
-3394651 fix: turbo+combo coexistence (build combos for turbo buttons)   [v0.0.10]
-cbfd298 feat: combo (L1 detect+suppress + L2 inject), 56 tests
-53461dd docs: update STATUS.md for v0.0.9
-45f5dc7 refactor: v0.0.9 three-layer pipeline (L1→L2→L3)             [v0.0.9]
-83e2460 chore: rename StickDir variants to UpperCamelCase             [v0.0.8]
-2ff84c9 chore: clean up compiler warnings (30→0), add AGENTS.md
-b413c6c update agents.md
-6616c24 fix: install SIGHUP handler at startup, not inside device loop  [v0.0.7]
-6acf69e docs: update STATUS.md for v0.0.6, turbo, hot reload
-9ad6dbb fix: rename none→block, fix self-turbo for missing remap
-ef20805 feat: turbo (hold-to-repeat) with configurable interval/delay
-9aa83b8 fix: transfer analog values on trigger swap (L2<->R2)        [v0.0.6]
-8ad808b fix: preserve analog values on trigger self-map
-6da6b0a feat: SIGHUP hot reload without UHID restart
-40fcbe4 docs: update STATUS.md with full project overview            [v0.0.5]
-48739ae feat: warn when button sections are missing from config
-81b330d feat: touchpad split mode (left/right partition)
-d9f54b7 test: add 41 unit tests covering mapping, report, config    [v0.0.4]
-42bf5ca fix: harden device detection
-bc6defa chore: cleanup log levels and device messages               [v0.0.3]
-86bcf92 fix: defer button target writes to prevent multi-key collision
-6e3ceec step2: batch of 12 fixes since TOML config commit
-d85859a step2: TOML config loading with all-button remap support
-27ae79a step1: add remap support with byte position fix              [v0.0.2]
-fb39885 dseuhid: add hotplug support (poll-based)
-8fbb7b8 step0: remove dead code from report.rs
-373efce dseuhid: forward SET_REPORT data to real hardware via hidraw [v0.0.1]
-56c6528 dseuhid: fix output report forwarding
-450cc4d dseuhid: reply to SET_REPORT with UHID_SET_REPORT_REPLY
-18e826e dseuhid: save and restore ACL when hiding device nodes
-b5ad76a dseuhid: fix ACL restore
-ed15311 dseuhid: init pure UHID proxy from old implementation
-```

@@ -53,6 +53,7 @@ pub const DS_EDGE_USB_DESCRIPTOR: [u8; 389] = [
     0xC0,
 ];
 
+#[allow(dead_code)]
 pub fn dualsense_usb_descriptor() -> Vec<u8> {
     DS_EDGE_USB_DESCRIPTOR.to_vec()
 }

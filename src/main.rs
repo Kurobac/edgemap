@@ -82,17 +82,17 @@ fn parse_config_path() -> Option<String> {
 
 fn print_usage() {
     eprintln!(
-        "dseuhid {} — DualSense Edge UHID Proxy",
+        "dseuhid {} — DualSense UHID Proxy",
         env!("CARGO_PKG_VERSION")
     );
     eprintln!();
     eprintln!("Usage: dseuhid [OPTIONS] [COMMAND]");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  monitor     Raw HID button debug tool");
-    eprintln!("  touchdemo   Touchpad coordinate debug tool");
-    eprintln!("  version     Print version and exit");
-    eprintln!("  help        Print this help");
+    eprintln!("  monitor         Raw HID button debug tool");
+    eprintln!("  touchdemo       Touchpad coordinate debug tool");
+    eprintln!("  version         Print version and exit");
+    eprintln!("  help            Print this help");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -c, --config-path <path>  Config file (passthrough if not set)");
@@ -109,7 +109,7 @@ fn main() {
     if args.len() >= 2 {
         // reject duplicate subcommands: all known subcommands take no extra args
         let sub = args[1].as_str();
-        let known = matches!(sub, "monitor" | "mon" | "touchdemo" | "touch" | "version" | "--version" | "-V" | "help" | "--help" | "-h");
+let known = matches!(sub, "monitor" | "mon" | "touchdemo" | "touch" | "version" | "--version" | "-V" | "help" | "--help" | "-h");
         if known && args.len() > 2 {
             eprintln!("error: '{}' takes no arguments", args[1]);
             eprintln!("Run 'dseuhid help' for usage.");
@@ -144,15 +144,9 @@ fn main() {
 
     let config_path = parse_config_path();
 
-    info!("DualSense Edge UHID proxy starting");
+    info!("DualSense UHID proxy starting");
     proxy::setup_signal_handler();
     proxy::setup_reload_handler();
-
-    let report_desc = descriptor::dualsense_usb_descriptor();
-    info!(
-        "Using built-in DualSense HID descriptor ({} bytes)",
-        report_desc.len()
-    );
 
     // check for existing instance
     if let Ok(pid_str) = std::fs::read_to_string(PID_PATH) {
@@ -173,12 +167,8 @@ fn main() {
             }
             match find_dualsense() {
                 Some(d) => {
-                    info!(
-                        "found DualSense Edge ({:04x}:{:04x}) at {}",
-                        d.vid,
-                        d.pid,
-                        d.path.display()
-                    );
+                    let info_msg = format!("found {} ({:04x}:{:04x}) at {}", d.device_name(), d.vid, d.pid, d.path.display());
+                    info!("{info_msg}");
                     break d;
                 }
                 None => {
@@ -217,7 +207,7 @@ fn main() {
             dev_info.pid as u32,
             0x0100,
             0,
-            &report_desc,
+            hidraw.report_descriptor(),
         ) {
             error!("Failed to create UHID device: {e}");
             continue;

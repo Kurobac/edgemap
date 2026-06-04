@@ -66,11 +66,42 @@ fn ioc_readwrite(nr: u32, size: usize) -> u64 {
     (IOC_READWRITE << 30) | ((b'H' as u64) << 8) | ((nr as u64) << 0) | ((size as u64) << 16)
 }
 
+pub fn hidraw_get_report_descriptor(fd: RawFd) -> io::Result<Vec<u8>> {
+    let mut desc_size: i32 = 0;
+    let request = ioc_read(0x01, std::mem::size_of::<i32>());
+    let ret = unsafe {
+        libc::ioctl(fd, request, &mut desc_size as *mut i32)
+    };
+    if ret < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if desc_size <= 0 || desc_size > 4096 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("invalid descriptor size: {desc_size}")));
+    }
+
+    let request = ioc_read(0x02, 4100);
+    let mut buf = [0u8; 4100];
+    // Write expected length for kernel >= 6.7 (reads len from caller);
+    // harmless on older kernels (they write the whole struct, overwriting this).
+    let len = (desc_size as u32).min(4095);
+    buf[0..4].copy_from_slice(&len.to_ne_bytes());
+
+    let ret = unsafe {
+        libc::ioctl(fd, request, buf.as_mut_ptr())
+    };
+    if ret < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(buf[4..4 + desc_size as usize].to_vec())
+}
+
 pub struct HidrawDevice {
     fd: OwnedFd,
 
     sysfs_path: Option<PathBuf>,
     restored_paths: Vec<(PathBuf, u32, String)>,
+    report_desc: Vec<u8>,
 }
 
 impl HidrawDevice {
@@ -89,10 +120,17 @@ impl HidrawDevice {
 
         let sysfs_path = find_sysfs_hidraw(path);
 
+        let report_desc = hidraw_get_report_descriptor(raw_fd)
+            .unwrap_or_else(|e| {
+                warn!("Failed to read HID descriptor from device ({e}), using built-in fallback");
+                crate::descriptor::DS_EDGE_USB_DESCRIPTOR.to_vec()
+            });
+
         let device = Self {
             fd,
             sysfs_path,
             restored_paths: Vec::new(),
+            report_desc,
         };
 
         // validate device state: read first input report
@@ -123,6 +161,10 @@ impl HidrawDevice {
 
     pub fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
+    }
+
+    pub fn report_descriptor(&self) -> &[u8] {
+        &self.report_desc
     }
 
     pub fn read_input(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -330,7 +372,10 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
             continue;
         }
 
-        if devinfo.vendor != SONY_VID || devinfo.product != DS5_EDGE_PID {
+        if devinfo.vendor != SONY_VID {
+            continue;
+        }
+        if devinfo.product != DS5_EDGE_PID && devinfo.product != DS5_PID {
             continue;
         }
 
@@ -340,7 +385,7 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
 
         if let Some(ref existing) = found {
             warn!(
-                "multiple DualSense Edge devices found (at {} and {}); using the first, additional devices are not supported",
+                "multiple DualSense devices found (at {} and {}); using the first, additional devices are not supported",
                 existing.path.display(),
                 raw_path.display()
             );
@@ -351,7 +396,7 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
             path: raw_path.clone(),
             vid: devinfo.vendor,
             pid: devinfo.product,
-            is_edge: true,
+            is_edge: devinfo.product == DS5_EDGE_PID,
         });
     }
 

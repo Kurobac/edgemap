@@ -5,4 +5,4 @@ Exec=edgemap-gui
 Icon=edgemap
 Terminal=false
 Type=Application
-Categories=Settings;HardwareSettings;
+Categories=Game;

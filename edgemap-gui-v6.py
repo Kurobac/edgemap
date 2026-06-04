@@ -5,7 +5,7 @@ import os, sys, tomllib, signal, re, subprocess, copy
 from tomllib import TOMLDecodeError
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTableWidget, QTableWidgetItem,
     QHeaderView, QComboBox, QCheckBox, QSpinBox,
@@ -648,6 +648,12 @@ class EdgemapEditor(QMainWindow):
         if os.path.exists(default):
             self._open_config(default)
 
+        QShortcut(QKeySequence.StandardKey.Save, self).activated.connect(self._save_config)
+        QShortcut(QKeySequence.StandardKey.SaveAs, self).activated.connect(self._save_as_config)
+        QShortcut(QKeySequence.StandardKey.Open, self).activated.connect(lambda: self._open_config())
+        QShortcut(QKeySequence.StandardKey.New, self).activated.connect(self._new_config)
+        QShortcut(QKeySequence.StandardKey.Quit, self).activated.connect(self.close)
+
     def _build_ui(self):
         # Remove existing toolbar before rebuilding
         if hasattr(self, 'toolbar') and self.toolbar:
@@ -811,11 +817,12 @@ class EdgemapEditor(QMainWindow):
         cb.wheelEvent = lambda e: None
         rl.addWidget(cb)
 
-        edit_btn = QPushButton("✎")
+        edit_btn = QPushButton()
+        edit_btn.setIcon(QIcon.fromTheme("document-edit"))
         edit_btn.setFlat(True)
         edit_btn.setFixedSize(24, 24)
         edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        edit_btn.setStyleSheet("QPushButton { border: none; color: palette(link); } QPushButton:disabled { color: palette(mid); } QPushButton:hover:!disabled { color: palette(link-visited); }")
+        edit_btn.setStyleSheet("QPushButton { border: none; background: transparent; }")
         rl.addWidget(edit_btn)
 
         remap_widget.setEnabled(not disabled)
@@ -828,13 +835,13 @@ class EdgemapEditor(QMainWindow):
             except TypeError: pass
 
             if text == "combo":
-                edit_btn.setEnabled(True)
+                edit_btn.show()
                 edit_btn.clicked.connect(lambda: self._edit_combo(name))
             elif text == "macro":
-                edit_btn.setEnabled(True)
+                edit_btn.show()
                 edit_btn.clicked.connect(lambda: self._pick_macro(name))
             else:
-                edit_btn.setEnabled(False)
+                edit_btn.hide()
             self.config.setdefault(name, {})["remap"] = text
 
         def on_edit_finished():

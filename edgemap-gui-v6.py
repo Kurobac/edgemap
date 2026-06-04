@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """edgemap config editor — v6 (two-column Excel style)"""
 
-import os, sys, tomllib, signal
+import os, sys, tomllib, signal, re, subprocess, copy
+from tomllib import TOMLDecodeError
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
@@ -12,6 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QDialog, QDialogButtonBox,
     QRadioButton, QButtonGroup, QListWidget, QListWidgetItem,
     QLineEdit, QMessageBox, QToolBar, QStyle, QSizePolicy, QToolButton,
+    QFormLayout, QGroupBox, QFileDialog,
 )
 
 # Left column
@@ -59,8 +61,12 @@ def load_config():
     path = os.path.expanduser("~/.config/edgemap/default.toml")
     if not os.path.exists(path):
         return {}
-    with open(path, "rb") as f:
-        return tomllib.load(f)
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except TOMLDecodeError as e:
+        print(f"Warning: cannot parse {path}: {e}", file=sys.stderr)
+        return {}
 
 
 class ComboDialog(QDialog):
@@ -410,13 +416,204 @@ BUTTON_KEYS = [
 ]
 
 
+class EdgemapConfigDialog(QDialog):
+    """Editor for ~/.config/edgemap/edgemap.toml."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("edgemap.toml Editor")
+        self.resize(540, 400)
+
+        self.path = os.path.expanduser("~/.config/edgemap/edgemap.toml")
+
+        data = {}
+        if os.path.exists(self.path):
+            try:
+                with open(self.path, "rb") as f:
+                    raw = tomllib.load(f)
+                data["config"] = raw.get("config", "default.toml")
+                data["profiles"] = {}
+                if "profiles" in raw:
+                    for name, val in raw["profiles"].items():
+                        data["profiles"][name] = {
+                            "config": val.get("config", "default.toml"),
+                            "match_process": val.get("match_process", ""),
+                            "match_cmdline": val.get("match_cmdline", ""),
+                        }
+            except TOMLDecodeError as e:
+                QMessageBox.warning(self, "Error",
+                    f"Cannot parse {self.path}:\n{e}\n\nOpening with minimal config.")
+                data["config"] = "default.toml"
+                data["profiles"] = {}
+        else:
+            data["config"] = "default.toml"
+            data["profiles"] = {}
+
+        layout = QVBoxLayout(self)
+
+        # Default config
+        fl = QFormLayout()
+        self.cfg_edit = QLineEdit(data["config"])
+        fl.addRow("Default config:", self.cfg_edit)
+        layout.addLayout(fl)
+
+        # Profiles
+        grp = QGroupBox("Profiles")
+        gl = QHBoxLayout(grp)
+
+        self.prof_list = QListWidget()
+        self.prof_list.setEditTriggers(QListWidget.EditTrigger.DoubleClicked)
+        for name, pcfg in data["profiles"].items():
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, {"config": pcfg["config"],
+                "match_process": pcfg.get("match_process", ""),
+                "match_cmdline": pcfg.get("match_cmdline", "")})
+            self.prof_list.addItem(item)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self.prof_list.currentItemChanged.connect(self._on_select)
+        gl.addWidget(self.prof_list, 1)
+
+        pf = QFormLayout()
+        self.pf_config = QLineEdit()
+        self.pf_process = QLineEdit()
+        self.pf_cmdline = QLineEdit()
+        pf.addRow("Config:", self.pf_config)
+        pf.addRow("Match process:", self.pf_process)
+        pf.addRow("Match cmdline:", self.pf_cmdline)
+        hint = QLabel("Both fields set = AND logic")
+        hint.setStyleSheet("color: palette(mid); font-size: 10px; padding-left: 4px;")
+        pf.addRow(hint)
+        gl.addLayout(pf, 2)
+
+        layout.addWidget(grp)
+
+        # Profile buttons
+        pr = QHBoxLayout()
+        add_btn = QPushButton("+ Add")
+        add_btn.clicked.connect(self._add_profile)
+        pr.addWidget(add_btn)
+        del_btn = QPushButton("Delete")
+        del_btn.clicked.connect(self._del_profile)
+        pr.addWidget(del_btn)
+        pr.addStretch()
+        layout.addLayout(pr)
+
+        # Save / Cancel
+        br = QHBoxLayout()
+        br.addStretch()
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self._save)
+        br.addWidget(save_btn)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        br.addWidget(cancel_btn)
+        layout.addLayout(br)
+
+        if self.prof_list.count() > 0:
+            self.prof_list.setCurrentRow(0)
+
+    def _save_selection(self, item):
+        item.setData(Qt.ItemDataRole.UserRole, {
+            "config": self.pf_config.text(),
+            "match_process": self.pf_process.text(),
+            "match_cmdline": self.pf_cmdline.text(),
+        })
+
+    def _on_select(self, current, previous):
+        if previous:
+            self._save_selection(previous)
+        if not current:
+            return
+        d = current.data(Qt.ItemDataRole.UserRole) or {}
+        self.pf_config.setText(d.get("config", "default.toml"))
+        self.pf_process.setText(d.get("match_process", ""))
+        self.pf_cmdline.setText(d.get("match_cmdline", ""))
+
+    def _add_profile(self):
+        item = QListWidgetItem("NewProfile")
+        item.setData(Qt.ItemDataRole.UserRole, {"config": "default.toml", "match_process": "", "match_cmdline": ""})
+        self.prof_list.addItem(item)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self.prof_list.setCurrentItem(item)
+
+    def _del_profile(self):
+        item = self.prof_list.currentItem()
+        if not item:
+            return
+        self.prof_list.takeItem(self.prof_list.currentRow())
+
+    def _save(self):
+        # Save current selection
+        cur = self.prof_list.currentItem()
+        if cur:
+            self._save_selection(cur)
+
+        # Collect names and detect duplicates
+        seen = set()
+        for i in range(self.prof_list.count()):
+            item = self.prof_list.item(i)
+            name = item.text().strip()
+            if not name:
+                QMessageBox.warning(self, "Error", "Profile name cannot be empty.")
+                return
+            if not re.fullmatch(r'[a-zA-Z0-9_-]+', name):
+                QMessageBox.warning(self, "Error",
+                    f"Invalid profile name '{name}': only letters, digits, underscores and hyphens allowed.")
+                return
+            if name in seen:
+                QMessageBox.warning(self, "Error", f"Duplicate profile name: '{name}'.")
+                return
+            seen.add(name)
+
+        # Check match conditions
+        for i in range(self.prof_list.count()):
+            item = self.prof_list.item(i)
+            d = item.data(Qt.ItemDataRole.UserRole) or {}
+            if not d.get("match_process") and not d.get("match_cmdline"):
+                QMessageBox.warning(self, "Error",
+                    f"Profile '{item.text()}' must have at least one match condition.")
+                return
+
+        # Check profile configs are not empty
+        for i in range(self.prof_list.count()):
+            item = self.prof_list.item(i)
+            d = item.data(Qt.ItemDataRole.UserRole) or {}
+            if not d.get("config", "").strip():
+                QMessageBox.warning(self, "Error",
+                    f"Profile '{item.text()}': config cannot be empty.")
+                return
+
+        # Build TOML
+        lines = [f'config = "{self.cfg_edit.text()}"']
+        if self.prof_list.count() > 0:
+            lines.append("")
+            for i in range(self.prof_list.count()):
+                item = self.prof_list.item(i)
+                d = item.data(Qt.ItemDataRole.UserRole) or {}
+                lines.append(f"[profiles.{item.text()}]")
+                lines.append(f'config = "{d.get("config", "default.toml")}"')
+                if d.get("match_process"):
+                    lines.append(f'match_process = "{d["match_process"]}"')
+                if d.get("match_cmdline"):
+                    lines.append(f'match_cmdline = "{d["match_cmdline"]}"')
+                lines.append("")
+
+        content = "\n".join(lines) + "\n"
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            with open(self.path, "w") as f:
+                f.write(content)
+        except OSError as e:
+            QMessageBox.warning(self, "Error", f"Cannot write {self.path}: {e}")
+            return
+        self.accept()
+
+
 class EdgemapEditor(QMainWindow):
     def __init__(self):
         super().__init__()
         self.config = load_config()
         self.current_file = None
         self._split_rows = {}
-        import copy
         self._saved_config = copy.deepcopy(self.config)
         self.setWindowTitle("edgemap Config Editor")
         self.resize(920, 700)
@@ -462,6 +659,8 @@ class EdgemapEditor(QMainWindow):
         act_revert.triggered.connect(self._revert_changes)
         act_reset = tb.addAction(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "Reset")
         act_reset.triggered.connect(self._reset_defaults)
+        act_edgemap = tb.addAction(style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView), "edgemap")
+        act_edgemap.triggered.connect(self._open_edgemap_config)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -733,6 +932,9 @@ class EdgemapEditor(QMainWindow):
         macros = self.config.setdefault("macros", {})
         MacroPicker(self, macros, for_button=None).exec()
 
+    def _open_edgemap_config(self):
+        EdgemapConfigDialog(self).exec()
+
     def _new_config(self):
         if self.config != self._saved_config:
             reply = QMessageBox.question(self, "New",
@@ -759,21 +961,57 @@ class EdgemapEditor(QMainWindow):
         self.config = {"version": 2}
         self.config.update(defaults)
         self._split_rows = {}
-        import copy
         self._saved_config = copy.deepcopy(self.config)
         self._build_ui()
         self.profile_btn.setText("No config")
         self.statusBar().showMessage("")
 
     def _open_config(self, path=None):
-        if path:
-            self.current_file = path
-            self.profile_btn.setText(os.path.basename(path))
-            conf_dir = os.path.realpath(os.path.expanduser("~/.config/edgemap"))
-            if os.path.realpath(path).startswith(conf_dir + os.sep):
-                self.statusBar().showMessage("")
-            else:
-                self.statusBar().showMessage(path)
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open config",
+                os.path.expanduser("~/.config/edgemap"),
+                "TOML files (*.toml);;All files (*)"
+            )
+            if not path:
+                return
+
+        # Validate via CLI
+        try:
+            result = subprocess.run(
+                ["edgemap", "v", path],
+                capture_output=True, text=True, timeout=10
+            )
+        except FileNotFoundError:
+            QMessageBox.warning(self, "Error", "edgemap binary not found in PATH.")
+            return
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(self, "Error", "Validation timed out.")
+            return
+
+        if result.returncode != 0:
+            QMessageBox.warning(self, "Error",
+                f"Config validation failed:\n{result.stdout}{result.stderr}")
+            return
+
+        # Load
+        try:
+            with open(path, "rb") as f:
+                self.config = tomllib.load(f)
+        except TOMLDecodeError as e:
+            QMessageBox.warning(self, "Error", f"Cannot parse {path}:\n{e}")
+            return
+
+        self.current_file = path
+        self._saved_config = copy.deepcopy(self.config)
+        self.profile_btn.setText(os.path.basename(path))
+        conf_dir = os.path.realpath(os.path.expanduser("~/.config/edgemap"))
+        if os.path.realpath(path).startswith(conf_dir + os.sep):
+            self.statusBar().showMessage("")
+        else:
+            self.statusBar().showMessage(path)
+        self._split_rows = {}
+        self._build_ui()
 
     def _save_config(self):
         pass
@@ -811,7 +1049,6 @@ class EdgemapEditor(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes:
             return
-        import copy
         self.config = copy.deepcopy(self._saved_config)
         self._build_ui()
 

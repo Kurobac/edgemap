@@ -34,7 +34,7 @@ fn print_usage() {
     eprintln!("Usage: edgemap <command> [args]");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  {:<28}Validate a config file", "v, validate <path>");
+    eprintln!("  {:<28}Validate config file(s)", "v, validate [path]");
     eprintln!("  {:<28}Create default config (stdout if no path)", "cc, create-config [path]");
     eprintln!("  {:<28}Tell running daemon to reload config", "r, reload");
     eprintln!("  {:<28}Tell daemon to load a different config", "sc, switch-config <path>");
@@ -197,34 +197,67 @@ fn find_matching_profile(profiles: &[(String, ProfileConfig)], config_dir: &Path
 }
 
 fn cmd_validate(args: &[String]) -> ! {
-    if args.len() < 3 {
-        eprintln!("error: validate requires a config path");
-        eprintln!("usage: edgemap validate <path>");
-        std::process::exit(1);
-    }
     if args.len() > 3 {
         eprintln!("error: too many arguments");
-        eprintln!("usage: edgemap validate <path>");
+        eprintln!("usage: edgemap validate [path]");
         std::process::exit(1);
     }
-    let path = &args[2];
-    let cfg = match config::Config::load(path) {
-        Ok(c) => c,
+
+    if args.len() == 3 {
+        let path = &args[2];
+        let cfg = match config::Config::load(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        };
+        match config::validate(&cfg) {
+            Ok(()) => {
+                println!("OK: {path} is valid");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // No path given — validate all configs in ~/.config/edgemap/
+    let dir = edgemap_config_dir();
+    if !dir.exists() {
+        println!("Config directory does not exist: {}", dir.display());
+        std::process::exit(0);
+    }
+    let mut ok = 0;
+    let mut fail = 0;
+    let mut entries: Vec<_> = match std::fs::read_dir(&dir) {
+        Ok(d) => d.flatten().filter(|e| {
+            e.file_name().to_str().map_or(false, |n| n.ends_with(".toml") && n != "edgemap.toml")
+        }).collect(),
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("error: cannot read {}: {e}", dir.display());
             std::process::exit(1);
         }
     };
-    match config::validate(&cfg) {
-        Ok(()) => {
-            println!("OK: {path} is valid");
-            std::process::exit(0);
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
+    entries.sort_by_key(|e| e.file_name());
+
+    println!("Checking {} ...", dir.display());
+    for entry in entries {
+        let path = entry.path();
+        let display = entry.file_name().to_string_lossy().into_owned();
+        match config::Config::load(path.to_str().unwrap()) {
+            Ok(cfg) => match config::validate(&cfg) {
+                Ok(()) => { println!("  {display} ... OK"); ok += 1; }
+                Err(e) => { eprintln!("  {display} ... FAIL: {e}"); fail += 1; }
+            },
+            Err(e) => { eprintln!("  {display} ... FAIL: {e}"); fail += 1; }
         }
     }
+    let total = ok + fail;
+    println!("{ok}/{total} valid");
+    std::process::exit(if fail > 0 { 1 } else { 0 });
 }
 
 fn cmd_create_config(args: &[String]) -> ! {

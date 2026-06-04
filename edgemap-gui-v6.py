@@ -44,11 +44,12 @@ RIGHT = [
 ]
 
 TARGETS = [
+    "block", "combo", "macro",
     "cross", "circle", "square", "triangle",
     "l1", "r1", "l2", "r2", "l3", "r3",
     "options", "create", "ps",
     "dpad_up", "dpad_down", "dpad_left", "dpad_right",
-    "touchpad", "block", "combo", "macro",
+    "touchpad",
     "ls_up", "ls_down", "ls_left", "ls_right",
     "rs_up", "rs_down", "rs_left", "rs_right",
     "l2_full", "r2_full",
@@ -789,11 +790,12 @@ class EdgemapEditor(QMainWindow):
         cb = QComboBox()
         # touchpad_left/right cannot use combo mode
         if name in ("touchpad_left", "touchpad_right"):
-            cb.addItems([t for t in TARGETS if t not in ("combo", "block")])
+            cb.addItems([t for t in TARGETS if t != "combo"])
+        elif name == "touchpad":
+            cb.addItem("split")
+            cb.addItems(TARGETS)
         else:
             cb.addItems(TARGETS)
-        if name == "touchpad":
-            cb.addItem("split")
         # detect old-style macro names and remap to "macro"
         macros = self.config.get("macros", {})
         if cur in macros and cur not in TARGETS:

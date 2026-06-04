@@ -13,7 +13,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 
@@ -520,7 +520,8 @@ fn cmd_daemon(args: &[String]) -> ! {
 
     let mut current_config = String::new();
     let mut last_pid: Option<i32> = None;
-    let mut last_uhid_mtime: Option<std::time::SystemTime> = None;
+    let mut last_uhid_mtime: Option<SystemTime> = None;
+    let mut last_uhid_state: Option<String> = None;
 
     while DAEMON_RUNNING.load(Ordering::SeqCst) {
         // hot reload on mtime change
@@ -560,15 +561,35 @@ fn cmd_daemon(args: &[String]) -> ! {
             }
         }
 
-        // detect dseuhid hotplug (UHID device recreated) via connected marker mtime
+        // detect device connection state via /run/dseuhid/connected
+        let uhid_state = std::fs::read_to_string("/run/dseuhid/connected")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        // disconnected: skip injection entirely
+        if uhid_state != "connected" {
+            if last_uhid_state.as_deref() != Some("disconnected") {
+                log::info!("Gamepad disconnected");
+                send_notification("edgemap", "Gamepad disconnected");
+            }
+            last_uhid_state = Some(uhid_state);
+            std::thread::sleep(Duration::from_secs(1));
+            continue;
+        }
+
+        // connected: check mtime for hotplug / restart
         if let Ok(meta) = std::fs::metadata("/run/dseuhid/connected") {
             if let Ok(mtime) = meta.modified() {
                 if last_uhid_mtime.map_or(true, |t| mtime != t) {
+                    log::info!("Gamepad connected");
+                    send_notification("edgemap", "Gamepad connected");
                     current_config.clear();
                     last_uhid_mtime = Some(mtime);
                 }
             }
         }
+        last_uhid_state = Some(uhid_state);
 
         let wanted = if state.valid_profiles.is_empty() {
             state.base_config.clone()

@@ -225,7 +225,7 @@ fn main() {
 
         info!("Created virtual HID device: {name}");
 
-        let _ = std::fs::write("/run/dseuhid/connected", b"");
+        let _ = std::fs::write("/run/dseuhid/connected", b"connected");
 
         if let Err(e) = hidraw.restrict_evdev_nodes() {
             info!("Failed to restrict physical evdev nodes: {e}");
@@ -277,6 +277,7 @@ fn main() {
             proxy::ExitReason::DeviceGone => {
                 proxy.skip_restore();
                 info!("Device disconnected, waiting for reconnect...");
+                let _ = std::fs::write("/run/dseuhid/connected", b"disconnected");
                 std::thread::sleep(Duration::from_secs(2));
             }
             proxy::ExitReason::UserShutdown => {

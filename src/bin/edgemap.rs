@@ -214,7 +214,11 @@ fn cmd_validate(args: &[String]) -> ! {
         };
         match config::validate(&cfg) {
             Ok(()) => {
-                println!("OK: {path} is valid");
+                if cfg.buttons.is_empty() {
+                    println!("OK: {path} is valid (passthrough only)");
+                } else {
+                    println!("OK: {path} is valid");
+                }
                 std::process::exit(0);
             }
             Err(e) => {
@@ -249,7 +253,11 @@ fn cmd_validate(args: &[String]) -> ! {
         let display = entry.file_name().to_string_lossy().into_owned();
         match config::Config::load(path.to_str().unwrap()) {
             Ok(cfg) => match config::validate(&cfg) {
-                Ok(()) => { println!("  {display} ... OK"); ok += 1; }
+                Ok(()) => {
+                    let note = if cfg.buttons.is_empty() { " (passthrough only)" } else { "" };
+                    println!("  {display} ... OK{note}");
+                    ok += 1;
+                }
                 Err(e) => { eprintln!("  {display} ... FAIL: {e}"); fail += 1; }
             },
             Err(e) => { eprintln!("  {display} ... FAIL: {e}"); fail += 1; }

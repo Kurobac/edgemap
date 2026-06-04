@@ -374,11 +374,7 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
         .to_string();
     let base_config = resolve_config_path(&base_config_raw, &dir);
 
-    if !Path::new(&base_config).exists() {
-        return Err(format!("config not found: {base_config}\n(specified in {})", path.display()));
-    }
-    let base = config::Config::load(&base_config).map_err(|e| e)?;
-    config::validate(&base).map_err(|e| e)?;
+    // defer validation of base/default config to daemon loop (pre-injection)
 
     let mut profiles: Vec<(String, ProfileConfig)> = Vec::new();
     if let Some(t) = root.get("profiles").and_then(|v| v.as_table()) {
@@ -399,23 +395,11 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
     let mut valid_profiles: Vec<(String, String)> = Vec::new();
     for (name, pcfg) in &profiles {
         let p_path = resolve_config_path(&pcfg.config, &dir);
-        if !Path::new(&p_path).exists() {
-            log::warn!("profile '{name}': config not found at {p_path}, skipping");
-            continue;
-        }
-        match config::Config::load(&p_path) {
-            Err(e) => { log::warn!("profile '{name}': {e}, skipping"); continue; }
-            Ok(cfg) => {
-                if let Err(e) = config::validate(&cfg) {
-                    log::warn!("profile '{name}': {e}, skipping");
-                    continue;
-                }
-            }
-        }
         if pcfg.match_process.is_empty() && pcfg.match_cmdline.is_empty() {
             log::warn!("profile '{name}': no match_process or match_cmdline, skipping");
             continue;
         }
+        // defer config existence/validation to daemon loop (pre-injection)
         valid_profiles.push((name.clone(), p_path));
     }
 
@@ -603,6 +587,23 @@ fn cmd_daemon(args: &[String]) -> ! {
         };
 
         if wanted != current_config {
+            // validate before injecting — catches profiles configured before
+            // their config files are created
+            let mut valid = false;
+            if Path::new(&wanted).exists() {
+                match config::Config::load(&wanted) {
+                    Ok(cfg) => valid = config::validate(&cfg).is_ok(),
+                    Err(e) => log::warn!("cannot load {wanted}: {e}"),
+                }
+            } else {
+                log::warn!("config not found: {wanted}");
+            }
+            if !valid {
+                current_config = wanted;  // remember attempt, don't retry
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+
             let cmd = format!("switch-config {}", wanted);
             if try_send_fifo_command(cmd.as_bytes()) {
                 let label = state.profiles.iter()

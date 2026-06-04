@@ -80,6 +80,10 @@ fn parse_config_path() -> Option<String> {
     None
 }
 
+fn parse_force_dualsense() -> bool {
+    env::args().any(|a| a == "--force-dualsense")
+}
+
 fn print_usage() {
     eprintln!(
         "dseuhid {} — DualSense UHID Proxy",
@@ -96,6 +100,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -c, --config-path <path>  Config file (passthrough if not set)");
+    eprintln!("  --force-dualsense         Force virtual device as regular DualSense");
     eprintln!();
     eprintln!("Without a command, starts the UHID proxy daemon (requires root).");
 }
@@ -133,9 +138,11 @@ let known = matches!(sub, "monitor" | "mon" | "touchdemo" | "touch" | "version" 
                 return;
             }
             _ => {
-                eprintln!("error: unknown command '{}'", args[1]);
-                eprintln!("Run 'dseuhid help' for usage.");
-                std::process::exit(1);
+                if !sub.starts_with('-') {
+                    eprintln!("error: unknown command '{}'", args[1]);
+                    eprintln!("Run 'dseuhid help' for usage.");
+                    std::process::exit(1);
+                }
             }
         }
     }
@@ -143,6 +150,11 @@ let known = matches!(sub, "monitor" | "mon" | "touchdemo" | "touch" | "version" 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let config_path = parse_config_path();
+    let force_dualsense = parse_force_dualsense();
+
+    if force_dualsense {
+        info!("--force-dualsense: virtual device will appear as regular DualSense");
+    }
 
     info!("DualSense UHID proxy starting");
     proxy::setup_signal_handler();
@@ -198,16 +210,21 @@ let known = matches!(sub, "monitor" | "mon" | "touchdemo" | "touch" | "version" 
         };
 
         let name = format!("{} Remapper", dev_info.device_name());
+        let (uhid_pid, uhid_desc): (u32, &[u8]) = if force_dualsense {
+            (device::DS5_PID as u32, &descriptor::DS_USB_DESCRIPTOR)
+        } else {
+            (dev_info.pid as u32, hidraw.report_descriptor())
+        };
         if let Err(e) = uhid.create(
             &name,
             "",
             "",
             0x0003, // BUS_USB
             dev_info.vid as u32,
-            dev_info.pid as u32,
+            uhid_pid,
             0x0100,
             0,
-            hidraw.report_descriptor(),
+            uhid_desc,
         ) {
             error!("Failed to create UHID device: {e}");
             continue;

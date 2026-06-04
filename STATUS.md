@@ -32,6 +32,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.5.0 | `d0f0c7b` | **GUI config editor** (PyQt6): UI shell — two-column layout, remap/turbo/combo/macro editing, profile quick-switch, toolbar |
 | v0.5.1 | `4568d13` | **Hotplug fix (#58)**: dseuhid writes /run/dseuhid/connected, edgemap re-injects config on USB reconnect |
 | v0.5.2 | `f0e263d` | **Deferred validation + hotplug redo**: profile config validated at injection time; connected/disconnected marker content; bulk validate; version=2 check |
+| v0.6.0 | `ebddfab` | **GUI config editor (PyQt6)**: full Save/Save As, edgemap.toml editor, profile quick-switch, toolbar, keyboard shortcuts, macro/combo editors |
 
 ## Implemented Features
 
@@ -204,7 +205,6 @@ See [BUGFIX.md](./BUGFIX.md) for the complete list.
 
 | Priority | Feature | Complexity | Description |
 |----------|---------|-----------|-------------|
-| Medium | **GUI config editor** | Medium | Standalone tool, visual button remap + combo/macro editing. Not Rust-required — language chosen for ease of distribution |
 | Low | **Regular DualSense** | Low | Re-enable PID 0x0CE6; verify HID descriptor compatibility |
 | Low | **Trigger source mapping** | Medium | Analog threshold events (half-press vs full-press) |
 

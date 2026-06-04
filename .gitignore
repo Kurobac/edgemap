@@ -5,3 +5,4 @@
 *.tar.zst
 *.tar.xz
 pkg/
+AGENTS.md

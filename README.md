@@ -1,6 +1,6 @@
 # edgemap
 
-DualSense Edge remap companion that works at the HID level — all DualSense-specific features (adaptive triggers, HD haptics, gyro, touchpad) pass through untouched. Two binaries: `dseuhid` (root daemon, UHID proxy) and `edgemap` (user CLI, config management).
+DualSense Edge HID-level remap companion. Three components: `dseuhid` (root daemon, UHID proxy), `edgemap` (user CLI, config management), and `edgemap-gui` (PyQt6 config editor). All DualSense-specific features (adaptive triggers, HD haptics, gyro, touchpad) pass through untouched.
 
 ## Disclaimer
 
@@ -19,6 +19,8 @@ but makes no warranty regarding functionality or stability.
 cargo build --release
 sudo install -m755 target/release/dseuhid /usr/bin/dseuhid
 sudo install -m755 target/release/edgemap /usr/bin/edgemap
+sudo install -m755 edgemap-gui-v6.py /usr/bin/edgemap-gui
+sudo install -m644 edgemap.svg /usr/share/icons/hicolor/scalable/apps/edgemap.svg
 sudo install -m644 dseuhid.service /usr/lib/systemd/system/dseuhid.service
 install -Dm644 edgemap.service ~/.config/systemd/user/edgemap.service
 
@@ -42,6 +44,7 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Profile auto‑switch | Match running processes (comm/cmdline), auto‑switch remap config |
 | Hot reload | Mtime‑based (edgemap) or FIFO command |
 | Passthrough | All DualSense HID data — gyro, touchpad, LED, rumble, adaptive triggers, HD haptics — forwarded untouched |
+| GUI config editor | PyQt6 native editor — remap, turbo, combo, macro, macro manager, save/load |
 
 Run `edgemap create-config` for an annotated template covering remap, turbo, combo, macro, and touchpad split mode.
 
@@ -57,6 +60,13 @@ Run `edgemap create-config` for an annotated template covering remap, turbo, com
 - Linux, systemd, `uhid` kernel module
 - DualSense Edge controller (USB, PID 0x0DF2)
 - Root for `dseuhid` only
+- pyqt6 for GUI support
+
+## Special Thanks
+
+*   **[inputplumber](https://github.com/ShadowBlip/InputPlumber)** - The initial demo of this project was built based on its core concepts and ideas.
+*   **[dualsense-tester](https://github.com/daidr/dualsense-tester)** - This repository served as a valuable reference for establishing and defining our HID behaviors.
+*   **Deepseek and Opencode** - The tools built the software.
 
 ## License
 

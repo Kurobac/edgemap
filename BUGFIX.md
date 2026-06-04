@@ -152,7 +152,7 @@
 
 ---
 
-## #38–#49: after v0.2.0 (edgemap daemon, packaging)
+## #38–#62: after v0.2.0 (edgemap daemon, packaging, GUI)
 
 ### #38 — mkfifo/chmod `ENAMETOOLONG` / garbage filenames
 **Root cause:** `&str::as_ptr()` is not null-terminated. `libc::mkfifo()` and `libc::chmod()` scan memory past the string until hitting a random zero byte, producing either `ENAMETOOLONG` or files with garbage-suffixed names.

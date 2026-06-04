@@ -78,7 +78,8 @@ class ComboDialog(QDialog):
     def __init__(self, parent, name, combos, macros):
         super().__init__(parent)
         self.setWindowTitle(f"Combo: {name}")
-        self.resize(420, 220)
+        self.resize(500, 400)
+        self.setFixedSize(500, 400)
         self.name = name
         self.combos = [dict(c) for c in combos] if combos else []
         self.macros = macros
@@ -96,6 +97,8 @@ class ComboDialog(QDialog):
         table.horizontalHeader().resizeSection(2, 34)
         table.verticalHeader().setVisible(False)
         table.setShowGrid(False)
+        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        table.horizontalHeader().setSectionsClickable(False)
         layout.addWidget(table)
         self.table = table
 
@@ -112,15 +115,17 @@ class ComboDialog(QDialog):
         btn_row.addWidget(box)
         layout.addLayout(btn_row)
 
-    def _rebuild(self):
+    def _save_ui_state(self):
         t = self.table
-        # Save current UI state before destroying widgets
         for i in range(len(self.combos)):
             kw = t.cellWidget(i, 0)
             ow = t.cellWidget(i, 1)
             if kw and ow:
                 self.combos[i]["key"] = kw.currentText()
                 self.combos[i]["output"] = ow.currentText()
+
+    def _rebuild(self):
+        t = self.table
         t.setRowCount(0)
         t.setRowCount(len(self.combos))
         for i, c in enumerate(self.combos):
@@ -130,7 +135,7 @@ class ComboDialog(QDialog):
             key_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
             key_combo.lineEdit().setStyleSheet("padding-left: 8px; border: none;")
             key_combo.setStyleSheet("QComboBox QAbstractItemView { padding-left: 8px; }")
-            key_combo.wheelEvent = lambda e: None
+            key_combo.wheelEvent = lambda e: e.ignore()
             key_combo.setCurrentText(c.get("key", "cross"))
             t.setCellWidget(i, 0, key_combo)
             out_combo = QComboBox()
@@ -139,7 +144,7 @@ class ComboDialog(QDialog):
             out_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
             out_combo.lineEdit().setStyleSheet("padding-left: 8px; border: none;")
             out_combo.setStyleSheet("QComboBox QAbstractItemView { padding-left: 8px; }")
-            out_combo.wheelEvent = lambda e: None
+            out_combo.wheelEvent = lambda e: e.ignore()
             if c.get("output", "") in self.output_targets:
                 out_combo.setCurrentText(c["output"])
             t.setCellWidget(i, 1, out_combo)
@@ -154,10 +159,12 @@ class ComboDialog(QDialog):
             t.setCellWidget(i, 2, bw)
 
     def _add(self):
+        self._save_ui_state()
         self.combos.append({"key": "cross", "output": "circle"})
         self._rebuild()
 
     def _remove(self, idx):
+        self._save_ui_state()
         del self.combos[idx]
         self._rebuild()
 
@@ -237,6 +244,8 @@ class MacroEditor(QDialog):
         table.horizontalHeader().resizeSection(3, 34)
         table.verticalHeader().setVisible(False)
         table.setShowGrid(False)
+        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        table.horizontalHeader().setSectionsClickable(False)
         layout.addWidget(table)
         self.table = table
 
@@ -276,6 +285,7 @@ class MacroEditor(QDialog):
             t.setCellWidget(i, 2, rs)
             rem = QPushButton("✕"); rem.setFixedSize(24, 18)
             rem.clicked.connect(lambda checked, idx=i: self._remove(idx))
+            rem.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             bw = QWidget()
             bl = QHBoxLayout(bw)
             bl.setContentsMargins(0, 0, 0, 0)
@@ -283,11 +293,24 @@ class MacroEditor(QDialog):
             bl.addWidget(rem)
             t.setCellWidget(i, 3, bw)
 
+    def _save_ui_state(self):
+        t = self.table
+        for i, s in enumerate(self.steps):
+            kw = t.cellWidget(i, 0)
+            ps = t.cellWidget(i, 1)
+            rs = t.cellWidget(i, 2)
+            if kw and ps and rs:
+                s["key"] = kw.currentText()
+                s["press_ms"] = ps.value()
+                s["release_ms"] = rs.value()
+
     def _add(self):
+        self._save_ui_state()
         self.steps.append({"key": "cross", "press_ms": 0, "release_ms": 200})
         self._rebuild()
 
     def _remove(self, idx):
+        self._save_ui_state()
         del self.steps[idx]
         self._rebuild()
 
@@ -666,6 +689,7 @@ class EdgemapEditor(QMainWindow):
         self._split_rows = {}
         self._saved_config = copy.deepcopy(self.config)
         self.setWindowTitle("edgemap Config Editor")
+        self.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), "edgemap.svg")))
         self.resize(920, 700)
         self.setMinimumSize(900, 600)
         self.setStatusBar(QStatusBar())

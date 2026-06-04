@@ -502,6 +502,10 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
         return Err("touchpad_left/right require [touchpad] remap = \"split\"".into());
     }
 
+    if cfg.version != 2 {
+        return Err(format!("version must be 2, got {}", cfg.version));
+    }
+
     Ok(())
 }
 
@@ -624,7 +628,8 @@ mod tests {
     use super::*;
 
     fn parse(toml_str: &str) -> Config {
-        toml::from_str(toml_str).expect("test config should parse")
+        let full = format!("version = 2\n{toml_str}");
+        toml::from_str(&full).expect("test config should parse")
     }
 
     #[test]

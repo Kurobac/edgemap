@@ -110,6 +110,13 @@ class ComboDialog(QDialog):
 
     def _rebuild(self):
         t = self.table
+        # Save current UI state before destroying widgets
+        for i in range(len(self.combos)):
+            kw = t.cellWidget(i, 0)
+            ow = t.cellWidget(i, 1)
+            if kw and ow:
+                self.combos[i]["key"] = kw.currentText()
+                self.combos[i]["output"] = ow.currentText()
         t.setRowCount(0)
         t.setRowCount(len(self.combos))
         for i, c in enumerate(self.combos):

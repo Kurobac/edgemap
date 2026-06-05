@@ -419,6 +419,10 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
         }
 
         // turbo + macro mutual exclusion (same button, including combo→macro)
+        // NOTE: turbo source used as a combo KEY in a different combo's rule is
+        // NOT validated (e.g. [a] turbo=true + [c] remap="combo" key="a"). In this case
+        // turbo suppresses the source in L1, so the combo key is never seen — the turbo
+        // takes priority. Considered too edge-case to warrant a validation rule.
         if btn_conf.turbo {
             let has_macro_output = match btn_conf.remap.as_deref() {
                 Some(r) if cfg.macros.contains_key(r) => true,

@@ -334,4 +334,10 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 **Fix:** After writing the turbo toggle value, check whether the physical snapshot has the target button pressed. If so, force it to `true`, overriding the turbo toggle back to on. Excluded self-turbo (`*btn != t.src`) to avoid locking self-turbo permanently on.
 
+### #70 — Suspend/resume: physical hidraw node permissions restored by udev
+
+**Root cause:** On suspend/resume, the kernel rebuilds the physical hidraw device node (`/dev/hidrawN`). Udev applies its default rules (mode 0660 + ACL), overwriting the daemon's `chmod 000` + `setfacl -b` restriction. The daemon's open fd survives the suspend cycle (USB subsystem transparently reconnects at the same bus/port), so epoll receives no HUP/ERR — the daemon never detects the event and doesn't re-restrict the node. The physical device node becomes world-readable again, potentially exposing duplicate controllers to games.
+
+**Fix:** Add `re_restrict_self()` method to `HidrawDevice` that re-applies `chmod 000` + `setfacl -b` to the physical hidraw node. Call this method at the top of `handle_hidraw_input()` — when the first HID input packet arrives after resume, the node is immediately re-hidden with zero additional latency or polling overhead.
+
 

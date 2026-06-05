@@ -9,6 +9,7 @@ mod touchdemo;
 mod uhid;
 
 use log::{error, info, warn};
+use std::collections::HashMap;
 use std::env;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::OpenOptionsExt;
@@ -210,6 +211,19 @@ let known = matches!(sub, "monitor" | "mon" | "touchdemo" | "touch" | "version" 
         };
 
         let name = format!("{} Remapper", dev_info.device_name());
+
+        let mut report_cache = HashMap::new();
+        for (report_id, size) in [(0x05u8, 41usize), (0x20u8, 64usize)] {
+            let mut buf = vec![report_id];
+            buf.resize(size, 0);
+            if device::ioctl_get_feature_report(hidraw.as_raw_fd(), &mut buf).is_ok() {
+                info!("GET_REPORT cache: read report 0x{report_id:02x} from physical device");
+                report_cache.insert(report_id, buf);
+            } else {
+                info!("GET_REPORT cache: failed to read 0x{report_id:02x}, using built-in fallback");
+            }
+        }
+
         let (uhid_pid, uhid_desc): (u32, &[u8]) = if force_dualsense {
             (device::DS5_PID as u32, &descriptor::DS_USB_DESCRIPTOR)
         } else {
@@ -279,7 +293,8 @@ let known = matches!(sub, "monitor" | "mon" | "touchdemo" | "touch" | "version" 
         let mapping = Arc::new(RwLock::new(mapping));
 
         let config_path_str = config_path.as_deref().unwrap_or("");
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, dup_fifo_fd(&fifo_fd));
+
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
             proxy::ExitReason::DeviceGone => {
                 proxy.skip_restore();

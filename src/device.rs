@@ -96,6 +96,16 @@ pub fn hidraw_get_report_descriptor(fd: RawFd) -> io::Result<Vec<u8>> {
     Ok(buf[4..4 + desc_size as usize].to_vec())
 }
 
+pub fn ioctl_get_feature_report(fd: RawFd, buf: &mut [u8]) -> io::Result<()> {
+    let request = ioc_readwrite(0x07, buf.len());
+    let ret = unsafe { libc::ioctl(fd, request, buf.as_mut_ptr()) };
+    if ret < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 pub struct HidrawDevice {
     fd: OwnedFd,
 
@@ -207,7 +217,7 @@ impl HidrawDevice {
         }
     }
 
-    fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io::Result<()> {
+fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io::Result<()> {
         let orig = fs::metadata(path)?.permissions().mode();
 
         let acl_data = std::process::Command::new("getfacl")

@@ -2,10 +2,6 @@ use std::fmt;
 
 pub const USB_INPUT_REPORT_SIZE: usize = 64;
 pub const USB_INPUT_REPORT_ID: u8 = 0x01;
-#[allow(dead_code)]
-pub const USB_OUTPUT_REPORT_SIZE: usize = 48;
-#[allow(dead_code)]
-pub const USB_OUTPUT_REPORT_ID: u8 = 0x02;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Button {

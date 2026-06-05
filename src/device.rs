@@ -12,7 +12,6 @@ const HIDRAW_DEV_DIR: &str = "/dev";
 const HIDRAW_PREFIX: &str = "hidraw";
 
 pub const SONY_VID: u16 = 0x054C;
-#[allow(dead_code)]
 pub const DS5_PID: u16 = 0x0CE6;
 pub const DS5_EDGE_PID: u16 = 0x0DF2;
 

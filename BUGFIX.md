@@ -299,4 +299,15 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 **Fix:** Always run `cargo clean` before `cargo build` when switching between commits for bisect or regression testing. Add `cargo clean` to the test procedure in AGENTS.md.
 
+### #65 — FIFO buffer too small for long config paths in `switch-config`
+**Root cause:** `handle_fifo_command()` used a fixed 256-byte buffer. A `switch-config <path>` command with a path longer than ~240 characters would be truncated at the buffer boundary, with the tail bytes arriving in the next `read()` and being discarded as unrecognized input. Since Linux `PATH_MAX` = 4096, valid absolute paths could up to that length but would be silently truncated.
+
+**Fix:** Increase FIFO read buffer from 256 to 4096 bytes.
+
+### Cleanup — dead code removal (pre-1.0)
+- Removed `trigger_reload()` (proxy.rs) — never called; reload is handled via `SHOULD_RELOAD` atomic.
+- Removed `dualsense_usb_descriptor()` (descriptor.rs) — unused wrapper; callers use `DS_EDGE_USB_DESCRIPTOR` constant directly.
+- Removed `USB_OUTPUT_REPORT_SIZE` and `USB_OUTPUT_REPORT_ID` (report.rs) — never referenced.
+- Removed unnecessary `#[allow(dead_code)]` from `DS5_PID` (device.rs) and 5 serde config structs (config.rs) — all actively used now.
+
 

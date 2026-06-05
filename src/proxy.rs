@@ -190,11 +190,6 @@ impl MacroRuntime {
 
 static SHOULD_RELOAD: AtomicBool = AtomicBool::new(false);
 
-#[allow(dead_code)]
-pub fn trigger_reload() {
-    SHOULD_RELOAD.store(true, Ordering::SeqCst);
-}
-
 pub fn try_clear_reload() -> bool {
     SHOULD_RELOAD.swap(false, Ordering::SeqCst)
 }
@@ -504,7 +499,7 @@ impl Proxy {
     }
 
     fn handle_fifo_command(&mut self) {
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; 4096];
         loop {
             let n = unsafe {
                 libc::read(

@@ -91,8 +91,3 @@ pub const DS_USB_DESCRIPTOR: [u8; 289] = [
     0x85, 0xF5, 0x09, 0x36, 0x95, 0x03, 0xB1, 0x02,
     0xC0,
 ];
-
-#[allow(dead_code)]
-pub fn dualsense_usb_descriptor() -> Vec<u8> {
-    DS_EDGE_USB_DESCRIPTOR.to_vec()
-}

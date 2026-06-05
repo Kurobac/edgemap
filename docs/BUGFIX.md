@@ -328,4 +328,10 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 **Fix:** Add `remove_file("/run/dseuhid/connected")` to `teardown_fifo()`. Also added a one-time `info!("Waiting for DualSense device...")` log in the device detection wait loop so the daemon indicates it's alive and waiting rather than silently polling.
 
+### #69 — Turbo toggle overrides physical button press on same target
+
+**Root cause:** In L1 turbo, `apply_target_to_state(&mut state, &t.dst, t.phase)` unconditionally SET the target button to the toggle phase (true/false). If the user was physically holding the target button (e.g., holding B while A is turbo→B), the turbo would clear it on the next toggle off phase, replacing the physical long-press with a rapid-fire toggle.
+
+**Fix:** After writing the turbo toggle value, check whether the physical snapshot has the target button pressed. If so, force it to `true`, overriding the turbo toggle back to on. Excluded self-turbo (`*btn != t.src`) to avoid locking self-turbo permanently on.
+
 

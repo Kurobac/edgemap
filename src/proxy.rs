@@ -607,6 +607,12 @@ impl Proxy {
                             }
                             if t.active {
                                 apply_target_to_state(&mut state, &t.dst, t.phase);
+                                // Physical button held overrides turbo toggle
+                                if let Target::Button(btn) = &t.dst {
+                                    if *btn != t.src && physical_snapshot.button(*btn) {
+                                        state.set_button(*btn, true);
+                                    }
+                                }
                             }
                         }
 

@@ -687,7 +687,6 @@ class EdgemapEditor(QMainWindow):
         self.config = load_config()
         self.current_file = None
         self._split_rows = {}
-        self._saved_config = copy.deepcopy(self.config)
         self.setWindowTitle("edgemap Config Editor")
         self.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), "edgemap.svg")))
         self.resize(920, 700)
@@ -695,6 +694,7 @@ class EdgemapEditor(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("")
         self._build_ui()
+        self._saved_config = copy.deepcopy(self.config)
 
         default = os.path.expanduser("~/.config/edgemap/default.toml")
         if os.path.exists(default):
@@ -705,6 +705,23 @@ class EdgemapEditor(QMainWindow):
         QShortcut(QKeySequence.StandardKey.Open, self).activated.connect(lambda: self._open_config())
         QShortcut(QKeySequence.StandardKey.New, self).activated.connect(self._new_config)
         QShortcut(QKeySequence.StandardKey.Quit, self).activated.connect(self.close)
+
+    def closeEvent(self, event):
+        if self.config == self._saved_config:
+            event.accept()
+            return
+        reply = QMessageBox.warning(self, "Unsaved changes",
+            "You have unsaved changes. Save before closing?",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+        if reply == QMessageBox.StandardButton.Save:
+            if self._save_config():
+                event.accept()
+            else:
+                event.ignore()
+        elif reply == QMessageBox.StandardButton.Discard:
+            event.accept()
+        else:
+            event.ignore()
 
     def _build_ui(self):
         # Remove existing toolbar before rebuilding
@@ -1039,6 +1056,13 @@ class EdgemapEditor(QMainWindow):
         self.statusBar().showMessage("")
 
     def _open_config(self, path=None):
+        if self.config != self._saved_config:
+            reply = QMessageBox.warning(self, "Unsaved changes",
+                "You have unsaved changes. Discard and open another config?",
+                QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+            if reply != QMessageBox.StandardButton.Discard:
+                return
+
         if path is None:
             path, _ = QFileDialog.getOpenFileName(
                 self, "Open config",
@@ -1167,12 +1191,13 @@ class EdgemapEditor(QMainWindow):
     def _save_config(self):
         if not self.current_file:
             self._save_as_config()
-            return
+            return True
         content = self._build_toml()
         if not self._validate_and_write(content, self.current_file):
-            return
+            return False
         self._saved_config = copy.deepcopy(self.config)
         self.statusBar().showMessage(f"Saved {self.current_file}")
+        return True
 
     def _save_as_config(self):
         path, _ = QFileDialog.getSaveFileName(

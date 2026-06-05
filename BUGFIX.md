@@ -280,11 +280,19 @@
 **Fix:** Wrap the connection in a lambda that discards the bool: `act_open.triggered.connect(lambda: self._open_config())`. Profile menu connections already used `lambda p=path:` and were unaffected.
 
 ### #63 — GET_REPORT cache: caching 0x09 (pairing info) from physical device breaks UHID device probe
-**Root cause:** Feature report 0x09 is `DS_FEATURE_REPORT_PAIRING_INFO` — the Bluetooth MAC address, NOT firmware version. The kernel `hid-playstation` driver `dualsense_get_mac_address()` reads this report during `probe()` (line 1762). Returning device-specific MAC address data from the physical device's cache caused the driver to fail probe (`ps_get_report` returned -EINVAL due to byte count or format mismatch), which caused `hid_hw_stop()` — silently removing the virtual device from the HID bus. This happened because the 0x09 report's internal format differs between hardware revisions in ways the kernel driver doesn't handle gracefully when served through a UHID reply.
+**Root cause:** Feature report 0x09 is `DS_FEATURE_REPORT_PAIRING_INFO` — NOT firmware version. Bytes 1-6 are the Bluetooth MAC address. The kernel `hid-playstation` driver's `dualsense_get_mac_address()` reads this report during `probe()`. The driver uses the MAC to generate `hdev->uniq` and create a power_supply named `ps-controller-battery-XX:XX:XX:XX:XX:XX`. When the physical device has the same MAC as our cached value, the virtual device tries to register a power_supply with an already-existing sysfs name → `-EEXIST` → probe failure → `hid_hw_stop()` silently removes the virtual device from the HID bus.
 
-**Fix:** Skip caching report 0x09. Only cache 0x05 (`DS_FEATURE_REPORT_CALIBRATION` — gyro/accel calibration, 41 bytes) and 0x20 (`DS_FEATURE_REPORT_FIRMWARE_INFO` — firmware version, 64 bytes). 0x09 falls back to the existing hardcoded value (original developer's device pairing data), which the kernel probe accepts without issue.
+This is specific to Sony's `hid-playstation` driver (not a general kernel limitation). The kernel's HID subsystem doesn't enforce `hdev->uniq` uniqueness; the conflict is in the power_supply sysfs namespace.
 
-**Diagnosis process:** Bisect isolated the regression to the GET_REPORT cache read loop. Pinpointed 0x09 as the specific report by testing each cached report individually (0x05 only, 0x09 only, 0x20 only, 0x05+0x20). A standalone `hidraw-test` demo confirmed that `HIDIOCGFEATURE` ioctl on the same fd does not corrupt the main fd — the issue was purely in the data content returned to the kernel probe.
+**Fix:** Skip caching report 0x09. Only cache 0x05 (`DS_FEATURE_REPORT_CALIBRATION` — gyro/accel calibration, 41 bytes) and 0x20 (`DS_FEATURE_REPORT_FIRMWARE_INFO` — firmware version, 64 bytes). 0x09 falls back to the hardcoded value (original developer's device MAC, which is different from any real device and thus never conflicts).
+
+**Diagnosis process:**
+1. Bisect isolated the regression to the GET_REPORT cache read loop.
+2. Pinpointed 0x09 as the specific report by testing each cached report individually (0x05 only → pass, 0x09 only → fail, 0x20 only → pass, 0x05+0x20 → pass).
+3. A standalone `hidraw-test` demo confirmed `HIDIOCGFEATURE` ioctl on the same fd does not corrupt the main fd.
+4. **Byte-level bisect** on 0x09's 20 bytes narrowed the trigger to the 6-byte MAC address field (bytes 1-6). Individual byte changes all passed; full MAC replacement failed; changing only 1 bit of the MAC restored functionality — proving it was a **MAC address conflict**, not data format corruption.
+5. **Cross-device verification**: re-enabled 0x09 caching and switched from DSE to regular DS. Failed (DS MAC self-conflict). Disabled cache, DS worked (hardcoded DSE MAC ≠ physical DS MAC). Final proof.
+
 
 ### #64 — Cargo incremental build cache produces corrupted binaries
 **Root cause:** `git checkout` between branches followed by `cargo build` (without `cargo clean`) can produce binaries that pass bisect tests but fail in production. `cargo` incremental compilation may re-use object files from a previous build with incompatible intermediate representations, silently producing a broken binary that crashes or behaves incorrectly.

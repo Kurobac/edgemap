@@ -34,6 +34,8 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.5.2 | `f0e263d` | **Deferred validation + hotplug redo**: profile config validated at injection time; connected/disconnected marker content; bulk validate; version=2 check |
 | v0.6.0 | `ebddfab` | **GUI config editor (PyQt6)**: full Save/Save As, edgemap.toml editor, profile quick-switch, toolbar, keyboard shortcuts, macro/combo editors |
 | v0.7.0 | — | **Regular DualSense support (0x0CE6)**: device detection for both DS and DSE; HID report descriptor read from physical device via HIDIOCGRDESC; `--force-dualsense` flag to virtualize dualsense edge as regular DS |
+| v0.7.1 | `e044099` | **GET_REPORT cache (0x05 calibration, 0x20 firmware)**: read calibration and firmware reports from physical device on startup; skip 0x09 (MAC address) to avoid sysfs naming conflict (BUGFIX #63) |
+| v0.7.2 | — | **Cleanup + fixes**: remove dead code (monitor, touchdemo, trigger_reload, dualsense_usb_descriptor); FIFO buffer 256→4096 (#65); GUI closeEvent unsaved changes prompt; BUGFIX #64 (Cargo incremental build cache) |
 
 ## Implemented Features
 
@@ -170,11 +172,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 ### Tools
 | Tool | Binary | Description |
 |------|--------|-------------|
-| `dseuhid` | main | UHID proxy daemon (+ `--force-dualsense` flag, `monitor`, `touchdemo`, `version`, `help` subcommands) |
-| `dseuhid monitor` | `src/monitor.rs` | Raw HID button + stick debug (threshold 5, 80ms throttle) |
-| `dseuhid touchdemo` | `src/touchdemo.rs` | Touchpad coordinate debug + zone detection |
-| `dseuhid help` | built-in | Usage + subcommand list |
-| `dseuhid version` | built-in | Print version |
+| `dseuhid` | main | UHID proxy daemon (+ `--force-dualsense` flag, `version`, `help` subcommands) |
 | `edgemap` | `src/bin/edgemap.rs` | User-side CLI: validate, create-config, reload, switch-config (no root). Daemon mode (d/daemon): auto-create config, profile auto-switch, mtime hot reload, notify-send |
 | `edgemap-gui-v6.py` | GUI | PyQt6 config editor: two-column layout, remap/turbo/combo/macro editing, macro manager, toolbar with KDE-native icons |
 

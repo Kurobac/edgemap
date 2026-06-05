@@ -1,6 +1,6 @@
 # edgemap
 
-DualSense Edge HID-level remap companion. Three components: `dseuhid` (root daemon, UHID proxy), `edgemap` (user CLI, config management), and `edgemap-gui` (PyQt6 config editor). All DualSense-specific features (adaptive triggers, HD haptics, gyro, touchpad) pass through untouched.
+DualSense HID remapper — remap buttons, turbo, combos, macros without losing DualSense-specific features. Three components: `dseuhid` (root daemon, UHID proxy), `edgemap` (user CLI, config management), and `edgemap-gui` (PyQt6 config editor). All DualSense-specific features (adaptive triggers, HD haptics, gyro, touchpad) pass through untouched.
 
 ## Disclaimer
 
@@ -41,24 +41,24 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Turbo | Hold-to-repeat with configurable interval and delay |
 | Combo | Modifier key + key → injected output |
 | Macro | Timed key sequences, hold (loop) and single (one-shot) modes |
-| Profile auto‑switch | Match running processes (comm/cmdline), auto‑switch remap config |
-| Hot reload | Mtime‑based (edgemap) or FIFO command |
+| Profile auto-switch | Match running processes (comm/cmdline), auto-switch remap config |
+| Hot reload | Mtime-based (edgemap) or FIFO command |
 | Passthrough | All DualSense HID data — gyro, touchpad, LED, rumble, adaptive triggers, HD haptics — forwarded untouched |
+| Regular DualSense | Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported |
+| DSE→DS virtualization | `--force-dualsense` flag makes Edge appear as regular DS for game compatibility |
+| GET_REPORT cache | IMU calibration data read from physical device on startup (accurate gyro) |
 | GUI config editor | PyQt6 native editor — remap, turbo, combo, macro, macro manager, save/load |
-
-Run `edgemap create-config` for an annotated template covering remap, turbo, combo, macro, and touchpad split mode.
 
 ## Not supported (by design)
 
 - Bluetooth / wireless
-- Regular DualSense (0x0CE6, may change in the future)
 - Multiple controllers
 - D‑Bus API, inotify watch
 
 ## Requirements
 
 - Linux, systemd, `uhid` kernel module
-- DualSense Edge controller (USB, PID 0x0DF2)
+- DualSense (0x0CE6) or DualSense Edge (0x0DF2) controller, USB only
 - Root for `dseuhid` only
 - pyqt6 for GUI support
 
@@ -67,6 +67,7 @@ Run `edgemap create-config` for an annotated template covering remap, turbo, com
 *   **[inputplumber](https://github.com/ShadowBlip/InputPlumber)** - The initial demo of this project was built based on its core concepts and ideas.
 *   **[dualsense-tester](https://github.com/daidr/dualsense-tester)** - This repository served as a valuable reference for establishing and defining our HID behaviors.
 *   **Deepseek and Opencode** - The tools built the software.
+*   **KDE Community** - We use icon from Breeze.
 
 ## License
 

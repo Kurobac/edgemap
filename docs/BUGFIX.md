@@ -322,4 +322,10 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 **Fix:** Remove the duplicate `return {}`.
 
+### #68 — `/run/dseuhid/connected` not cleaned up on clean shutdown
+
+**Root cause:** `teardown_fifo()` removed `FIFO_PATH` and `PID_PATH` but not `/run/dseuhid/connected`. After a clean daemon shutdown (`systemctl stop` or `kill`), the file remained with content `"connected"`, misleading edgemap into believing a daemon was still running with a controller attached.
+
+**Fix:** Add `remove_file("/run/dseuhid/connected")` to `teardown_fifo()`. Also added a one-time `info!("Waiting for DualSense device...")` log in the device detection wait loop so the daemon indicates it's alive and waiting rather than silently polling.
+
 

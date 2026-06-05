@@ -6,7 +6,7 @@ mod proxy;
 mod report;
 mod uhid;
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::env;
 use std::os::fd::FromRawFd;
@@ -48,6 +48,7 @@ fn setup_fifo() -> std::fs::File {
 fn teardown_fifo() {
     let _ = std::fs::remove_file(FIFO_PATH);
     let _ = std::fs::remove_file(PID_PATH);
+    let _ = std::fs::remove_file("/run/dseuhid/connected");
 }
 
 fn dup_fifo_fd(fifo_fd: &std::fs::File) -> std::fs::File {
@@ -163,6 +164,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
     let fifo_fd = setup_fifo();
 
     'outer: loop {
+        let mut logged_waiting = false;
         let dev_info = loop {
             if !proxy::is_running() {
                 break 'outer;
@@ -174,6 +176,10 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                     break d;
                 }
                 None => {
+                    if !logged_waiting {
+                        info!("Waiting for DualSense device...");
+                        logged_waiting = true;
+                    }
                     if proxy::try_clear_reload() {
                         info!("received reload signal (no device connected)");
                     }
@@ -206,10 +212,10 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             let mut buf = vec![report_id];
             buf.resize(size, 0);
             if device::ioctl_get_feature_report(hidraw.as_raw_fd(), &mut buf).is_ok() {
-                info!("GET_REPORT cache: read report 0x{report_id:02x} from physical device");
+                debug!("GET_REPORT cache: read report 0x{report_id:02x} from physical device");
                 report_cache.insert(report_id, buf);
             } else {
-                info!("GET_REPORT cache: failed to read 0x{report_id:02x}, using built-in fallback");
+                debug!("GET_REPORT cache: failed to read 0x{report_id:02x}, using built-in fallback");
             }
         }
 

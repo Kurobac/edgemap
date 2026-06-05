@@ -56,6 +56,7 @@ fn dup_fifo_fd(fifo_fd: &std::fs::File) -> std::fs::File {
     let fd = unsafe { libc::dup(raw) };
     if fd < 0 {
         error!("Failed to dup FIFO fd: {}", std::io::Error::last_os_error());
+        std::process::exit(1);
     }
     unsafe { std::fs::File::from_raw_fd(fd) }
 }

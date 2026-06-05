@@ -310,4 +310,16 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 - Removed `USB_OUTPUT_REPORT_SIZE` and `USB_OUTPUT_REPORT_ID` (report.rs) — never referenced.
 - Removed unnecessary `#[allow(dead_code)]` from `DS5_PID` (device.rs) and 5 serde config structs (config.rs) — all actively used now.
 
+### #66 — `dup_fifo_fd()`: negative file descriptor passed to `from_raw_fd()` after failed `dup()`
+
+**Root cause:** `dup_fifo_fd()` calls `libc::dup(raw)` which returns `-1` on error. The code checked `fd < 0` and logged an error, but didn't return or exit — falling through to `from_raw_fd(-1)`, undefined behavior that could silently create a broken File from an invalid fd.
+
+**Fix:** Add `std::process::exit(1)` after logging the error, before `from_raw_fd(fd)`.
+
+### #67 — `edgemap-gui-v6.py`: duplicate `return {}` in `load_config()`
+
+**Root cause:** In the `OSError` except handler of `load_config()`, there were two consecutive `return {}` statements (lines 73-74). The second was unreachable dead code — harmless but sloppy.
+
+**Fix:** Remove the duplicate `return {}`.
+
 

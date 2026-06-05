@@ -71,7 +71,6 @@ def load_config():
     except OSError as e:
         print(f"Warning: cannot read {path}: {e}", file=sys.stderr)
         return {}
-        return {}
 
 
 class ComboDialog(QDialog):

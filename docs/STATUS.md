@@ -2,7 +2,7 @@
 
 ## Overview
 
-UHID proxy for DualSense and DualSense Edge wireless controllers (PID 0x0CE6 / 0x0DF2, USB only). Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Replaces the kernel `hid-playstation` driver with a userspace virtual HID device, applies button remapping frame-by-frame, and forwards all other HID data (gyro, touchpad, LED, rumble, adaptive trigger FFB, HD haptics via audio) transparently.
+UHID proxy for DualSense and DualSense Edge wireless controllers (PID 0x0CE6 / 0x0DF2, USB only). Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Reads physical DualSense input via `/dev/hidraw`, applies button remapping frame-by-frame, and forwards all other HID data (gyro, touchpad, LED, rumble, adaptive trigger FFB, HD haptics via audio) transparently through a virtual HID device via `/dev/uhid`.
 
 Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/uhid` and `/dev/hidraw` access (daemon only).
 
@@ -54,13 +54,13 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | Feature | Status | Tested with |
 |---------|--------|-------------|
 | Buttons / sticks / D-pad | ✅ | Steam controller test, KDE, WebHID tester |
-| Gyroscope / accelerometer | ✅ | Steam test |
-| Touchpad (single finger) | ✅ | WebHID tester, dualsense-tester |
+| Gyroscope / accelerometer | ✅ | WebHID tester, Steam test |
+| Touchpad (single finger) | ✅ | WebHID tester |
 | FN / back paddle buttons | ✅ | KDE, WebHID tester, monitor tool |
-| LED / player indicators | ✅ | WebHID tester output panel |
-| Rumble | ✅ | CP2077, WebHID tester |
+| LED / player indicators | ✅ | WebHID tester |
+| Rumble | ✅ | SDL games |
 | Adaptive trigger FFB | ✅ | CP2077 |
-| HD haptics | ✅ | 原神 (Genshin Impact) native DS support |
+| HD haptics | ✅ | 原神 (Genshin Impact), CP2077 |
 | Steam Input bridge | ✅ | Steam games |
 | SDL / evdev | ✅ | Non-Steam SDL games |
 | Hotplug (USB) | ✅ | Unplug → reconnect → auto-resume |
@@ -217,5 +217,4 @@ See [BUGFIX.md](./BUGFIX.md) for the complete list.
 |---------|--------|
 | D-Bus interface (zbus) | Introduces async runtime, excessive complexity for marginal benefit |
 | inotify auto-reload | edgemap mtime-based reload sufficient |
-| GUI config generator | Implemented — edgemap-gui-v6.py (PyQt6) |
 | Multiple controllers | Not planned. |

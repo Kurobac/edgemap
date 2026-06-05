@@ -13,9 +13,11 @@ _edgemap() {
     cmds)
       _values "edgemap command" \
         "validate[Validate config file]" \
+        "v[Validate config file]" \
         "create-config[Print default config template]" \
         "reload[Reload config on running dseuhid]" \
         "switch-config[Switch to config file and reload]" \
+        "sc[Switch to config file and reload]" \
         "d[Run in daemon mode (auto-create, auto-switch)]" \
         "daemon[Run in daemon mode]" \
         "help[Print help]"
@@ -25,7 +27,7 @@ _edgemap() {
       (( CURRENT = 1 ))
       curcontext="${curcontext%:*}-${words[1]}:"
       case $words[1] in
-        validate|switch-config)
+        validate|v|switch-config|sc)
           _alternative \
             'edgemap:edgemap config:_files -W ~/.config/edgemap/ -g "*.toml"' \
             'any:toml file:_files -g "*.toml"'

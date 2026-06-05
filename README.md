@@ -54,6 +54,7 @@ Run `edgemap create-config` to print a template with full inline documentation.
 - Bluetooth / wireless
 - Multiple controllers
 - D‑Bus API, inotify watch
+- Other source / target device
 
 ## Requirements
 

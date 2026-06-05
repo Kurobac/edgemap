@@ -5,4 +5,5 @@ Exec=edgemap-gui
 Icon=edgemap
 Terminal=false
 Type=Application
+StartupWMClass=edgemap
 Categories=Game;

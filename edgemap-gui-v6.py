@@ -1255,6 +1255,7 @@ class EdgemapEditor(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setApplicationName("edgemap")
+    app.setDesktopFileName("edgemap")
     w = EdgemapEditor()
     w.show()
     signal.signal(signal.SIGINT, signal.SIG_DFL)

@@ -17,26 +17,27 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.0.5 | `40fcbe4` | Touchpad split mode + missing-button warnings |
 | v0.0.6 | `9aa83b8` | Hot reload (SIGHUP) + trigger analog transfer fix |
 | v0.0.7 | `6616c24` | Turbo (hold-to-repeat) + `none`→`block` rename + SIGHUP startup fix |
-| v0.0.8 | `83e2460` | Code cleanup: 0 warnings, 43 tests, AGENTS.md, StickDir naming |
-| v0.0.9 | `45f5dc7` | **Three-layer pipeline refactor** (L1 filter → L2 generate → L3 output) |
-| v0.0.10 | `3394651` | **Combo** (modifier key combinations, L1 suppress + L2 inject) |
-| v0.0.11 | `5053099` | **Macro** (timed key sequences, hold & single modes, combo→macro) |
-| v0.1.0 | `4207d1c` | **Feature complete**: turbo + combo + macro + remap, 3-layer pipeline, --config-path, systemd unit |
-| v0.2.0 | `552def2` | **edgemap CLI**: validate, create-config, reload, switch-config; FIFO + subcommand refactor; bugfixes #32-#37 |
-| v0.3.0 | `bb9ccda` | **edgemap daemon**: auto-create config, alive-detect dseuhid, auto-inject remap on connect |
-| v0.4.0 | `e404df1` | **edgemap profile auto-switch**: process matching (comm/cmdline), mtime hot reload, notify-send |
-| v0.4.1 | `23863e5` | **singleton detection**: PID file + kill(0) for dseuhid + edgemap, BUGFIX.md |
-| v0.4.2 | `c547587` | **PKGBUILD + GPLv3**: packaging, user service, install scripts, bugfixes #48-#49 |
-| v0.4.3 | `0f9436e` | **Documentation**: README.md, annotated config template, bugfix consolidation (STATUS.md → BUGFIX.md) |
-| v0.4.4 | `619a337` | **Bugfix #50**: detect dseuhid restart via PID change |
-| v0.5.0 | `d0f0c7b` | **GUI config editor** (PyQt6): UI shell — two-column layout, remap/turbo/combo/macro editing, profile quick-switch, toolbar |
-| v0.5.1 | `4568d13` | **Hotplug fix (#58)**: dseuhid writes /run/dseuhid/connected, edgemap re-injects config on USB reconnect |
-| v0.5.2 | `f0e263d` | **Deferred validation + hotplug redo**: profile config validated at injection time; connected/disconnected marker content; bulk validate; version=2 check |
-| v0.6.0 | `ebddfab` | **GUI config editor (PyQt6)**: full Save/Save As, edgemap.toml editor, profile quick-switch, toolbar, keyboard shortcuts, macro/combo editors |
-| v0.7.0 | — | **Regular DualSense support (0x0CE6)**: device detection for both DS and DSE; HID report descriptor read from physical device via HIDIOCGRDESC; `--force-dualsense` flag to virtualize dualsense edge as regular DS |
-| v0.7.1 | `e044099` | **GET_REPORT cache (0x05 calibration, 0x20 firmware)**: read calibration and firmware reports from physical device on startup; skip 0x09 (MAC address) to avoid sysfs naming conflict (BUGFIX #63) |
-| v0.7.2 | — | **Cleanup + fixes**: remove dead code (monitor, touchdemo, trigger_reload, dualsense_usb_descriptor); FIFO buffer 256→4096 (#65); GUI closeEvent unsaved changes prompt; BUGFIX #64 (Cargo incremental build cache) |
-| v0.7.3 | — | **Bugfixes**: dup_fifo_fd() missing exit on dup failure (#66); duplicate return{} in load_config (#67); /run/dseuhid/connected cleanup on shutdown + waiting-for-device log (#68); turbo toggle vs physical button press override (#69) |
+| v0.0.8 | `d294917` | Code cleanup: 0 warnings, 43 tests, AGENTS.md, StickDir naming |
+| v0.0.9 | `98299bb` | **Three-layer pipeline refactor** (L1 filter → L2 generate → L3 output) |
+| v0.0.10 | `1cfcd2b` | **Combo** (modifier key combinations, L1 suppress + L2 inject) |
+| v0.0.11 | `0e8186f` | **Macro** (timed key sequences, hold & single modes, combo→macro) |
+| v0.1.0 | `2264e94` | **Feature complete**: turbo + combo + macro + remap, 3-layer pipeline, --config-path, systemd unit |
+| v0.2.0 | `7bfa313` | **edgemap CLI**: validate, create-config, reload, switch-config; FIFO + subcommand refactor; bugfixes #32-#37 |
+| v0.3.0 | `e78dc94` | **edgemap daemon**: auto-create config, alive-detect dseuhid, auto-inject remap on connect |
+| v0.4.0 | `43ff3f5` | **edgemap profile auto-switch**: process matching (comm/cmdline), mtime hot reload, notify-send |
+| v0.4.1 | `c6a71c3` | **singleton detection**: PID file + kill(0) for dseuhid + edgemap, BUGFIX.md |
+| v0.4.2 | `b6967dc` | **PKGBUILD + GPLv3**: packaging, user service, install scripts, bugfixes #48-#49 |
+| v0.4.3 | `d3102f6` | **Documentation**: README.md, annotated config template, bugfix consolidation (STATUS.md → BUGFIX.md) |
+| v0.4.4 | `8cf87d4` | **Bugfix #50**: detect dseuhid restart via PID change |
+| v0.5.0 | `fdee1eb` | **GUI config editor** (PyQt6): UI shell — two-column layout, remap/turbo/combo/macro editing, profile quick-switch, toolbar |
+| v0.5.1 | `1fdf001` | **Hotplug fix (#58)**: dseuhid writes /run/dseuhid/connected, edgemap re-injects config on USB reconnect |
+| v0.5.2 | `0b954fc` | **Deferred validation + hotplug redo**: profile config validated at injection time; connected/disconnected marker content; bulk validate; version=2 check |
+| v0.6.0 | `6a47e24` | **GUI config editor (PyQt6)**: full Save/Save As, edgemap.toml editor, profile quick-switch, toolbar, keyboard shortcuts, macro/combo editors |
+| v0.7.0 | `7ec92d0` | **Regular DualSense support (0x0CE6)**: device detection for both DS and DSE; HID report descriptor read from physical device via HIDIOCGRDESC; `--force-dualsense` flag to virtualize dualsense edge as regular DS |
+| v0.7.1 | `10f1fbb` | **GET_REPORT cache (0x05 calibration, 0x20 firmware)**: read calibration and firmware reports from physical device on startup; skip 0x09 (MAC address) to avoid sysfs naming conflict (BUGFIX #63) |
+| v0.7.2 | `6919430` | **Cleanup + fixes**: remove dead code (monitor, touchdemo, trigger_reload, dualsense_usb_descriptor); FIFO buffer 256→4096 (#65); GUI closeEvent unsaved changes prompt; BUGFIX #64 (Cargo incremental build cache) |
+| v0.7.3 | `143f1c5` | **Bugfixes**: dup_fifo_fd() missing exit on dup failure (#66); duplicate return{} in load_config (#67); /run/dseuhid/connected cleanup on shutdown + waiting-for-device log (#68); turbo toggle vs physical button press override (#69) |
+| v0.7.4 | `e6b5209` | **Bugfixes**: re-restrict hidraw after suspend/resume udev reset (#70, #71); non-root daemon spam prevention + cooldown; FIFO command confirmation output; zsh completions; notify-send app name grouping; GUI taskbar icon fix; turbo source as combo key comment |
 
 ## Implemented Features
 

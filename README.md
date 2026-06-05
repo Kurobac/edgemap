@@ -58,7 +58,8 @@ Run `edgemap create-config` to print a template with full inline documentation.
 
 ## Requirements
 
-- Linux, systemd, `uhid` kernel module
+- Linux with `uhid` kernel module, systemd
+- Kernel: tested 7.0, should work 6.7+, may work 5.12+
 - DualSense (0x0CE6) or DualSense Edge (0x0DF2) controller, USB only
 - Root for `dseuhid` only
 - pyqt6 for GUI support

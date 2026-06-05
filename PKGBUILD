@@ -24,4 +24,6 @@ package() {
     install -Dm644 edgemap.desktop "$pkgdir/usr/share/applications/edgemap.desktop"
     install -Dm644 dseuhid.service "$pkgdir/usr/lib/systemd/system/dseuhid.service"
     install -Dm644 edgemap.service "$pkgdir/usr/lib/systemd/user/edgemap.service"
+    install -Dm644 completions/_dseuhid "$pkgdir/usr/share/zsh/site-functions/_dseuhid"
+    install -Dm644 completions/_edgemap "$pkgdir/usr/share/zsh/site-functions/_edgemap"
 }

@@ -1,0 +1,38 @@
+#compdef edgemap
+
+_edgemap() {
+  local curcontext="$curcontext" state line
+  typeset -A opt_args
+
+  _arguments -s \
+    '(-)1:command:->cmds' \
+    '*::arg:->args' \
+    && return 0
+
+  case $state in
+    cmds)
+      _values "edgemap command" \
+        "validate[Validate config file]" \
+        "create-config[Print default config template]" \
+        "reload[Reload config on running dseuhid]" \
+        "switch-config[Switch to config file and reload]" \
+        "d[Run in daemon mode (auto-create, auto-switch)]" \
+        "daemon[Run in daemon mode]" \
+        "help[Print help]"
+      ;;
+    args)
+      words=($line)
+      (( CURRENT = 1 ))
+      curcontext="${curcontext%:*}-${words[1]}:"
+      case $words[1] in
+        validate|switch-config)
+          _alternative \
+            'edgemap:edgemap config:_files -W ~/.config/edgemap/ -g "*.toml"' \
+            'any:toml file:_files -g "*.toml"'
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_edgemap "$@"

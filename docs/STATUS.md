@@ -176,6 +176,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 | `dseuhid` | main | UHID proxy daemon (+ `--force-dualsense` flag, `version`, `help` subcommands) |
 | `edgemap` | `src/bin/edgemap.rs` | User-side CLI: validate, create-config, reload, switch-config (no root). Daemon mode (d/daemon): auto-create config, profile auto-switch, mtime hot reload, notify-send |
 | `edgemap-gui-v6.py` | GUI | PyQt6 config editor: two-column layout, remap/turbo/combo/macro editing, macro manager, toolbar with KDE-native icons |
+| `completions/` | zsh | zsh completions for `dseuhid` and `edgemap` commands (validate/switch-config auto-complete configs from `~/.config/edgemap/`) |
 
 ## Bugfixes (chronological)
 

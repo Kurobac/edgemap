@@ -344,6 +344,7 @@ fn send_fifo_command(cmd: &[u8]) -> ! {
         eprintln!("error: cannot write to {}: {e}", FIFO_PATH);
         std::process::exit(1);
     }
+    eprintln!("Command sent to dseuhid");
     std::process::exit(0);
 }
 

@@ -36,6 +36,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.7.0 | — | **Regular DualSense support (0x0CE6)**: device detection for both DS and DSE; HID report descriptor read from physical device via HIDIOCGRDESC; `--force-dualsense` flag to virtualize dualsense edge as regular DS |
 | v0.7.1 | `e044099` | **GET_REPORT cache (0x05 calibration, 0x20 firmware)**: read calibration and firmware reports from physical device on startup; skip 0x09 (MAC address) to avoid sysfs naming conflict (BUGFIX #63) |
 | v0.7.2 | — | **Cleanup + fixes**: remove dead code (monitor, touchdemo, trigger_reload, dualsense_usb_descriptor); FIFO buffer 256→4096 (#65); GUI closeEvent unsaved changes prompt; BUGFIX #64 (Cargo incremental build cache) |
+| v0.7.3 | — | **Bugfixes**: dup_fifo_fd() missing exit on dup failure (#66); duplicate return{} in load_config (#67); /run/dseuhid/connected cleanup on shutdown + waiting-for-device log (#68); turbo toggle vs physical button press override (#69) |
 
 ## Implemented Features
 

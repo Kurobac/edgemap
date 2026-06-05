@@ -533,6 +533,7 @@ impl Proxy {
     }
 
     fn handle_hidraw_input(&mut self, seq: &mut u8) -> io::Result<()> {
+        self.hidraw.re_restrict_self();
         let mut buf = [0u8; report::USB_INPUT_REPORT_SIZE];
 
         loop {

@@ -295,6 +295,24 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
         self.restored_paths.clear();
     }
 
+    pub fn re_restrict_self(&mut self) {
+        if let Some(ref sysfs) = self.sysfs_path {
+            let devname = match sysfs.file_name() {
+                Some(n) => n.to_string_lossy().to_string(),
+                None => return,
+            };
+            let hidraw_path = PathBuf::from("/dev").join(&devname);
+            if hidraw_path.exists() {
+                if let Ok(meta) = fs::metadata(&hidraw_path) {
+                    if meta.permissions().mode() & 0o777 != 0 {
+                        info!("re-restricting hidraw node after udev reset");
+                        Self::restrict_node(&hidraw_path, &mut self.restored_paths).ok();
+                    }
+                }
+            }
+        }
+    }
+
     fn restore_permissions(&self) {
         if self.restored_paths.is_empty() {
             return;

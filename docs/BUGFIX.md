@@ -340,4 +340,9 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 **Fix:** Add `re_restrict_self()` method to `HidrawDevice` that re-applies `chmod 000` + `setfacl -b` to the physical hidraw node. Call this method at the top of `handle_hidraw_input()` — when the first HID input packet arrives after resume, the node is immediately re-hidden with zero additional latency or polling overhead.
 
+### #71 — `re_restrict_self()` called unconditionally on every frame, leaking `restored_paths`
+
+**Root cause:** #70's initial implementation called `restrict_node()` on every `handle_hidraw_input()` invocation (every 4ms), regardless of whether permissions were already 0o000. Each call pushed a duplicate entry into `restored_paths`, causing unbounded memory growth and an unnecessarily large restore loop on shutdown. After adding a permission check, `std::fs::Permissions::mode()` was compared directly to `0o000` — but `mode()` returns the full `st_mode` including file type bits (`S_IFCHR = 020000`), so the check was always `true` (the device node's mode is never literally zero). This caused the log to fire and the node to be re-restricted on every single frame (800+ times per second), generating massive log spam.
+
+**Fix:** Compare only the permission bits by masking with `0o777`: `meta.permissions().mode() & 0o777 != 0`. Once `chmod 000` is applied, the masked permission bits are zero and subsequent frames skip the check entirely. Also added `info!("re-restricting hidraw node after udev reset")` log when triggered.
 

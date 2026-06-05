@@ -2,10 +2,8 @@ mod config;
 mod descriptor;
 mod device;
 mod mapping;
-mod monitor;
 mod proxy;
 mod report;
-mod touchdemo;
 mod uhid;
 
 use log::{error, info, warn};
@@ -94,8 +92,6 @@ fn print_usage() {
     eprintln!("Usage: dseuhid [OPTIONS] [COMMAND]");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  monitor         Raw HID button debug tool");
-    eprintln!("  touchdemo       Touchpad coordinate debug tool");
     eprintln!("  version         Print version and exit");
     eprintln!("  help            Print this help");
     eprintln!();
@@ -115,21 +111,13 @@ fn main() {
     if args.len() >= 2 {
         // reject duplicate subcommands: all known subcommands take no extra args
         let sub = args[1].as_str();
-let known = matches!(sub, "monitor" | "mon" | "touchdemo" | "touch" | "version" | "--version" | "-V" | "help" | "--help" | "-h");
+let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "-h");
         if known && args.len() > 2 {
             eprintln!("error: '{}' takes no arguments", args[1]);
             eprintln!("Run 'dseuhid help' for usage.");
             std::process::exit(1);
         }
         match sub {
-            "monitor" | "mon" => {
-                monitor::run();
-                return;
-            }
-            "touchdemo" | "touch" => {
-                touchdemo::run();
-                return;
-            }
             "version" | "--version" | "-V" => {
                 println!("dseuhid {}", env!("CARGO_PKG_VERSION"));
                 return;

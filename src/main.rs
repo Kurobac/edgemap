@@ -140,6 +140,11 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    if unsafe { libc::getuid() } != 0 {
+        error!("dseuhid daemon requires root (needs /dev/uhid and /dev/hidraw)");
+        std::process::exit(1);
+    }
+
     let config_path = parse_config_path();
     let force_dualsense = parse_force_dualsense();
 
@@ -192,6 +197,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             Ok(d) => d,
             Err(e) => {
                 error!("Failed to open hidraw device: {e}");
+                std::thread::sleep(Duration::from_secs(2));
                 continue;
             }
         };
@@ -201,6 +207,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             Err(e) => {
                 error!("Failed to open /dev/uhid: {e}");
                 error!("Make sure the uhid kernel module is loaded (modprobe uhid)");
+                std::thread::sleep(Duration::from_secs(2));
                 continue;
             }
         };

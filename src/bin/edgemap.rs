@@ -85,7 +85,7 @@ extern "C" fn handle_daemon_signal(_sig: libc::c_int) {
 
 fn send_notification(summary: &str, body: &str) {
     let _ = std::process::Command::new("notify-send")
-        .args([summary, body])
+        .args(["-a", "edgemap", summary, body])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();

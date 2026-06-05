@@ -279,4 +279,16 @@
 
 **Fix:** Wrap the connection in a lambda that discards the bool: `act_open.triggered.connect(lambda: self._open_config())`. Profile menu connections already used `lambda p=path:` and were unaffected.
 
+### #63 — GET_REPORT cache: caching 0x09 (pairing info) from physical device breaks UHID device probe
+**Root cause:** Feature report 0x09 is `DS_FEATURE_REPORT_PAIRING_INFO` — the Bluetooth MAC address, NOT firmware version. The kernel `hid-playstation` driver `dualsense_get_mac_address()` reads this report during `probe()` (line 1762). Returning device-specific MAC address data from the physical device's cache caused the driver to fail probe (`ps_get_report` returned -EINVAL due to byte count or format mismatch), which caused `hid_hw_stop()` — silently removing the virtual device from the HID bus. This happened because the 0x09 report's internal format differs between hardware revisions in ways the kernel driver doesn't handle gracefully when served through a UHID reply.
+
+**Fix:** Skip caching report 0x09. Only cache 0x05 (`DS_FEATURE_REPORT_CALIBRATION` — gyro/accel calibration, 41 bytes) and 0x20 (`DS_FEATURE_REPORT_FIRMWARE_INFO` — firmware version, 64 bytes). 0x09 falls back to the existing hardcoded value (original developer's device pairing data), which the kernel probe accepts without issue.
+
+**Diagnosis process:** Bisect isolated the regression to the GET_REPORT cache read loop. Pinpointed 0x09 as the specific report by testing each cached report individually (0x05 only, 0x09 only, 0x20 only, 0x05+0x20). A standalone `hidraw-test` demo confirmed that `HIDIOCGFEATURE` ioctl on the same fd does not corrupt the main fd — the issue was purely in the data content returned to the kernel probe.
+
+### #64 — Cargo incremental build cache produces corrupted binaries
+**Root cause:** `git checkout` between branches followed by `cargo build` (without `cargo clean`) can produce binaries that pass bisect tests but fail in production. `cargo` incremental compilation may re-use object files from a previous build with incompatible intermediate representations, silently producing a broken binary that crashes or behaves incorrectly.
+
+**Fix:** Always run `cargo clean` before `cargo build` when switching between commits for bisect or regression testing. Add `cargo clean` to the test procedure in AGENTS.md.
+
 

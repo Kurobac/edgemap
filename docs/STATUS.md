@@ -107,6 +107,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - All standard/Edge buttons supported as turbo source
 
 **Turbo edge cases actively rejected:**
+
 | Config | Reason |
 |--------|--------|
 | `[l2] remap="l2" turbo=true` | Trigger self-map × turbo (analog conflict) |
@@ -114,6 +115,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | `[l2] turbo=true` (no remap) | Implicit self-map = trigger self × turbo (same as above) |
 
 **Turbo edge cases allowed:**
+
 | Config | Behavior |
 |--------|----------|
 | `[l2] remap="l2_full" turbo=true` | Turbo toggle of full L2 press (analog=255/0) |
@@ -132,7 +134,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - **Turbo** runs in L1 before freeze: reads physical snapshot, writes to state
 - **Block** (`remap="block"`) now in L1: clears digital + analog (L2/R2)
 - **Remap** (`MappingConfig::apply`) reads frozen L1, writes virtual output
-- Downstream layers never affect upstream; L2 components are parallel and isolated //todo 需要重构以达到真分离，目前仍在同写一张表
+- Downstream layers never affect upstream; L2 components are parallel and isolated
 
 ### Combo System (v0.0.10)
 - **Modifier key combinations**: hold DSE button + press standard key → mapped output
@@ -184,26 +186,6 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 See [BUGFIX.md](./BUGFIX.md) for the complete list.
 
 ## Future Plans
-
-### Completed — v0.1.0 milestone
-
-- [x] Dead code cleanup (v0.0.8)
-- [x] Pipeline refactor: three-layer architecture (v0.0.9)
-- [x] Combo: modifier key combinations (v0.0.10)
-- [x] Macro: timed key sequences, hold & single modes, combo→macro (v0.0.11)
-- [x] `--config-path` flag for custom config file (v0.1.0+1)
-- [x] Systemd service unit (v0.1.0+1)
-- [x] Compact default config template (v0.1.0+2)
-- [x] CLI subcommands: monitor, touchdemo, version, help; unknown command rejection (v0.1.0+4)
-- [x] FIFO control daemon: `/run/dseuhid/control` named pipe, non-root reload + switch-config (v0.1.0+5)
-- [x] Monitor shows analog sticks (threshold 5, 80ms throttle) (v0.1.0+6)
-- [x] edgemap CLI: `validate`, `create-config`, `reload`, `switch-config` (no root, separate binary)
-- [x] edgemap daemon: auto-create config, alive-detect dseuhid, auto-inject remap
-- [x] edgemap auto-switch profiles by running processes (comm exact + cmdline substring)
-- [x] edgemap mtime-based hot reload + notify-send notifications
-- [x] Singleton instance detection (dseuhid + edgemap)
-- [x] BUGFIX.md (#1-#51 documented with root causes)
-- [x] GUI config editor (PyQt6, two-column layout, toolbar with KDE-native icons)
 
 ### Planned — Next Features
 

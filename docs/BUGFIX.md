@@ -360,7 +360,7 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 ### #73 — `switch-config` sends relative path to daemon, breaks after daemon restart
 
-**Root cause:** `cmd_switch_config()` in `edgemap` sent the path argument as-is to the FIFO (e.g. `./config.toml`). The daemon stored this raw string in `self.config_path` and used it for all subsequent config loads. If the daemon's working directory changed (e.g. after a `systemctl restart`), the relative path would resolve to a different location — or nowhere — causing config load failures.
+**Root cause:** `cmd_switch_config()` in `edgemap` sent the path argument as-is to the FIFO (e.g. `./default.toml`). The daemon stored this raw string in `self.config_path` and used it for all subsequent config loads. If the daemon's working directory changed (e.g. after a `systemctl restart`), the relative path would resolve to a different location — or nowhere — causing config load failures. First fix attempt used `std::fs::canonicalize()` but this only resolves paths relative to CWD — running `edgemap sc default.toml` from a non-`~/.config/edgemap` directory would fail with "no such file or directory" because `canonicalize` resolves against CWD, not the edgemap config directory.
 
-**Fix:** Call `std::fs::canonicalize()` on the path before sending to the FIFO. This converts `./config.toml` to `/home/user/.config/edgemap/config.toml`, making the stored path invulnerable to CWD changes.
+**Fix:** Use `resolve_config_path()` — the path resolver already used by edgemap daemon mode. This function handles absolute paths, `~` expansion, and resolves bare filenames against `~/.config/edgemap/`. Same resolution logic as the rest of edgemap.
 

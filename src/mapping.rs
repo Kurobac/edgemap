@@ -41,7 +41,6 @@ impl RemapRule {
 #[derive(Debug, Clone)]
 pub struct TurboConfig {
     pub src: Button,
-    pub dst: Target,
     pub interval_ms: u64,
     pub delay_ms: u64,
 }

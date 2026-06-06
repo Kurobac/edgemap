@@ -691,6 +691,7 @@ mod tests {
             "touchpad", "l2_full", "r2_full",
             "ls_up", "ls_down", "ls_left", "ls_right",
             "rs_up", "rs_down", "rs_left", "rs_right",
+            "key:space", "key:a", "key:enter", "key:f1",
         ] {
             let cfg = parse(&format!("[cross]\nremap = \"{target}\"\n"));
             assert!(validate(&cfg).is_ok(), "target {target} should be valid");
@@ -706,6 +707,12 @@ mod tests {
     #[test]
     fn unknown_target() {
         assert!(validate(&parse("[cross]\nremap = \"nope\"\n"))
+            .unwrap_err().contains("unknown target"));
+    }
+
+    #[test]
+    fn keyboard_target_unknown_key() {
+        assert!(validate(&parse("[cross]\nremap = \"key:banana\"\n"))
             .unwrap_err().contains("unknown target"));
     }
 
@@ -947,5 +954,17 @@ mod tests {
     fn macro_name_target_conflict() {
         let e = validate(&parse("[left_paddle]\nremap = \"l2_full\"\n[macros.l2_full]\n[[macros.l2_full.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
         assert!(e.contains("conflicts with a built-in target"));
+    }
+
+    #[test]
+    fn keyboard_macro_step_valid() {
+        let cfg = parse("[left_paddle]\nremap = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"key:tab\"\npress_ms = 0\nrelease_ms = 100\n");
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn keyboard_macro_step_rejected() {
+        let e = validate(&parse("[left_paddle]\nremap = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"key:bad\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
+        assert!(e.contains("unknown key"));
     }
 }

@@ -417,4 +417,17 @@ mod tests {
         assert!(s.button(Button::Circle));
         assert!(!s.button(Button::Square)); // not triggered via cascade
     }
+
+    #[test]
+    fn remap_to_keyboard() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Target::Keyboard(57)), // KEY_SPACE
+        ]);
+        let mut s = state();
+        s.set_button(Button::Cross, true);
+        let mut kb: Vec<(u16, bool)> = Vec::new();
+        cfg.apply(&s.clone(), &mut s, &mut kb);
+        assert!(!s.button(Button::Cross));
+        assert_eq!(kb, vec![(57, true)]);
+    }
 }

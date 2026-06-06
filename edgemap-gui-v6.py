@@ -85,7 +85,7 @@ class ComboDialog(QDialog):
         self.macros = macros
 
         # Build output items: TARGETS minus "combo"/"macro" + macro names
-        self.output_targets = [t for t in TARGETS if t not in ("combo", "macro", "passthrough")]
+        self.output_targets = [t for t in TARGETS if t not in ("combo", "macro", "passthrough", "block")]
         self.output_targets += sorted(macros.keys())
 
         layout = QVBoxLayout(self)
@@ -334,10 +334,6 @@ class MacroEditor(QDialog):
         new_name = self.name_edit.text().strip()
         if not new_name:
             QMessageBox.warning(self, "Error", "Macro name cannot be empty.")
-            return
-        if not re.fullmatch(r'[a-zA-Z0-9_-]+', new_name):
-            QMessageBox.warning(self, "Error",
-                "Macro name: only letters, digits, underscores and hyphens allowed.")
             return
         if not self.steps:
             QMessageBox.warning(self, "Error", "Macro must have at least one step.")

@@ -369,9 +369,19 @@ fn cmd_switch_config(args: &[String]) -> ! {
         std::process::exit(1);
     }
     let path = &args[2];
-    let config_dir = PathBuf::from(env::var("HOME").unwrap_or_else(|_| "/root".into()))
-        .join(".config/edgemap");
-    let path_str = resolve_config_path(path, &config_dir);
+    let path_str = if path.starts_with('.') {
+        std::fs::canonicalize(path)
+            .unwrap_or_else(|e| {
+                eprintln!("error: cannot resolve {}: {}", path, e);
+                std::process::exit(1);
+            })
+            .to_string_lossy()
+            .to_string()
+    } else {
+        let config_dir = PathBuf::from(env::var("HOME").unwrap_or_else(|_| "/root".into()))
+            .join(".config/edgemap");
+        resolve_config_path(path, &config_dir)
+    };
     let cfg = match config::Config::load(&path_str) {
         Ok(c) => c,
         Err(e) => {

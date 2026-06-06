@@ -8,3 +8,4 @@ pkg/
 AGENTS.md
 /PKGBUILD
 /edgemap.install
+__pycache__

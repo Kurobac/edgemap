@@ -44,7 +44,7 @@ RIGHT = [
 ]
 
 TARGETS = [
-    "block", "combo", "macro",
+    "block", "passthrough", "combo", "macro",
     "cross", "circle", "square", "triangle",
     "l1", "r1", "l2", "r2", "l3", "r3",
     "options", "create", "ps",
@@ -84,7 +84,7 @@ class ComboDialog(QDialog):
         self.macros = macros
 
         # Build output items: TARGETS minus "combo"/"macro" + macro names
-        self.output_targets = [t for t in TARGETS if t not in ("combo", "macro")]
+        self.output_targets = [t for t in TARGETS if t not in ("combo", "macro", "passthrough")]
         self.output_targets += sorted(macros.keys())
 
         layout = QVBoxLayout(self)
@@ -349,7 +349,8 @@ class MacroEditor(QDialog):
         # Macro name conflicts with standard buttons or built-in targets
         conflicts = set(n for _, btns in LEFT + RIGHT for n in btns)
         builtin = {"l2_full", "r2_full", "ls_up", "ls_down", "ls_left", "ls_right",
-                   "rs_up", "rs_down", "rs_left", "rs_right", "combo", "macro", "block"}
+                   "rs_up", "rs_down", "rs_left", "rs_right", "combo", "macro", "block",
+                   "passthrough", "l2_analog", "r2_analog"}
         if new_name in conflicts or new_name in builtin:
             QMessageBox.warning(self, "Error",
                 f"Macro name '{new_name}' conflicts with a standard button or built-in target.")
@@ -908,6 +909,8 @@ class EdgemapEditor(QMainWindow):
             elif text == "macro":
                 edit_btn.show()
                 edit_btn.clicked.connect(lambda: self._pick_macro(name))
+            elif text == "passthrough":
+                edit_btn.hide()
             else:
                 edit_btn.hide()
             self.config.setdefault(name, {})["remap"] = text
@@ -979,7 +982,7 @@ class EdgemapEditor(QMainWindow):
         # Turbo validation: L2/R2 self-map/swap + turbo/macro mutual exclusion
         def _validate_turbo(_=None):
             text = cb.currentText()
-            conflict = (name in ("l2", "r2") and text in ("l2", "r2", "")) or text == "macro"
+            conflict = (name in ("l2", "r2") and text in ("l2", "r2", "")) or text == "macro" or text == "passthrough"
             if conflict:
                 tcb.setChecked(False)
             tcb.setEnabled(not conflict)
@@ -1127,6 +1130,8 @@ class EdgemapEditor(QMainWindow):
                     continue
             btn = self.config.get(name, {})
             remap = btn.get("remap", name) or name
+            if remap == "passthrough":
+                continue
             if name in ("touchpad_left", "touchpad_right") and not remap:
                 remap = "dpad_left" if name == "touchpad_left" else "dpad_right"
             lines.append(f"[{name}]")

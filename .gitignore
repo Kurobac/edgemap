@@ -5,6 +5,6 @@
 *.tar.zst
 *.tar.xz
 pkg/
-/docs/AGENTS.md
+AGENTS.md
 /PKGBUILD
 /edgemap.install

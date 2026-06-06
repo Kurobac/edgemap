@@ -65,8 +65,7 @@ fn is_valid_src(name: &str) -> bool {
 }
 
 fn is_valid_target(name: &str) -> bool {
-    // mode-switch targets (not button/trigger/stick, but valid remap values)
-    if matches!(name, "combo") {
+    if matches!(name, "combo" | "passthrough") {
         return true;
     }
     // special targets
@@ -172,6 +171,7 @@ impl Config {
             }
 
             let dst = match btn_conf.remap.as_deref() {
+                Some("passthrough") => continue,
                 None => continue,
                 Some("block") => {
                     blocked_buttons.push(src);
@@ -395,6 +395,9 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             {
                 return Err(format!("[{btn_name}] invalid combo key: {}", c.key));
             }
+            if c.output == "passthrough" {
+                return Err(format!("[{btn_name}] combo output cannot be passthrough"));
+            }
             if !is_valid_target(&c.output) && !cfg.macros.contains_key(&c.output) {
                 return Err(format!("[{btn_name}] unknown combo output: {}", c.output));
             }
@@ -432,6 +435,9 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             if has_macro_output {
                 return Err(format!("[{btn_name}] turbo and macros are mutually exclusive"));
             }
+            if btn_conf.remap.as_deref() == Some("passthrough") {
+                return Err(format!("[{btn_name}] turbo and passthrough are mutually exclusive"));
+            }
         }
 
         if btn_name == "touchpad_left" {
@@ -452,6 +458,9 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
     for (name, m) in &cfg.macros {
         if Button::from_name(name).is_some() {
             return Err(format!("Macro name '{name}' conflicts with a standard button name"));
+        }
+        if name == "passthrough" {
+            return Err("Macro name 'passthrough' conflicts with the passthrough remap target".into());
         }
         if resolve_target(name).is_some() {
             return Err(format!("Macro name '{name}' conflicts with a built-in target"));

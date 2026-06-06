@@ -207,9 +207,9 @@ impl Config {
                 return Err("touchpad_right: remap=\"block\" is not allowed in split mode".into());
             }
 
-            let left = resolve_target(left_dst)
+            let left = resolve_target_or_macro(left_dst, &self.macros)
                 .ok_or_else(|| format!("Unknown target '{left_dst}' for touchpad_left"))?;
-            let right = resolve_target(right_dst)
+            let right = resolve_target_or_macro(right_dst, &self.macros)
                 .ok_or_else(|| format!("Unknown target '{right_dst}' for touchpad_right"))?;
 
             rules.push(RemapRule::new(Button::TouchpadLeft, left));

@@ -369,7 +369,13 @@ fn cmd_switch_config(args: &[String]) -> ! {
         std::process::exit(1);
     }
     let path = &args[2];
-    let cfg = match config::Config::load(path) {
+    let abs_path = std::fs::canonicalize(path)
+        .unwrap_or_else(|e| {
+            eprintln!("error: cannot resolve {}: {}", path, e);
+            std::process::exit(1);
+        });
+    let path_str = abs_path.to_string_lossy().to_string();
+    let cfg = match config::Config::load(&path_str) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
@@ -380,7 +386,7 @@ fn cmd_switch_config(args: &[String]) -> ! {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
-    let cmd = format!("switch-config {}", path);
+    let cmd = format!("switch-config {}", path_str);
     send_fifo_command(cmd.as_bytes())
 }
 

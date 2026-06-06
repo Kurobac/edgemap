@@ -67,9 +67,15 @@ pub enum MacroSource {
 
 #[derive(Debug, Clone)]
 pub struct MacroStep {
-    pub button: Button,
+    pub action: StepTarget,
     pub press_ms: u64,
     pub release_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum StepTarget {
+    Gamepad(Button),
+    Keyboard(u16),
 }
 
 #[derive(Debug, Clone)]

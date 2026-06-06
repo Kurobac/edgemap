@@ -85,7 +85,7 @@ impl ComboRuntime {
 }
 
 struct MacroStepRuntime {
-    button: Button,
+    action: crate::mapping::StepTarget,
     press_ms: u64,
     release_ms: u64,
     pressed: bool,
@@ -108,7 +108,7 @@ impl MacroRuntime {
             name: rule.name.clone(),
             trigger: rule.trigger,
             steps: rule.steps.iter().map(|s| MacroStepRuntime {
-                button: s.button,
+                action: s.action.clone(),
                 press_ms: s.press_ms,
                 release_ms: s.release_ms,
                 pressed: false,
@@ -133,10 +133,13 @@ impl MacroRuntime {
         }
     }
 
-    fn deactivate(&mut self, state: &mut crate::report::GamepadState) {
+    fn deactivate(&mut self, state: &mut crate::report::GamepadState, keyboard_events: &mut Vec<(u16, bool)>) {
         for step in &mut self.steps {
             if step.pressed {
-                state.set_button(step.button, false);
+                match &step.action {
+                    crate::mapping::StepTarget::Gamepad(btn) => state.set_button(*btn, false),
+                    crate::mapping::StepTarget::Keyboard(code) => keyboard_events.push((*code, false)),
+                }
             }
             step.pressed = false;
             step.done = false;
@@ -144,7 +147,7 @@ impl MacroRuntime {
         self.active = false;
     }
 
-    fn tick(&mut self, state: &mut crate::report::GamepadState, now: Instant) {
+    fn tick(&mut self, state: &mut crate::report::GamepadState, now: Instant, keyboard_events: &mut Vec<(u16, bool)>) {
         let elapsed = now.duration_since(self.step_start).as_millis() as u64;
         let mut all_done = true;
         for step in &mut self.steps {
@@ -153,19 +156,28 @@ impl MacroRuntime {
             }
             if elapsed >= step.press_ms && !step.pressed {
                 step.pressed = true;
-                state.set_button(step.button, true);
-                debug!("macro '{}': +{elapsed}ms press {}", self.name, step.button.name());
+                match &step.action {
+                    crate::mapping::StepTarget::Gamepad(btn) => state.set_button(*btn, true),
+                    crate::mapping::StepTarget::Keyboard(code) => keyboard_events.push((*code, true)),
+                }
+                debug!("macro '{}': +{elapsed}ms press {:?}", self.name, step.action);
             }
             if elapsed >= step.release_ms && step.pressed {
                 step.pressed = false;
                 step.done = true;
-                state.set_button(step.button, false);
-                debug!("macro '{}': +{elapsed}ms release {}", self.name, step.button.name());
+                match &step.action {
+                    crate::mapping::StepTarget::Gamepad(btn) => state.set_button(*btn, false),
+                    crate::mapping::StepTarget::Keyboard(code) => keyboard_events.push((*code, false)),
+                }
+                debug!("macro '{}': +{elapsed}ms release {:?}", self.name, step.action);
             } else if !step.done {
                 all_done = false;
             }
             if step.pressed {
-                state.set_button(step.button, true);
+                match &step.action {
+                    crate::mapping::StepTarget::Gamepad(btn) => state.set_button(*btn, true),
+                    crate::mapping::StepTarget::Keyboard(code) => keyboard_events.push((*code, true)),
+                }
             }
         }
         if all_done {
@@ -180,7 +192,7 @@ impl MacroRuntime {
                 }
                 MacroMode::Single => {
                     debug!("macro '{}': completed", self.name);
-                    self.deactivate(state);
+                    self.deactivate(state, keyboard_events);
                 }
             }
         }
@@ -672,7 +684,7 @@ impl Proxy {
                                 m.activate(now);
                             }
                             if !pressed && m.active && matches!(m.mode, MacroMode::Hold) {
-                                m.deactivate(&mut state);
+                                m.deactivate(&mut state, &mut keyboard_events);
                             }
                         }
 
@@ -703,7 +715,7 @@ impl Proxy {
                                         if m.name == *name && m.source == MacroSource::Combo
                                             && m.active && matches!(m.mode, MacroMode::Hold)
                                         {
-                                            m.deactivate(&mut state);
+                                            m.deactivate(&mut state, &mut keyboard_events);
                                         }
                                     }
                                 }
@@ -713,7 +725,7 @@ impl Proxy {
                         // L2: MACRO injection (writes macro step buttons to state)
                         for m in &mut self.macro_runtimes {
                             if m.active {
-                                m.tick(&mut state, now);
+                                m.tick(&mut state, now, &mut keyboard_events);
                             }
                         }
 

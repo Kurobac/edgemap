@@ -131,6 +131,13 @@ fn resolve_target_or_macro(name: &str, macros: &HashMap<String, MacroConfig>) ->
     })
 }
 
+fn resolve_step_target(key: &str) -> Option<crate::mapping::StepTarget> {
+    if let Some(kc) = key.strip_prefix("key:") {
+        return crate::keyboard::resolve_keycode(kc).map(crate::mapping::StepTarget::Keyboard);
+    }
+    Button::from_name(key).map(crate::mapping::StepTarget::Gamepad)
+}
+
 impl Config {
     pub fn load(path: &str) -> Result<Self, String> {
         let content =
@@ -271,7 +278,7 @@ impl Config {
             };
             let steps: Vec<crate::mapping::MacroStep> = mcfg.sequence.iter().map(|s| {
                 crate::mapping::MacroStep {
-                    button: Button::from_name(&s.key).unwrap_or(Button::Cross),
+                    action: resolve_step_target(&s.key).unwrap_or(crate::mapping::StepTarget::Gamepad(Button::Cross)),
                     press_ms: s.press_ms,
                     release_ms: s.release_ms,
                 }
@@ -301,7 +308,7 @@ impl Config {
                 };
                 let steps: Vec<crate::mapping::MacroStep> = mcfg.sequence.iter().map(|s| {
                     crate::mapping::MacroStep {
-                        button: Button::from_name(&s.key).unwrap_or(Button::Cross),
+                        action: resolve_step_target(&s.key).unwrap_or(crate::mapping::StepTarget::Gamepad(Button::Cross)),
                         press_ms: s.press_ms,
                         release_ms: s.release_ms,
                     }
@@ -470,15 +477,16 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             return Err(format!("Macro '{name}': sequence must not be empty"));
         }
         for step in &m.sequence {
-            let key_btn = Button::from_name(&step.key);
-            if key_btn.is_none() {
+            let step_target = resolve_step_target(&step.key);
+            if step_target.is_none() {
                 return Err(format!("Macro '{name}': unknown key '{}'", step.key));
             }
-            let key_btn = key_btn.unwrap();
-            if key_btn == Button::Mic || key_btn == Button::L2Analog || key_btn == Button::R2Analog
-                || key_btn == Button::TouchpadLeft || key_btn == Button::TouchpadRight
-            {
-                return Err(format!("Macro '{name}': invalid key '{}'", step.key));
+            if let Some(crate::mapping::StepTarget::Gamepad(btn)) = step_target {
+                if btn == Button::Mic || btn == Button::L2Analog || btn == Button::R2Analog
+                    || btn == Button::TouchpadLeft || btn == Button::TouchpadRight
+                {
+                    return Err(format!("Macro '{name}': invalid key '{}'", step.key));
+                }
             }
             if step.release_ms <= step.press_ms {
                 return Err(format!(

@@ -8,6 +8,8 @@ use crate::report::Button;
 pub struct Config {
     #[serde(default)]
     pub version: u32,
+    #[serde(default)]
+    pub force_dualsense: bool,
     #[serde(flatten)]
     pub buttons: HashMap<String, ButtonConfig>,
     #[serde(default)]
@@ -15,6 +17,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ButtonConfig {
     pub remap: Option<String>,
     #[serde(default)]
@@ -32,12 +35,14 @@ fn default_turbo_interval() -> u64 {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComboConfig {
     pub key: String,
     pub output: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MacroConfig {
     #[serde(default = "default_macro_mode")]
     pub mode: String,
@@ -49,6 +54,7 @@ fn default_macro_mode() -> String {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MacroStep {
     pub key: String,
     pub press_ms: u64,
@@ -576,6 +582,9 @@ pub fn default_content() -> &'static str {
 #   remap = "dpad_left"
 #   [touchpad_right]
 #   remap = "dpad_right"
+#
+# ── Global Options ──────────────────────────────
+#   force_dualsense = true      # virtualize as regular DualSense (0x0CE6)
 
 version = 2
 
@@ -792,7 +801,25 @@ mod tests {
         let cfg: Config = toml::from_str(default_content()).unwrap();
         assert_eq!(cfg.version, 2);
         assert_eq!(cfg.buttons.len(), 22);
+        assert_eq!(cfg.force_dualsense, false);
         assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn force_dualsense_config() {
+        let cfg = parse("force_dualsense = true\n[cross]\nremap = \"cross\"\n");
+        assert!(validate(&cfg).is_ok());
+        assert_eq!(cfg.force_dualsense, true);
+    }
+
+    #[test]
+    fn unknown_field_rejected() {
+        // garbage field inside a button section
+        assert!(toml::from_str::<Config>("version = 2\n[cross]\nremap = \"cross\"\ngarbage = 123\n").is_err());
+        // garbage field inside a combo
+        assert!(toml::from_str::<Config>("version = 2\n[left_paddle]\nremap = \"combo\"\n[[left_paddle.combos]]\nkey = \"cross\"\noutput = \"circle\"\nbad = 1\n").is_err());
+        // garbage field inside a macro
+        assert!(toml::from_str::<Config>("version = 2\n[left_paddle]\nremap = \"m\"\n[macros.m]\nbad = 1\n[[macros.m.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 100\n").is_err());
     }
 
     // --- combo tests ---

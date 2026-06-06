@@ -146,10 +146,10 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         std::process::exit(1);
     }
 
-    let config_path = parse_config_path();
-    let force_dualsense = parse_force_dualsense();
+    let mut config_path = parse_config_path();
+    let force_dualsense_cli = parse_force_dualsense();
 
-    if force_dualsense {
+    if force_dualsense_cli {
         info!("--force-dualsense: virtual device will appear as regular DualSense");
     }
 
@@ -227,6 +227,12 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         }
 
+        let force_dualsense = force_dualsense_cli
+            || config_path.as_ref()
+                .and_then(|p| config::Config::load(p).ok())
+                .map(|c| c.force_dualsense)
+                .unwrap_or(false);
+
         let (uhid_pid, uhid_desc): (u32, &[u8]) = if force_dualsense {
             (device::DS5_PID as u32, &descriptor::DS_USB_DESCRIPTOR)
         } else {
@@ -303,8 +309,13 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 keyboard::KeyboardDevice::dummy()
             });
 
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, keyboard, dup_fifo_fd(&fifo_fd));
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, force_dualsense, keyboard, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
+            proxy::ExitReason::ConfigChanged => {
+                config_path = Some(proxy.config_path().to_string());
+                proxy.skip_restore();
+                info!("force_dualsense changed in config, recreating virtual device...");
+            }
             proxy::ExitReason::DeviceGone => {
                 proxy.skip_restore();
                 info!("Device disconnected, waiting for reconnect...");

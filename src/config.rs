@@ -65,6 +65,7 @@ fn is_valid_src(name: &str) -> bool {
 }
 
 fn is_valid_target(name: &str) -> bool {
+    // keep in sync with edgemap-gui-v6.py TARGETS list
     if matches!(name, "combo" | "passthrough") {
         return true;
     }
@@ -97,6 +98,7 @@ fn is_valid_target(name: &str) -> bool {
 }
 
 fn resolve_target(name: &str) -> Option<Target> {
+    // keep in sync with edgemap-gui-v6.py TARGETS + builtin
     match name {
         "l2_full" => Some(Target::TriggerFull(Trigger::L2)),
         "r2_full" => Some(Target::TriggerFull(Trigger::R2)),
@@ -454,7 +456,7 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
         }
     }
 
-    // macro-wide validation
+    // macro-wide validation — keep macro name bans in sync with edgemap-gui-v6.py builtin set
     for (name, m) in &cfg.macros {
         if Button::from_name(name).is_some() {
             return Err(format!("Macro name '{name}' conflicts with a standard button name"));

@@ -44,6 +44,7 @@ RIGHT = [
 ]
 
 TARGETS = [
+    # keep in sync with config.rs is_valid_target() + resolve_target()
     "block", "passthrough", "combo", "macro",
     "cross", "circle", "square", "triangle",
     "l1", "r1", "l2", "r2", "l3", "r3",
@@ -346,7 +347,8 @@ class MacroEditor(QDialog):
         # BUTTON_KEYS here. Dropdown limits choices; garbage typed manually
         # will be caught by dseuhid config::validate().
 
-        # Macro name conflicts with standard buttons or built-in targets
+        # Macro name conflicts with standard buttons or built-in targets.
+        # keep in sync with config.rs macro-name validation.
         conflicts = set(n for _, btns in LEFT + RIGHT for n in btns)
         builtin = {"l2_full", "r2_full", "ls_up", "ls_down", "ls_left", "ls_right",
                    "rs_up", "rs_down", "rs_left", "rs_right", "combo", "macro", "block",

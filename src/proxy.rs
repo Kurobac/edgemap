@@ -41,7 +41,6 @@ fn apply_target_to_state(state: &mut crate::report::GamepadState, target: &Targe
 
 struct TurboRuntime {
     src: Button,
-    dst: Target,
     interval_ms: u64,
     delay_ms: u64,
     active: bool,
@@ -55,7 +54,6 @@ impl TurboRuntime {
     fn from_config(cfg: &TurboConfig) -> Self {
         Self {
             src: cfg.src,
-            dst: cfg.dst.clone(),
             interval_ms: cfg.interval_ms,
             delay_ms: cfg.delay_ms,
             active: false,
@@ -582,12 +580,12 @@ impl Proxy {
                                 t.turbo_active = false;
                                 t.phase = true;
                                 t.press_time = Instant::now();
-                                apply_target_to_state(&mut state, &t.dst, true);
+                                state.set_button(t.src, true);
                                 debug!("turbo {:?}: press (one-shot)", t.src);
                             } else if !pressed && t.active {
                                 t.active = false;
                                 t.turbo_active = false;
-                                apply_target_to_state(&mut state, &t.dst, false);
+                                state.set_button(t.src, false);
                                 debug!("turbo {:?}: released", t.src);
                             } else if t.active && !t.turbo_active && t.delay_ms > 0 {
                                 if t.press_time.elapsed().as_millis() >= t.delay_ms as u128 {
@@ -607,13 +605,7 @@ impl Proxy {
                                 }
                             }
                             if t.active {
-                                apply_target_to_state(&mut state, &t.dst, t.phase);
-                                // Physical button held overrides turbo toggle
-                                if let Target::Button(btn) = &t.dst {
-                                    if *btn != t.src && physical_snapshot.button(*btn) {
-                                        state.set_button(*btn, true);
-                                    }
-                                }
+                                state.set_button(t.src, t.phase);
                             }
                         }
 

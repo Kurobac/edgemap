@@ -346,3 +346,21 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 **Fix:** Compare only the permission bits by masking with `0o777`: `meta.permissions().mode() & 0o777 != 0`. Once `chmod 000` is applied, the masked permission bits are zero and subsequent frames skip the check entirely. Also added `info!("re-restricting hidraw node after udev reset")` log when triggered.
 
+### #72 — Turbo: direct dst write bypasses remap pipeline, causes combo cross-talk
+
+**Root cause:** Turbo wrote its target button directly to `GamepadState` via `apply_target_to_state(&state, &t.dst, t.phase)`, bypassing the entire L2 remap pipeline. This had two consequences:
+1. **Combo cross-talk**: when `[h] turbo=true remap="b"` and `[a] remap="combo"` with key=`b`, turbo's direct B-write appeared in `pre_combo = state.clone()` (L1 combo detection), causing the combo to incorrectly fire when H was turbo'd — the turbo'd B and physically-held A satisfied the A+B combo.
+2. **No RemapRule for turbo**: `to_mapping_config()` explicitly skipped generating `RemapRule` for turbo buttons (`if btn_conf.turbo { continue; }`), meaning turbo'd buttons never went through L2 remap — if you wanted turbo'd A to map to keyboard key Q via `[a] turbo=true remap="key:q"`, there was no RemapRule A→Q, and the keyboard event never fired.
+
+**Fix — Turbo refactor**: Turbo now only toggles its **source** button (`state.set_button(t.src, t.phase)`), never writes to the target. All target generation (remap, keyboard, combo) happens through the normal L2 remap pipeline:
+- `to_mapping_config()`: turbo buttons no longer skip RemapRule generation; they fall through to normal remap/block/combo processing.
+- L1 turbo: `apply_target_to_state(&state, &t.dst, phase)` → `state.set_button(t.src, phase)` (3 call sites).
+- `TurboRuntime.dst` and `TurboConfig.dst` fields removed — no longer needed since turbo only needs the source.
+- Physical button override (#69) removed — no longer applicable since turbo no longer writes to the target.
+
+### #73 — `switch-config` sends relative path to daemon, breaks after daemon restart
+
+**Root cause:** `cmd_switch_config()` in `edgemap` sent the path argument as-is to the FIFO (e.g. `./config.toml`). The daemon stored this raw string in `self.config_path` and used it for all subsequent config loads. If the daemon's working directory changed (e.g. after a `systemctl restart`), the relative path would resolve to a different location — or nowhere — causing config load failures.
+
+**Fix:** Call `std::fs::canonicalize()` on the path before sending to the FIFO. This converts `./config.toml` to `/home/user/.config/edgemap/config.toml`, making the stored path invulnerable to CWD changes.
+

@@ -141,16 +141,14 @@ impl Config {
             let src = Button::from_name(btn_name)
                 .ok_or_else(|| format!("Unknown source button: {btn_name}"))?;
 
-            // turbo buttons: skip remap (handled by build_turbo_configs), but still build combos
-            if btn_conf.turbo {
-                if btn_conf.remap.as_deref() == Some("combo") {
-                    for c in &btn_conf.combos {
-                        let key = Button::from_name(&c.key)
-                            .ok_or_else(|| format!("Unknown combo key '{}' in [{btn_name}]", c.key))?;
-                        let output = resolve_target_or_macro(&c.output, &self.macros)
-                            .ok_or_else(|| format!("Unknown combo output '{}' in [{btn_name}]", c.output))?;
-                        combo_configs.push(ComboRule { modifier: src, key, output });
-                    }
+            // turbo buttons with remap=combo: build combos in L1, no RemapRule needed
+            if btn_conf.turbo && btn_conf.remap.as_deref() == Some("combo") {
+                for c in &btn_conf.combos {
+                    let key = Button::from_name(&c.key)
+                        .ok_or_else(|| format!("Unknown combo key '{}' in [{btn_name}]", c.key))?;
+                    let output = resolve_target_or_macro(&c.output, &self.macros)
+                        .ok_or_else(|| format!("Unknown combo output '{}' in [{btn_name}]", c.output))?;
+                    combo_configs.push(ComboRule { modifier: src, key, output });
                 }
                 continue;
             }
@@ -229,17 +227,8 @@ impl Config {
                 Some(b) => b,
                 None => continue,
             };
-            let dst = match btn_conf.remap.as_deref() {
-                Some("block") | Some("combo") => Target::Button(src),
-                None => Target::Button(src),
-                Some(target) => match resolve_target(target) {
-                    Some(t) => t,
-                    None => continue,
-                },
-            };
             configs.push(TurboConfig {
                 src,
-                dst,
                 interval_ms: btn_conf.turbo_interval_ms,
                 delay_ms: btn_conf.turbo_delay_ms,
             });

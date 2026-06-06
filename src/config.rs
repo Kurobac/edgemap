@@ -69,6 +69,10 @@ fn is_valid_target(name: &str) -> bool {
     if matches!(name, "combo" | "passthrough") {
         return true;
     }
+    // keyboard targets: "key:<keyname>"
+    if let Some(key) = name.strip_prefix("key:") {
+        return !key.is_empty() && crate::keyboard::resolve_keycode(key).is_some();
+    }
     // special targets
     if matches!(
         name,
@@ -115,6 +119,9 @@ fn resolve_target(name: &str) -> Option<Target> {
 }
 
 fn resolve_target_or_macro(name: &str, macros: &HashMap<String, MacroConfig>) -> Option<Target> {
+    if let Some(key) = name.strip_prefix("key:") {
+        return crate::keyboard::resolve_keycode(key).map(Target::Keyboard);
+    }
     resolve_target(name).or_else(|| {
         if macros.contains_key(name) {
             Some(Target::Macro(name.to_string()))
@@ -122,6 +129,13 @@ fn resolve_target_or_macro(name: &str, macros: &HashMap<String, MacroConfig>) ->
             None
         }
     })
+}
+
+fn resolve_step_target(key: &str) -> Option<crate::mapping::StepTarget> {
+    if let Some(kc) = key.strip_prefix("key:") {
+        return crate::keyboard::resolve_keycode(kc).map(crate::mapping::StepTarget::Keyboard);
+    }
+    Button::from_name(key).map(crate::mapping::StepTarget::Gamepad)
 }
 
 impl Config {
@@ -200,9 +214,9 @@ impl Config {
                 return Err("touchpad_right: remap=\"block\" is not allowed in split mode".into());
             }
 
-            let left = resolve_target(left_dst)
+            let left = resolve_target_or_macro(left_dst, &self.macros)
                 .ok_or_else(|| format!("Unknown target '{left_dst}' for touchpad_left"))?;
-            let right = resolve_target(right_dst)
+            let right = resolve_target_or_macro(right_dst, &self.macros)
                 .ok_or_else(|| format!("Unknown target '{right_dst}' for touchpad_right"))?;
 
             rules.push(RemapRule::new(Button::TouchpadLeft, left));
@@ -264,7 +278,7 @@ impl Config {
             };
             let steps: Vec<crate::mapping::MacroStep> = mcfg.sequence.iter().map(|s| {
                 crate::mapping::MacroStep {
-                    button: Button::from_name(&s.key).unwrap_or(Button::Cross),
+                    action: resolve_step_target(&s.key).unwrap_or(crate::mapping::StepTarget::Gamepad(Button::Cross)),
                     press_ms: s.press_ms,
                     release_ms: s.release_ms,
                 }
@@ -294,7 +308,7 @@ impl Config {
                 };
                 let steps: Vec<crate::mapping::MacroStep> = mcfg.sequence.iter().map(|s| {
                     crate::mapping::MacroStep {
-                        button: Button::from_name(&s.key).unwrap_or(Button::Cross),
+                        action: resolve_step_target(&s.key).unwrap_or(crate::mapping::StepTarget::Gamepad(Button::Cross)),
                         press_ms: s.press_ms,
                         release_ms: s.release_ms,
                     }
@@ -463,15 +477,16 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             return Err(format!("Macro '{name}': sequence must not be empty"));
         }
         for step in &m.sequence {
-            let key_btn = Button::from_name(&step.key);
-            if key_btn.is_none() {
+            let step_target = resolve_step_target(&step.key);
+            if step_target.is_none() {
                 return Err(format!("Macro '{name}': unknown key '{}'", step.key));
             }
-            let key_btn = key_btn.unwrap();
-            if key_btn == Button::Mic || key_btn == Button::L2Analog || key_btn == Button::R2Analog
-                || key_btn == Button::TouchpadLeft || key_btn == Button::TouchpadRight
-            {
-                return Err(format!("Macro '{name}': invalid key '{}'", step.key));
+            if let Some(crate::mapping::StepTarget::Gamepad(btn)) = step_target {
+                if btn == Button::Mic || btn == Button::L2Analog || btn == Button::R2Analog
+                    || btn == Button::TouchpadLeft || btn == Button::TouchpadRight
+                {
+                    return Err(format!("Macro '{name}': invalid key '{}'", step.key));
+                }
             }
             if step.release_ms <= step.press_ms {
                 return Err(format!(
@@ -676,6 +691,7 @@ mod tests {
             "touchpad", "l2_full", "r2_full",
             "ls_up", "ls_down", "ls_left", "ls_right",
             "rs_up", "rs_down", "rs_left", "rs_right",
+            "key:space", "key:a", "key:enter", "key:f1",
         ] {
             let cfg = parse(&format!("[cross]\nremap = \"{target}\"\n"));
             assert!(validate(&cfg).is_ok(), "target {target} should be valid");
@@ -691,6 +707,12 @@ mod tests {
     #[test]
     fn unknown_target() {
         assert!(validate(&parse("[cross]\nremap = \"nope\"\n"))
+            .unwrap_err().contains("unknown target"));
+    }
+
+    #[test]
+    fn keyboard_target_unknown_key() {
+        assert!(validate(&parse("[cross]\nremap = \"key:banana\"\n"))
             .unwrap_err().contains("unknown target"));
     }
 
@@ -932,5 +954,17 @@ mod tests {
     fn macro_name_target_conflict() {
         let e = validate(&parse("[left_paddle]\nremap = \"l2_full\"\n[macros.l2_full]\n[[macros.l2_full.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
         assert!(e.contains("conflicts with a built-in target"));
+    }
+
+    #[test]
+    fn keyboard_macro_step_valid() {
+        let cfg = parse("[left_paddle]\nremap = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"key:tab\"\npress_ms = 0\nrelease_ms = 100\n");
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn keyboard_macro_step_rejected() {
+        let e = validate(&parse("[left_paddle]\nremap = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"key:bad\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
+        assert!(e.contains("unknown key"));
     }
 }

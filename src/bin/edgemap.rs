@@ -4,6 +4,9 @@ mod report;
 #[path = "../mapping.rs"]
 #[allow(dead_code)]
 mod mapping;
+#[path = "../keyboard.rs"]
+#[allow(dead_code)]
+mod keyboard;
 #[path = "../config.rs"]
 #[allow(dead_code)]
 mod config;

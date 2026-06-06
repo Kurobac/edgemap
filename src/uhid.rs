@@ -3,7 +3,7 @@ use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 
-use log::debug;
+use log::{debug, info};
 
 const UHID_DEVICE: &str = "/dev/uhid";
 pub const UHID_EVENT_SIZE: usize = 4384;
@@ -181,7 +181,7 @@ impl UhidDevice {
             return Err(io::Error::last_os_error());
         }
 
-        debug!("UHID destroy sent");
+        info!("UHID destroy sent");
         self.created = false;
         Ok(())
     }

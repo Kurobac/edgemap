@@ -24,6 +24,7 @@ pub enum Target {
     TriggerFull(Trigger),
     Stick(StickDir),
     Macro(String),
+    Keyboard(u16),
 }
 
 #[derive(Debug, Clone)]
@@ -66,9 +67,15 @@ pub enum MacroSource {
 
 #[derive(Debug, Clone)]
 pub struct MacroStep {
-    pub button: Button,
+    pub action: StepTarget,
     pub press_ms: u64,
     pub release_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum StepTarget {
+    Gamepad(Button),
+    Keyboard(u16),
 }
 
 #[derive(Debug, Clone)]
@@ -100,7 +107,7 @@ impl MappingConfig {
         Self { rules, split_touchpad, turbo_configs: Vec::new(), blocked_buttons: Vec::new(), combo_configs: Vec::new(), macro_configs: Vec::new() }
     }
 
-    pub fn apply(&self, l1: &GamepadState, state: &mut GamepadState) {
+    pub fn apply(&self, l1: &GamepadState, state: &mut GamepadState, keyboard_out: &mut Vec<(u16, bool)>) {
         let snapshot = l1.clone();
         let mut button_targets: Vec<Button> = Vec::new();
 
@@ -185,6 +192,7 @@ impl MappingConfig {
                     }
                 }
                 Target::Macro(_) => {}
+                Target::Keyboard(code) => keyboard_out.push((*code, true)),
             }
         }
 
@@ -208,7 +216,7 @@ mod tests {
         ]);
         let mut s = state();
         s.set_button(Button::Cross, true);
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         assert!(!s.button(Button::Cross));
         assert!(s.button(Button::Circle));
     }
@@ -222,7 +230,7 @@ mod tests {
         let mut s = state();
         s.set_button(Button::Cross, true);
         s.set_button(Button::Square, true);
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         assert!(!s.button(Button::Cross));
         assert!(!s.button(Button::Square));
         assert!(s.button(Button::Circle));
@@ -238,7 +246,7 @@ mod tests {
         let mut s = state();
         s.set_button(Button::Cross, true);
         s.set_button(Button::Circle, true);
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         // deferred targets: both circle and cross are set in Phase 2
         assert!(s.button(Button::Cross));
         assert!(s.button(Button::Circle));
@@ -252,7 +260,7 @@ mod tests {
         ]);
         let mut s = state();
         s.set_button(Button::Cross, true);
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         assert!(!s.button(Button::Cross));
         assert!(s.button(Button::Circle));
     }
@@ -264,7 +272,7 @@ mod tests {
         ]);
         let mut s = state();
         s.set_button(Button::Cross, true);
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         assert!(s.button(Button::Cross)); // self-map preserves
     }
 
@@ -276,7 +284,7 @@ mod tests {
         let mut s = state();
         s.set_button(Button::L2, true);
         s.l2_analog = 128;
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         assert!(s.button(Button::L2));
         assert_eq!(s.l2_analog, 128); // self-map preserves analog
     }
@@ -289,7 +297,7 @@ mod tests {
         let mut s = state();
         s.set_button(Button::L2, true);
         s.l2_analog = 100;
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         assert!(!s.button(Button::L2));
         assert!(s.button(Button::R2));
         assert_eq!(s.l2_analog, 0);   // source cleared
@@ -303,7 +311,7 @@ mod tests {
         ]);
         let mut s = state();
         s.set_button(Button::Cross, true);
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         assert!(!s.button(Button::Cross));
         assert!(s.button(Button::L2));
         assert_eq!(s.l2_analog, 255);
@@ -316,7 +324,7 @@ mod tests {
         ]);
         let mut s = state();
         s.set_button(Button::Circle, true);
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         assert!(!s.button(Button::Circle));
         assert!(s.button(Button::R2));
         assert_eq!(s.r2_analog, 255);
@@ -346,7 +354,7 @@ mod tests {
             let cfg = MappingConfig::from_rules(vec![
                 RemapRule::new(Button::Cross, Target::Stick(dir.clone())),
             ]);
-            cfg.apply(&s.clone(), &mut s);
+            cfg.apply(&s.clone(), &mut s, &mut Vec::new());
             assert!(!s.button(Button::Cross));
             assert_eq!(getter(&s), expected, "dir={:?}", dir);
         }
@@ -360,7 +368,7 @@ mod tests {
         let mut s = state();
         s.set_button(Button::L2, true);
         s.l2_analog = 128;
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         assert!(!s.button(Button::L2));
         assert!(s.button(Button::Cross));
         assert_eq!(s.l2_analog, 0); // analog cleared
@@ -374,7 +382,7 @@ mod tests {
         let mut s = state();
         s.set_button(Button::R2, true);
         s.r2_analog = 200;
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         assert!(!s.button(Button::R2));
         assert!(s.button(Button::Circle));
         assert_eq!(s.r2_analog, 0);
@@ -387,7 +395,7 @@ mod tests {
         ]);
         let mut s = state();
         s.set_button(Button::Square, true);
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         assert!(s.button(Button::Square)); // untouched
         assert!(!s.button(Button::Circle)); // no remap triggered
     }
@@ -402,11 +410,24 @@ mod tests {
         let mut s = state();
         s.set_button(Button::Cross, true);
         // Circle NOT pressed physically
-        cfg.apply(&s.clone(), &mut s);
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
         // cross→circle fires (cross was pressed)
         // circle→square should NOT fire (circle was NOT physically pressed)
         assert!(!s.button(Button::Cross));
         assert!(s.button(Button::Circle));
         assert!(!s.button(Button::Square)); // not triggered via cascade
+    }
+
+    #[test]
+    fn remap_to_keyboard() {
+        let cfg = MappingConfig::from_rules(vec![
+            RemapRule::new(Button::Cross, Target::Keyboard(57)), // KEY_SPACE
+        ]);
+        let mut s = state();
+        s.set_button(Button::Cross, true);
+        let mut kb: Vec<(u16, bool)> = Vec::new();
+        cfg.apply(&s.clone(), &mut s, &mut kb);
+        assert!(!s.button(Button::Cross));
+        assert_eq!(kb, vec![(57, true)]);
     }
 }

@@ -45,6 +45,7 @@ RIGHT = [
 
 TARGETS = [
     # keep in sync with config.rs is_valid_target() + resolve_target()
+    "Keyboard...",
     "block", "passthrough", "combo", "macro",
     "cross", "circle", "square", "triangle",
     "l1", "r1", "l2", "r2", "l3", "r3",
@@ -145,8 +146,29 @@ class ComboDialog(QDialog):
             out_combo.lineEdit().setStyleSheet("padding-left: 8px; border: none;")
             out_combo.setStyleSheet("QComboBox QAbstractItemView { padding-left: 8px; }")
             out_combo.wheelEvent = lambda e: e.ignore()
-            if c.get("output", "") in self.output_targets:
+            if c.get("output", "") in self.output_targets or c.get("output", "").startswith("key:"):
                 out_combo.setCurrentText(c["output"])
+            last_valid_out = out_combo.currentText()
+            def make_out_handler(oc, last_valid_ref):
+                def handler(text):
+                    nonlocal last_valid_ref
+                    if text == "Keyboard...":
+                        oc.blockSignals(True)
+                        try:
+                            pre = oc.currentText() if oc.currentText().startswith("key:") else None
+                            picker = KeyboardPicker(self, pre)
+                            if picker.exec() == QDialog.DialogCode.Accepted and picker.key_name():
+                                oc.setCurrentText(picker.key_name())
+                                oc.blockSignals(False)
+                                return
+                        finally:
+                            oc.blockSignals(False)
+                        oc.setCurrentText(last_valid_ref)
+                    else:
+                        last_valid_ref = text
+                return handler
+            handler = make_out_handler(out_combo, last_valid_out)
+            out_combo.currentTextChanged.connect(handler)
             t.setCellWidget(i, 1, out_combo)
             rem_btn = QPushButton("✕")
             rem_btn.setFixedSize(24, 18)
@@ -268,14 +290,38 @@ class MacroEditor(QDialog):
         t.setRowCount(len(self.steps))
         for i, s in enumerate(self.steps):
             cb = QComboBox()
+            cb.addItem("Keyboard...")
             cb.addItems(BUTTON_KEYS)
             cb.setEditable(True)
             cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
             cb.lineEdit().setStyleSheet("padding-left: 8px; border: none;")
             cb.setStyleSheet("QComboBox QAbstractItemView { padding-left: 8px; }")
             cb.wheelEvent = lambda e: None
-            if s.get("key", "") in BUTTON_KEYS:
+            if s.get("key", "").startswith("key:"):
                 cb.setCurrentText(s["key"])
+            elif s.get("key", "") in BUTTON_KEYS:
+                cb.setCurrentText(s["key"])
+            last_valid_k = cb.currentText()
+            def make_k_handler(cbox, last_ref):
+                def handler(text):
+                    nonlocal last_ref
+                    if text == "Keyboard...":
+                        cbox.blockSignals(True)
+                        try:
+                            pre = cbox.currentText() if cbox.currentText().startswith("key:") else None
+                            picker = KeyboardPicker(self, pre)
+                            if picker.exec() == QDialog.DialogCode.Accepted and picker.key_name():
+                                cbox.setCurrentText(picker.key_name())
+                                cbox.blockSignals(False)
+                                return
+                        finally:
+                            cbox.blockSignals(False)
+                        cbox.setCurrentText(last_ref)
+                    else:
+                        last_ref = text
+                return handler
+            handler = make_k_handler(cb, last_valid_k)
+            cb.currentTextChanged.connect(handler)
             t.setCellWidget(i, 0, cb)
             ps = QSpinBox(); ps.setRange(0, 99999); ps.setValue(s.get("press_ms", 0))
             ps.wheelEvent = lambda e: None
@@ -465,6 +511,118 @@ BUTTON_KEYS = [
     "dpad_up", "dpad_down", "dpad_left", "dpad_right",
     "touchpad",
 ]
+
+# Keyboard key groups for KeyboardPicker (names matching keyboard.rs resolve_keycode)
+KEYBOARD_KEYS = [
+    ("Letters", [("a", "A"), ("b", "B"), ("c", "C"), ("d", "D"), ("e", "E"),
+        ("f", "F"), ("g", "G"), ("h", "H"), ("i", "I"), ("j", "J"),
+        ("k", "K"), ("l", "L"), ("m", "M"), ("n", "N"), ("o", "O"),
+        ("p", "P"), ("q", "Q"), ("r", "R"), ("s", "S"), ("t", "T"),
+        ("u", "U"), ("v", "V"), ("w", "W"), ("x", "X"), ("y", "Y"), ("z", "Z")]),
+    ("Numbers", [("0", "0"), ("1", "1"), ("2", "2"), ("3", "3"), ("4", "4"),
+        ("5", "5"), ("6", "6"), ("7", "7"), ("8", "8"), ("9", "9")]),
+    ("Function", [("f1", "F1"), ("f2", "F2"), ("f3", "F3"), ("f4", "F4"),
+        ("f5", "F5"), ("f6", "F6"), ("f7", "F7"), ("f8", "F8"),
+        ("f9", "F9"), ("f10", "F10"), ("f11", "F11"), ("f12", "F12")]),
+    ("Navigation", [("up", "↑"), ("down", "↓"), ("left", "←"), ("right", "→"),
+        ("home", "Home"), ("end", "End"), ("pageup", "PgUp"), ("pagedown", "PgDn"),
+        ("insert", "Ins"), ("delete", "Del")]),
+    ("Modifiers", [("leftctrl", "Ctrl-L"), ("rightctrl", "Ctrl-R"),
+        ("leftshift", "Shift-L"), ("rightshift", "Shift-R"),
+        ("leftalt", "Alt-L"), ("rightalt", "Alt-R"),
+        ("leftmeta", "Super-L"), ("rightmeta", "Super-R")]),
+    ("Special", [("enter", "Enter"), ("space", "Space"), ("tab", "Tab"),
+        ("esc", "Esc"), ("backspace", "Bksp"), ("capslock", "Caps")]),
+    ("Numpad", [("kp0", "KP0"), ("kp1", "KP1"), ("kp2", "KP2"), ("kp3", "KP3"),
+        ("kp4", "KP4"), ("kp5", "KP5"), ("kp6", "KP6"), ("kp7", "KP7"),
+        ("kp8", "KP8"), ("kp9", "KP9"), ("kpdot", "KP."), ("kpenter", "KP↩"),
+        ("kpplus", "KP+"), ("kpminus", "KP-"), ("kp*", "KP*"),
+        ("kpslash", "KP/"), ("numlock", "NumLk")]),
+    ("Symbols", [("minus", "-"), ("equal", "="), ("leftbrace", "["), ("rightbrace", "]"),
+        ("backslash", "\\"), ("semicolon", ";"), ("apostrophe", "'"),
+        ("comma", ","), ("dot", "."), ("slash", "/"), ("grave", "`")]),
+    ("Media", [("volumeup", "Vol↑"), ("volumedown", "Vol↓"), ("mute", "Mute"),
+        ("playpause", "Play"), ("stop", "Stop"), ("previoussong", "⏮"), ("nextsong", "⏭")]),
+]
+
+# Flat list of all key names for quick lookup
+_KEY_NAMES: set[str] = {name for _, keys in KEYBOARD_KEYS for name, _ in keys}
+
+
+class KeyboardPicker(QDialog):
+    def __init__(self, parent, current: str | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Keyboard Key")
+        self.resize(420, 420)
+        layout = QVBoxLayout(self)
+
+        search = QLineEdit()
+        search.setPlaceholderText("Type to filter...")
+        layout.addWidget(search)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setStyleSheet("QListWidget::item { padding: 4px 8px; }")
+        self.list_widget.doubleClicked.connect(self._accept)
+        layout.addWidget(self.list_widget)
+
+        self._key_map: dict[str, str] = {}  # display_name → key_name
+        self._current = current
+
+        self._populate()
+
+        search.textChanged.connect(self._filter)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        if current and current.startswith("key:"):
+            pre_select = current[4:]
+            for i in range(self.list_widget.count()):
+                item = self.list_widget.item(i)
+                if item and item.data(Qt.ItemDataRole.UserRole) == pre_select:
+                    self.list_widget.setCurrentRow(i)
+                    self.list_widget.scrollToItem(item)
+                    break
+
+    def key_name(self) -> str | None:
+        return self._selected
+
+    def _populate(self):
+        self.list_widget.clear()
+        self._key_map.clear()
+        for _, keys in KEYBOARD_KEYS:
+            for name, display in keys:
+                item = QListWidgetItem(f"  {display}  ({name})")
+                item.setData(Qt.ItemDataRole.UserRole, name)
+                self.list_widget.addItem(item)
+                self._key_map[name] = display
+
+    def _filter(self, text: str):
+        lower = text.lower()
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            name = item.data(Qt.ItemDataRole.UserRole) or ""
+            display = self._key_map.get(name, "")
+            item.setHidden(bool(lower and lower not in name.lower() and lower not in display.lower()))
+
+    def _accept(self):
+        item = self.list_widget.currentItem()
+        if item:
+            name = item.data(Qt.ItemDataRole.UserRole)
+            if name:
+                self._selected = "key:" + name
+                self.accept()
+                return
+        # double-click or OK without selection
+        item = self.list_widget.item(0)
+        if item:
+            name = item.data(Qt.ItemDataRole.UserRole)
+            if name:
+                self._selected = "key:" + name
+                self.accept()
 
 
 class EdgemapConfigDialog(QDialog):
@@ -877,6 +1035,8 @@ class EdgemapEditor(QMainWindow):
             cb.setCurrentText(cur)
         elif name == "touchpad" and cur == "split":
             cb.setCurrentText("split")
+        elif cur.startswith("key:"):
+            cb.setCurrentText(cur)
         cb.setEditable(True)
         cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         cb.lineEdit().setStyleSheet("padding-left: 8px; border: none;")
@@ -897,9 +1057,26 @@ class EdgemapEditor(QMainWindow):
 
         # Combo / Macro edit trigger
         valid_set = set(TARGETS) | {"split"} | set(self.config.get("macros", {}).keys())
+        last_valid_text = cb.currentText()
+
         def on_remap_changed(text):
+            nonlocal last_valid_text
             try: edit_btn.clicked.disconnect()
             except TypeError: pass
+
+            if text == "Keyboard...":
+                cb.blockSignals(True)
+                try:
+                    pre = cb.currentText() if cb.currentText().startswith("key:") else None
+                    picker = KeyboardPicker(self, pre)
+                    if picker.exec() == QDialog.DialogCode.Accepted and picker.key_name():
+                        cb.setCurrentText(picker.key_name())
+                        cb.blockSignals(False)
+                        return
+                finally:
+                    cb.blockSignals(False)
+                cb.setCurrentText(last_valid_text)
+                return
 
             if text == "combo":
                 edit_btn.show()
@@ -912,11 +1089,14 @@ class EdgemapEditor(QMainWindow):
             else:
                 edit_btn.hide()
             self.config.setdefault(name, {})["remap"] = text
+            last_valid_text = text
 
         def on_edit_finished():
             text = cb.currentText()
             if name in ("touchpad_left", "touchpad_right") and text == "block":
                 cb.setCurrentText(init_text)
+                return
+            if text.startswith("key:"):
                 return
             if text and text not in valid_set:
                 cb.setCurrentText(init_text)

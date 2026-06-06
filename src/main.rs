@@ -1,6 +1,7 @@
 mod config;
 mod descriptor;
 mod device;
+mod keyboard;
 mod mapping;
 mod proxy;
 mod report;
@@ -295,6 +296,17 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         let mapping = Arc::new(RwLock::new(mapping));
 
         let config_path_str = config_path.as_deref().unwrap_or("");
+
+        let _keyboard = match keyboard::KeyboardDevice::open() {
+            Ok(k) => {
+                info!("uinput keyboard device created");
+                Some(k)
+            }
+            Err(e) => {
+                warn!("uinput not available ({e}), keyboard targets will be ignored");
+                None
+            }
+        };
 
         let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, dup_fifo_fd(&fifo_fd));
         match proxy.run() {

@@ -1382,6 +1382,26 @@ class EdgemapEditor(QMainWindow):
         return True
 
     def _save_as_config(self):
+        content = self._build_toml()
+        tmp = "/tmp/edgemap_validate.toml"
+        try:
+            with open(tmp, "w") as f:
+                f.write(content)
+        except OSError as e:
+            QMessageBox.warning(self, "Error", f"Cannot write {tmp}: {e}")
+            return
+        try:
+            result = subprocess.run(["edgemap", "v", tmp], capture_output=True, text=True, timeout=10)
+        except FileNotFoundError:
+            QMessageBox.warning(self, "Error", "edgemap binary not found in PATH.")
+            return
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(self, "Error", "Validation timed out.")
+            return
+        if result.returncode != 0:
+            QMessageBox.warning(self, "Error", f"Config validation failed:\n{result.stderr}")
+            return
+
         path, _ = QFileDialog.getSaveFileName(
             self, "Save config as",
             os.path.expanduser("~/.config/edgemap"),
@@ -1389,8 +1409,12 @@ class EdgemapEditor(QMainWindow):
         )
         if not path:
             return
-        content = self._build_toml()
-        if not self._validate_and_write(content, path):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(content)
+        except OSError as e:
+            QMessageBox.warning(self, "Error", f"Cannot save: {e}")
             return
         self.current_file = path
         self._saved_config = copy.deepcopy(self.config)

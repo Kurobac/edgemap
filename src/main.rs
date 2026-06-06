@@ -297,18 +297,13 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
         let config_path_str = config_path.as_deref().unwrap_or("");
 
-        let _keyboard = match keyboard::KeyboardDevice::open() {
-            Ok(k) => {
-                info!("uinput keyboard device created");
-                Some(k)
-            }
-            Err(e) => {
+        let keyboard = keyboard::KeyboardDevice::open()
+            .unwrap_or_else(|e| {
                 warn!("uinput not available ({e}), keyboard targets will be ignored");
-                None
-            }
-        };
+                keyboard::KeyboardDevice::dummy()
+            });
 
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, dup_fifo_fd(&fifo_fd));
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, keyboard, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
             proxy::ExitReason::DeviceGone => {
                 proxy.skip_restore();

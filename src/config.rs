@@ -69,6 +69,10 @@ fn is_valid_target(name: &str) -> bool {
     if matches!(name, "combo" | "passthrough") {
         return true;
     }
+    // keyboard targets: "key:<keyname>"
+    if let Some(key) = name.strip_prefix("key:") {
+        return !key.is_empty() && crate::keyboard::resolve_keycode(key).is_some();
+    }
     // special targets
     if matches!(
         name,
@@ -115,6 +119,9 @@ fn resolve_target(name: &str) -> Option<Target> {
 }
 
 fn resolve_target_or_macro(name: &str, macros: &HashMap<String, MacroConfig>) -> Option<Target> {
+    if let Some(key) = name.strip_prefix("key:") {
+        return crate::keyboard::resolve_keycode(key).map(Target::Keyboard);
+    }
     resolve_target(name).or_else(|| {
         if macros.contains_key(name) {
             Some(Target::Macro(name.to_string()))

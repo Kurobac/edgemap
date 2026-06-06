@@ -364,3 +364,21 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 **Fix:** Use `resolve_config_path()` — the path resolver already used by edgemap daemon mode. This function handles absolute paths, `~` expansion, and resolves bare filenames against `~/.config/edgemap/`. Same resolution logic as the rest of edgemap.
 
+### #74 — `switch-config` rejects `./` and `../` relative paths
+
+**Root cause:** `resolve_config_path()` was designed for edgemap daemon internal use (profile config paths in `edgemap.toml`), where paths are always bare filenames, `~`-prefixed, or absolute. When `cmd_switch_config` adopted `resolve_config_path()`, user-supplied paths like `./1.toml` were incorrectly joined as `~/.config/edgemap/./1.toml`.
+
+**Fix:** In `cmd_switch_config`, check if the path argument starts with `.`. If so, canonicalize against CWD (`.` and `..` paths). Otherwise, delegate to `resolve_config_path()` as before.
+
+### #75 — Combo → keyboard target events lost
+
+**Root cause:** Keyboard flush ran immediately after L2 Remap, but combo injection ran after flush. Combo-triggered keyboard events (`Target::Keyboard`) were pushed to `keyboard_events` after the flush loop had already processed the vector, so they never reached uinput.
+
+**Fix:** Moved keyboard flush to after all L2 stages (Remap → Combo injection → Macro injection → Keyboard flush). All keyboard sources now contribute before the single per-frame flush.
+
+### #76 — Split touchpad targets reject keyboard and macro targets
+
+**Root cause:** Split touchpad target resolution used `resolve_target()` which only handles built-in targets (buttons, sticks, triggers). Keyboard (`key:xxx`) and macro targets are resolved by `resolve_target_or_macro()` which was used everywhere else.
+
+**Fix:** Changed split touchpad target resolution from `resolve_target()` to `resolve_target_or_macro()`. This enables `[touchpad_left] remap = "key:left"` and macro targets for touchpad partitions.
+

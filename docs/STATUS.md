@@ -1,4 +1,4 @@
-# edgemap — Project Status (2026-06-05)
+# edgemap — Project Status (2026-06-06)
 
 ## Overview
 
@@ -38,6 +38,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.7.2 | `6919430` | **Cleanup + fixes**: remove dead code (monitor, touchdemo, trigger_reload, dualsense_usb_descriptor); FIFO buffer 256→4096 (#65); GUI closeEvent unsaved changes prompt; BUGFIX #64 (Cargo incremental build cache) |
 | v0.7.3 | `143f1c5` | **Bugfixes**: dup_fifo_fd() missing exit on dup failure (#66); duplicate return{} in load_config (#67); /run/dseuhid/connected cleanup on shutdown + waiting-for-device log (#68); turbo toggle vs physical button press override (#69) |
 | v0.7.4 | `e6b5209` | **Bugfixes**: re-restrict hidraw after suspend/resume udev reset (#70, #71); non-root daemon spam prevention + cooldown; FIFO command confirmation output; zsh completions; notify-send app name grouping; GUI taskbar icon fix; turbo source as combo key comment |
+| v0.8.0 | `f56968c` | **Keyboard target**: uinput keyboard device for `key:xxx` targets; remap/combo/macro step → keyboard; GUI KeyboardPicker with 106 keycodes; split touchpad→keyboard; turbo+keyboard pipeline fix; six bugfixes (#72-#76); 143 tests (+8) |
 
 ## Implemented Features
 
@@ -155,6 +156,21 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - Config validation: empty sequence reject, release_ms > press_ms, macro name vs button name conflict, same-key turbo+macro mutual exclusion
 - Hot reload: macro runtimes rebuilt on SIGHUP
 
+### Keyboard Target (v0.8.0)
+- **Keyboard output via uinput**: `remap = "key:<keyname>"` creates keystrokes on a virtual keyboard
+- Config format: `key:<name>` as remap target, combo output, or macro step key (e.g. `"key:space"`)
+- 106 keycodes supported: letters, numbers, F-keys, navigation, modifiers, symbols, numpad, media
+- **uinput device** (`edgemap Keyboard`): auto-created on daemon start, falls back to dummy if unavailable
+- **Pipeline integration**:
+  - L2 Remap: source button → keyboard event pushed per frame
+  - L2 Combo: combo output → keyboard event
+  - L2 Macro: macro step with keyboard key → keyboard event via `StepTarget::Keyboard`
+  - L2 Keyboard flush: unified per-frame press/release across all sources, runs after all L2 stages
+- Turbo + keyboard: turbo toggles source button through L2 remap → keyboard event (no dst needed)
+- Split touchpad → keyboard: `[touchpad_left] remap = "key:left"` supported
+- GUI: `Keyboard...` entry in remap/combo/macro drop-downs → KeyboardPicker with search filter and 9 categories
+- Manual input: typing `key:space` directly in editable comboboxes works, validated at TOML save time
+
 ### Device Detection
 - Scan `/dev/hidraw*`, ioctl HIDIOCGRAWINFO for VID/PID
 - Physical-only: reject UHID virtual devices (check `/sys/class/hidraw/N/device/uevent`)
@@ -165,12 +181,12 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - Multi-device: warn if more than one DualSense detected
 - EIO cooldown: 2-second sleep after disconnect
 
-### Unit Tests (135 total: 68 dseuhid + 67 edgemap shared-module imports, all passing)
+### Unit Tests (143 total: 72 dseuhid + 71 edgemap shared-module imports, all passing)
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| `mapping.rs` | 12 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation |
+| `mapping.rs` | 13 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, keyboard target |
 | `report.rs` | 11 | byte position for all button groups (face/shoulder/system/Edge), all-button roundtrip, byte11 preservation, stick/trigger values, seq |
-| `config.rs` | 42 | valid sources/targets, trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
+| `config.rs` | 46 | valid sources/targets (incl. key:xxx), trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro, keyboard step), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
 | `device.rs` | 1 | sysfs path resolution |
 
 ### Tools

@@ -845,7 +845,7 @@ class EdgemapEditor(QMainWindow):
         self._split_rows = {}
         self.setWindowTitle("edgemap Config Editor")
         self.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), "edgemap.svg")))
-        self.resize(920, 700)
+        self.resize(925, 700)
         self.setMinimumSize(900, 600)
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("")

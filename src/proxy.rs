@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,6 +36,7 @@ fn apply_target_to_state(state: &mut crate::report::GamepadState, target: &Targe
             }
         }
         Target::Macro(_) => {}
+        Target::Keyboard(_) => {}
     }
 }
 
@@ -249,6 +250,8 @@ pub struct Proxy {
     mapping: Arc<RwLock<MappingConfig>>,
     config_path: String,
     report_cache: HashMap<u8, Vec<u8>>,
+    keyboard: crate::keyboard::KeyboardDevice,
+    last_keyboard: HashSet<u16>,
     last_snapshot: Option<crate::report::GamepadState>,
     last_output: Option<crate::report::GamepadState>,
     turbo_runtimes: Vec<TurboRuntime>,
@@ -299,7 +302,7 @@ impl Proxy {
         }
     }
 
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, fifo_file: std::fs::File) -> Self {
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
         let fifo_fd = OwnedFd::from(fifo_file);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
@@ -314,7 +317,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, keyboard, last_keyboard: HashSet::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn skip_restore(&mut self) {
@@ -565,6 +568,7 @@ impl Proxy {
                         // ========== L1: Physical Input Filtering ==========
 
                         // L1: TURBO (reads physical_snapshot, writes state)
+                        let mut keyboard_events: Vec<(u16, bool)> = Vec::new();
                         for t in &mut self.turbo_runtimes {
                             let pressed = physical_snapshot.button(t.src);
                             if t.active || pressed {
@@ -674,7 +678,7 @@ impl Proxy {
 
                         // L2: REMAP (reads L1, writes state)
                         let m = self.mapping.read().unwrap();
-                        m.apply(&l1, &mut state);
+                        m.apply(&l1, &mut state, &mut keyboard_events);
                         drop(m);
 
                         // L2: COMBO injection (writes state, or manages Combo-source macros)
@@ -687,7 +691,8 @@ impl Proxy {
                                         }
                                     }
                                 }
-                                _ => apply_target_to_state(&mut state, target, true),
+                                Target::Keyboard(code) => keyboard_events.push((*code, *_active)),
+                                _ => apply_target_to_state(&mut state, target, *_active),
                             }
                         }
                         // deactivate Combo-source macros whose combo is no longer triggered
@@ -711,6 +716,18 @@ impl Proxy {
                                 m.tick(&mut state, now);
                             }
                         }
+
+                        // flush keyboard after all L2 sources have pushed events
+                        let current: HashSet<u16> = keyboard_events.iter().map(|(c, _)| *c).collect();
+                        for code in &self.last_keyboard {
+                            if !current.contains(code) {
+                                self.keyboard.release(*code);
+                            }
+                        }
+                        for (code, _) in &keyboard_events {
+                            self.keyboard.press(*code);
+                        }
+                        self.last_keyboard = current;
 
                         // ========== L3: Output ==========
                         report::apply_state_to_report(&mut buf, &state, *seq);

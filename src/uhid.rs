@@ -230,8 +230,9 @@ impl UhidDevice {
         unsafe {
             let ret = libc::write(fd, buf.as_ptr() as *const libc::c_void, total_size);
             if ret < 0 {
-                log::error!("uhid GET_REPORT reply write failed: {}", io::Error::last_os_error());
-                return Err(io::Error::last_os_error());
+                let e = io::Error::last_os_error();
+                log::error!("uhid GET_REPORT reply write failed: {e}");
+                return Err(e);
             }
         }
         Ok(())
@@ -247,8 +248,9 @@ impl UhidDevice {
         unsafe {
             let ret = libc::write(fd, buf.as_ptr() as *const libc::c_void, 10);
             if ret < 0 {
-                log::error!("uhid SET_REPORT reply write failed: {}", io::Error::last_os_error());
-                return Err(io::Error::last_os_error());
+                let e = io::Error::last_os_error();
+                log::error!("uhid SET_REPORT reply write failed: {e}");
+                return Err(e);
             }
         }
         Ok(())

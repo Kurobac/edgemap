@@ -82,7 +82,7 @@ pub fn hidraw_get_report_descriptor(fd: RawFd) -> io::Result<Vec<u8>> {
     let mut buf = [0u8; 4100];
     // Write expected length for kernel >= 6.7 (reads len from caller);
     // harmless on older kernels (they write the whole struct, overwriting this).
-    let len = (desc_size as u32).min(4095);
+    let len = (desc_size as u32).min(4096);
     buf[0..4].copy_from_slice(&len.to_ne_bytes());
 
     let ret = unsafe {

@@ -32,7 +32,9 @@ fn setup_fifo() -> std::fs::File {
         eprintln!("error: cannot create FIFO at {FIFO_PATH}: {}", std::io::Error::last_os_error());
         std::process::exit(1);
     }
-    unsafe { libc::chmod(c_path.as_ptr(), 0o666) };
+    if unsafe { libc::chmod(c_path.as_ptr(), 0o666) } != 0 {
+        log::warn!("failed to chmod FIFO: {}", std::io::Error::last_os_error());
+    }
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)

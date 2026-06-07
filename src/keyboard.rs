@@ -205,11 +205,18 @@ impl KeyboardDevice {
         let fd = OwnedFd::from(file);
         let raw = fd.as_raw_fd();
 
-        set_bit(raw, UI_SET_EVBIT, 0x01).ok();  // EV_KEY
-        set_bit(raw, UI_SET_EVBIT, 0x00).ok();  // EV_SYN
+        if let Err(e) = set_bit(raw, UI_SET_EVBIT, 0x01) {
+            log::warn!("uinput set_bit EV_KEY failed: {e}");
+        }
+        if let Err(e) = set_bit(raw, UI_SET_EVBIT, 0x00) {
+            log::warn!("uinput set_bit EV_SYN failed: {e}");
+        }
 
         for code in ALL_KEYCODES {
-            set_bit(raw, UI_SET_KEYBIT, *code).ok();
+            if let Err(e) = set_bit(raw, UI_SET_KEYBIT, *code) {
+                log::warn!("uinput set_bit key {code} failed: {e}");
+                break;
+            }
         }
 
         unsafe { Self::create_device(raw)?; }

@@ -382,8 +382,7 @@ fn cmd_switch_config(args: &[String]) -> ! {
             .to_string_lossy()
             .to_string()
     } else {
-        let config_dir = PathBuf::from(env::var("HOME").unwrap_or_else(|_| "/root".into()))
-            .join(".config/edgemap");
+        let config_dir = edgemap_config_dir();
         resolve_config_path(path, &config_dir)
     };
     let cfg = match config::Config::load(&path_str) {
@@ -612,7 +611,7 @@ fn cmd_daemon(args: &[String]) -> ! {
 
         // disconnected: skip injection entirely
         if uhid_state != "connected" {
-            if last_uhid_state.as_deref() != Some("disconnected") {
+            if last_uhid_state.is_some() && last_uhid_state.as_deref() != Some("disconnected") {
                 log::info!("Gamepad disconnected");
                 send_notification("edgemap", "Gamepad disconnected");
             }

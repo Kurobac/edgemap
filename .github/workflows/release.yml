@@ -1,0 +1,38 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release
+
+      - name: Package tarball
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          DIR="edgemap-${TAG}-x86_64"
+          mkdir -p "${DIR}/usr/lib/systemd/system"
+          mkdir -p "${DIR}/usr/lib/systemd/user"
+          mkdir -p "${DIR}/usr/share/icons/hicolor/scalable/apps"
+          mkdir -p "${DIR}/usr/share/zsh/site-functions"
+
+          cp target/release/dseuhid "${DIR}/"
+          cp target/release/edgemap "${DIR}/"
+          cp edgemap-gui-v6.py "${DIR}/edgemap-gui"
+          cp install.sh "${DIR}/"
+
+          sed 's|/usr/bin/|/usr/local/bin/|g' dseuhid.service > "${DIR}/usr/lib/systemd/system/dseuhid.service"
+          sed 's|/usr/bin/|/usr/local/bin/|g' edgemap.service > "${DIR}/usr/lib/systemd/user/edgemap.service"
+
+          cp edgemap.svg "${DIR}/usr/share/icons/hicolor/scalable/apps/"
+          cp completions/_dseuhid "${DIR}/usr/share/zsh/site-functions/"
+          cp completions/_edgemap "${DIR}/usr/share/zsh/site-functions/"
+
+          tar -czf "${DIR}.tar.gz" "${DIR}/"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: edgemap-*.tar.gz

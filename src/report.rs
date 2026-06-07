@@ -442,7 +442,12 @@ pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: 
     let p1_x_hi_ylo = raw[39];
     let p1_y_hi     = raw[40];
 
+    let gyro_accel: [u8; 12] = raw[16..28].try_into().unwrap();
+
     raw[10..64].fill(0);
+
+    raw[13..25].copy_from_slice(&gyro_accel);
+    raw[10..12].copy_from_slice(&(seq as u16).to_le_bytes());
 
     let mut active = false;
     let mut write_point = |base: usize, contact: u8, x_lo: u8, comb: u8, y_hi: u8| {

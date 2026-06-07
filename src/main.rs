@@ -227,7 +227,28 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             .unwrap_or_else(|| "auto".to_string());
 
         if output_device == "dualshock4" {
-            for (report_id, size) in [(0x02u8, 37usize), (0x12u8, 16usize), (0xA3u8, 49usize)] {
+            // DS4 calibration data (report 0x02, 37 bytes)
+            // Produces 1:1 scale + zero bias so raw gyro/accel passes through unchanged.
+            let mut cal = vec![0x02u8; 37];
+            cal.resize(37, 0);
+            let w16 = |buf: &mut [u8], off, v: u16| buf[off..off+2].copy_from_slice(&v.to_le_bytes());
+            w16(&mut cal,  7, 1024);        // gyro_pitch_plus
+            w16(&mut cal,  9, (-1024i16) as u16); // gyro_pitch_minus
+            w16(&mut cal, 11, 1024);        // gyro_yaw_plus
+            w16(&mut cal, 13, (-1024i16) as u16); // gyro_yaw_minus
+            w16(&mut cal, 15, 1024);        // gyro_roll_plus
+            w16(&mut cal, 17, (-1024i16) as u16); // gyro_roll_minus
+            w16(&mut cal, 19, 1);           // gyro_speed_plus
+            w16(&mut cal, 21, 1);           // gyro_speed_minus
+            w16(&mut cal, 23, 8192);        // acc_x_plus
+            w16(&mut cal, 25, (-8192i16) as u16); // acc_x_minus
+            w16(&mut cal, 27, 8192);        // acc_y_plus
+            w16(&mut cal, 29, (-8192i16) as u16); // acc_y_minus
+            w16(&mut cal, 31, 8192);        // acc_z_plus
+            w16(&mut cal, 33, (-8192i16) as u16); // acc_z_minus
+            report_cache.insert(0x02, cal);
+
+            for (report_id, size) in [(0x12u8, 16usize), (0xA3u8, 49usize)] {
                 let mut buf = vec![report_id];
                 buf.resize(size, 0);
                 report_cache.insert(report_id, buf);

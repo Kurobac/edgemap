@@ -292,11 +292,16 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
         let config_path_str = config_path.as_deref().unwrap_or("");
 
-        let keyboard = keyboard::KeyboardDevice::open()
-            .unwrap_or_else(|e| {
+        let keyboard = match keyboard::KeyboardDevice::open() {
+            Ok(k) => {
+                info!("uinput keyboard device created");
+                k
+            }
+            Err(e) => {
                 warn!("uinput not available ({e}), keyboard targets will be ignored");
                 keyboard::KeyboardDevice::dummy()
-            });
+            }
+        };
 
         let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, force_dualsense, keyboard, dup_fifo_fd(&fifo_fd));
         match proxy.run() {

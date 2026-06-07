@@ -161,6 +161,8 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
     let fifo_fd = setup_fifo();
 
+    let _ = std::fs::write("/run/dseuhid/connected", b"disconnected");
+
     'outer: loop {
         let mut logged_waiting = false;
         let dev_info = loop {

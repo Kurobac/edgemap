@@ -611,7 +611,7 @@ fn cmd_daemon(args: &[String]) -> ! {
 
         // disconnected: skip injection entirely
         if uhid_state != "connected" {
-            if last_uhid_state.is_some() && last_uhid_state.as_deref() != Some("disconnected") {
+            if last_uhid_state.as_deref() == Some("connected") {
                 log::info!("Gamepad disconnected");
                 send_notification("edgemap", "Gamepad disconnected");
             }

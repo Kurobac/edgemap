@@ -228,7 +228,11 @@ impl UhidDevice {
         let fd = self.fd.as_raw_fd();
         let total_size = 12 + data.len();
         unsafe {
-            libc::write(fd, buf.as_ptr() as *const libc::c_void, total_size);
+            let ret = libc::write(fd, buf.as_ptr() as *const libc::c_void, total_size);
+            if ret < 0 {
+                log::error!("uhid GET_REPORT reply write failed: {}", io::Error::last_os_error());
+                return Err(io::Error::last_os_error());
+            }
         }
         Ok(())
     }
@@ -241,7 +245,11 @@ impl UhidDevice {
 
         let fd = self.fd.as_raw_fd();
         unsafe {
-            libc::write(fd, buf.as_ptr() as *const libc::c_void, 10);
+            let ret = libc::write(fd, buf.as_ptr() as *const libc::c_void, 10);
+            if ret < 0 {
+                log::error!("uhid SET_REPORT reply write failed: {}", io::Error::last_os_error());
+                return Err(io::Error::last_os_error());
+            }
         }
         Ok(())
     }

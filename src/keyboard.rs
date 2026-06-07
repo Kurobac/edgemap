@@ -241,12 +241,19 @@ impl KeyboardDevice {
             let ev = InputEvent { time_sec: 0, time_usec: 0, ev_type: 0x01, code, value };
             unsafe {
                 let ptr = &ev as *const InputEvent as *const u8;
-                libc::write(fd.as_raw_fd(), ptr as *const libc::c_void, std::mem::size_of::<InputEvent>());
+                let ret = libc::write(fd.as_raw_fd(), ptr as *const libc::c_void, std::mem::size_of::<InputEvent>());
+                if ret < 0 {
+                    log::error!("uinput event write failed: {}", io::Error::last_os_error());
+                    return;
+                }
             }
             let syn = InputEvent { time_sec: 0, time_usec: 0, ev_type: 0x00, code: 0, value: 0 };
             unsafe {
                 let ptr = &syn as *const InputEvent as *const u8;
-                libc::write(fd.as_raw_fd(), ptr as *const libc::c_void, std::mem::size_of::<InputEvent>());
+                let ret = libc::write(fd.as_raw_fd(), ptr as *const libc::c_void, std::mem::size_of::<InputEvent>());
+                if ret < 0 {
+                    log::error!("uinput syn write failed: {}", io::Error::last_os_error());
+                }
             }
         }
     }

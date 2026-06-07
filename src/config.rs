@@ -104,6 +104,8 @@ fn is_valid_target(name: &str) -> bool {
         && btn != Button::Mic
         && btn != Button::TouchpadLeft
         && btn != Button::TouchpadRight
+        && btn != Button::L2Analog
+        && btn != Button::R2Analog
     )
 }
 
@@ -743,6 +745,15 @@ mod tests {
             let cfg = parse(&format!("[cross]\nremap = \"{edge}\"\n"));
             assert!(validate(&cfg).unwrap_err().contains("unknown target"),
                 "edge button {edge} should not be a valid target");
+        }
+    }
+
+    #[test]
+    fn analog_buttons_not_allowed_as_target() {
+        for analog in &["l2_analog", "r2_analog"] {
+            let cfg = parse(&format!("[cross]\nremap = \"{analog}\"\n"));
+            assert!(validate(&cfg).unwrap_err().contains("unknown target"),
+                "analog {analog} should not be a valid target");
         }
     }
 

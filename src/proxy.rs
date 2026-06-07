@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -266,7 +266,7 @@ pub struct Proxy {
     force_dualsense: bool,
     force_dualsense_changed: bool,
     keyboard: crate::keyboard::KeyboardDevice,
-    last_keyboard: HashSet<u16>,
+    last_keyboard: HashMap<u16, bool>,
     last_snapshot: Option<crate::report::GamepadState>,
     last_output: Option<crate::report::GamepadState>,
     turbo_runtimes: Vec<TurboRuntime>,
@@ -332,7 +332,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, force_dualsense, force_dualsense_changed: false, keyboard, last_keyboard: HashSet::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, force_dualsense, force_dualsense_changed: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn skip_restore(&mut self) {
@@ -725,18 +725,15 @@ impl Proxy {
                                 _ => apply_target_to_state(&mut state, target, *_active),
                             }
                         }
-                        // deactivate Combo-source macros whose combo is no longer triggered
-                        for c in &self.combo_runtimes {
-                            if !c.active {
-                                if let Target::Macro(name) = &c.output {
-                                    for m in &mut self.macro_runtimes {
-                                        if m.name == *name && m.source == MacroSource::Combo
-                                            && m.active && matches!(m.mode, MacroMode::Hold)
-                                        {
-                                            m.deactivate(&mut state, &mut keyboard_events);
-                                        }
-                                    }
-                                }
+                        // deactivate Combo-source macros when no active combo references them
+                        for m in &mut self.macro_runtimes {
+                            if m.source != MacroSource::Combo || !m.active { continue; }
+                            if !matches!(m.mode, MacroMode::Hold) { continue; }
+                            let any_combo_active = self.combo_runtimes.iter().any(|c| {
+                                c.active && matches!(&c.output, Target::Macro(n) if n == &m.name)
+                            });
+                            if !any_combo_active {
+                                m.deactivate(&mut state, &mut keyboard_events);
                             }
                         }
 
@@ -748,14 +745,22 @@ impl Proxy {
                         }
 
                         // flush keyboard after all L2 sources have pushed events
-                        let current: HashSet<u16> = keyboard_events.iter().map(|(c, _)| *c).collect();
-                        for code in &self.last_keyboard {
-                            if !current.contains(code) {
-                                self.keyboard.release(*code);
+                        // last-write-wins: later events overwrite earlier ones for same key
+                        let mut current: HashMap<u16, bool> = HashMap::new();
+                        for (code, pressed) in &keyboard_events {
+                            current.insert(*code, *pressed);
+                        }
+                        for (&code, _) in &self.last_keyboard {
+                            if !current.contains_key(&code) {
+                                self.keyboard.release(code);
                             }
                         }
-                        for (code, _) in &keyboard_events {
-                            self.keyboard.press(*code);
+                        for (&code, &pressed) in &current {
+                            if pressed {
+                                self.keyboard.press(code);
+                            } else {
+                                self.keyboard.release(code);
+                            }
                         }
                         self.last_keyboard = current;
 

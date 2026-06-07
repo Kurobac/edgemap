@@ -331,7 +331,9 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
                                 if ev_name.starts_with("event") || ev_name.starts_with("js") {
                                     let dev_path = PathBuf::from("/dev/input").join(ev_name);
                                     if dev_path.exists() {
-                                        Self::restrict_node(&dev_path, &mut self.restored_paths).ok();
+                                        if let Err(e) = Self::restrict_node(&dev_path, &mut self.restored_paths) {
+                                            log::warn!("re-restrict {} failed: {e}", ev_name);
+                                        }
                                     }
                                 }
                             }
@@ -340,7 +342,9 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
                 }
             }
 
-            Self::restrict_node(&hidraw_path, &mut self.restored_paths).ok();
+            if let Err(e) = Self::restrict_node(&hidraw_path, &mut self.restored_paths) {
+                log::warn!("re-restrict {} failed: {e}", devname);
+            }
         }
     }
 

@@ -98,11 +98,6 @@ pub struct MappingConfig {
 }
 
 impl MappingConfig {
-    #[allow(dead_code)]
-    pub fn from_rules(rules: Vec<RemapRule>) -> Self {
-        Self { rules, split_touchpad: false, turbo_configs: Vec::new(), blocked_buttons: Vec::new(), combo_configs: Vec::new(), macro_configs: Vec::new() }
-    }
-
     pub fn from_rules_split(rules: Vec<RemapRule>, split_touchpad: bool) -> Self {
         Self { rules, split_touchpad, turbo_configs: Vec::new(), blocked_buttons: Vec::new(), combo_configs: Vec::new(), macro_configs: Vec::new() }
     }
@@ -211,9 +206,9 @@ mod tests {
 
     #[test]
     fn single_remap() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::Cross, true);
         cfg.apply(&s.clone(), &mut s, &mut Vec::new());
@@ -223,10 +218,10 @@ mod tests {
 
     #[test]
     fn multi_key() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
             RemapRule::new(Button::Square, Target::Button(Button::Triangle)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::Cross, true);
         s.set_button(Button::Square, true);
@@ -239,10 +234,10 @@ mod tests {
 
     #[test]
     fn cross_map_both_pressed() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
             RemapRule::new(Button::Circle, Target::Button(Button::Cross)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::Cross, true);
         s.set_button(Button::Circle, true);
@@ -254,10 +249,10 @@ mod tests {
 
     #[test]
     fn cross_map_one_pressed() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
             RemapRule::new(Button::Circle, Target::Button(Button::Cross)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::Cross, true);
         cfg.apply(&s.clone(), &mut s, &mut Vec::new());
@@ -267,9 +262,9 @@ mod tests {
 
     #[test]
     fn self_map_passthrough() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::Cross, Target::Button(Button::Cross)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::Cross, true);
         cfg.apply(&s.clone(), &mut s, &mut Vec::new());
@@ -278,9 +273,9 @@ mod tests {
 
     #[test]
     fn trigger_self_map_preserves_analog() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::L2, Target::Button(Button::L2)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::L2, true);
         s.l2_analog = 128;
@@ -291,9 +286,9 @@ mod tests {
 
     #[test]
     fn trigger_swap_transfers_analog() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::L2, Target::Button(Button::R2)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::L2, true);
         s.l2_analog = 100;
@@ -306,9 +301,9 @@ mod tests {
 
     #[test]
     fn trigger_l2_full() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::Cross, Target::TriggerFull(Trigger::L2)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::Cross, true);
         cfg.apply(&s.clone(), &mut s, &mut Vec::new());
@@ -319,9 +314,9 @@ mod tests {
 
     #[test]
     fn trigger_r2_full() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::Circle, Target::TriggerFull(Trigger::R2)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::Circle, true);
         cfg.apply(&s.clone(), &mut s, &mut Vec::new());
@@ -351,9 +346,9 @@ mod tests {
         for (dir, getter, expected) in cases {
             let mut s = base.clone();
             s.set_button(Button::Cross, true);
-            let cfg = MappingConfig::from_rules(vec![
+            let cfg = MappingConfig::from_rules_split(vec![
                 RemapRule::new(Button::Cross, Target::Stick(dir.clone())),
-            ]);
+            ], false);
             cfg.apply(&s.clone(), &mut s, &mut Vec::new());
             assert!(!s.button(Button::Cross));
             assert_eq!(getter(&s), expected, "dir={:?}", dir);
@@ -362,9 +357,9 @@ mod tests {
 
     #[test]
     fn trigger_source_clears_analog() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::L2, Target::Button(Button::Cross)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::L2, true);
         s.l2_analog = 128;
@@ -376,9 +371,9 @@ mod tests {
 
     #[test]
     fn r2_source_clears_analog() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::R2, Target::Button(Button::Circle)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::R2, true);
         s.r2_analog = 200;
@@ -390,9 +385,9 @@ mod tests {
 
     #[test]
     fn no_matching_source_unchanged() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::Square, true);
         cfg.apply(&s.clone(), &mut s, &mut Vec::new());
@@ -403,10 +398,10 @@ mod tests {
     #[test]
     fn snapshot_isolation() {
         // A→B and B→A should use physical state, not intermediate results
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::Cross, Target::Button(Button::Circle)),
             RemapRule::new(Button::Circle, Target::Button(Button::Square)),
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::Cross, true);
         // Circle NOT pressed physically
@@ -420,9 +415,9 @@ mod tests {
 
     #[test]
     fn remap_to_keyboard() {
-        let cfg = MappingConfig::from_rules(vec![
+        let cfg = MappingConfig::from_rules_split(vec![
             RemapRule::new(Button::Cross, Target::Keyboard(57)), // KEY_SPACE
-        ]);
+        ], false);
         let mut s = state();
         s.set_button(Button::Cross, true);
         let mut kb: Vec<(u16, bool)> = Vec::new();

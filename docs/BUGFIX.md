@@ -382,3 +382,45 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 **Fix:** Changed split touchpad target resolution from `resolve_target()` to `resolve_target_or_macro()`. This enables `[touchpad_left] remap = "key:left"` and macro targets for touchpad partitions.
 
+### #77 — Config path lost on force_dualsense-triggered UHID recreate
+
+**Root cause:** When `force_dualsense` triggered `ExitReason::ConfigChanged`, the `'outer` loop restarted but `config_path` was immutable and only set from CLI args. After a `switch-config` that activated `force_dualsense`, the daemon recreated the UHID device but reverted to passthrough mode because `config_path` was still `None`.
+
+**Fix:** Made `config_path` mutable; the `ConfigChanged` handler captures `proxy.config_path()` before the proxy is dropped. `DeviceGone` resets `config_path` to `None` to restore passthrough behavior on reconnect.
+
+### #78 — `force_dualsense` changed via FIFO not detected
+
+**Root cause:** The `force_dualsense_changed` break check was only in the SIGHUP reload path (epoll loop preamble), not after FIFO command processing. When `edgemap sc` triggered a config reload that changed `force_dualsense`, the `reload_config()` set the flag but the epoll loop never checked it.
+
+**Fix:** Moved the `force_dualsense_changed` break check to the bottom of every epoll iteration, covering both SIGHUP and FIFO reload paths. SIGHUP reload was later removed entirely (#10).
+
+### #79 — Config sub-structs silently accept unknown fields
+
+**Root cause:** `ButtonConfig`, `ComboConfig`, `MacroConfig`, and `MacroStep` derived `Deserialize` without `#[serde(deny_unknown_fields)]`. Garbage fields like `garbage = 123` inside button sections were silently ignored by serde.
+
+**Fix:** Added `#[serde(deny_unknown_fields)]` to all four structs. Top-level unknown keys are caught by `is_valid_src()` via the `#[serde(flatten)]` capture into `buttons` HashMap.
+
+### #80 — `l2_analog` / `r2_analog` accepted as remap target but is a silent no-op
+
+**Root cause:** `is_valid_target()` accepted `l2_analog` and `r2_analog` as valid targets via `Button::from_name()`, but `apply_state_to_report()` reads the analog value directly from `state.l2_analog` — it never checks `buttons[L2Analog]`. Remapping to these targets produced no effect.
+
+**Fix:** Added `L2Analog` and `R2Analog` to the exclusion list in `is_valid_target()`.
+
+### #81 — Keyboard flush used HashSet, discarding per-key press/release state
+
+**Root cause:** `last_keyboard` was a `HashSet<u16>` that only tracked which keycodes were active — not whether the last event was `press` or `release`. If a macro step pushed `(code, false)` and a remap rule pushed `(code, true)` in the same frame, the HashSet only stored `code`, and the flush loop unconditionally pressed it.
+
+**Fix:** Changed `last_keyboard` to `HashMap<u16, bool>`, implementing last-write-wins deduplication. The flush loop now presses or releases based on the final value.
+
+### #82 — Shared combo→macro deactivated when any combo stops
+
+**Root cause:** Deactivation iterated inactive combos and directly deactivated their shared macro, without checking whether any OTHER active combo still referenced the same macro. Two combos sharing a macro output (e.g. combo1: A+B→M, combo2: C+D→M) would see M stop as soon as either combo became inactive.
+
+**Fix:** Inverted the deactivation loop to iterate macro runtimes and check if any active combo still references them, matching the physical-source macro deactivation pattern. No reference counting needed.
+
+### #83 — UHID / uinput `write()` return values unchecked
+
+**Root cause:** `libc::write()` calls in `send_get_report_reply()`, `send_set_report_reply()` (`uhid.rs`), and `send_event()` (`keyboard.rs`) ignored return values. After device disconnect, writes silently failed and keyboard `held_keys` diverged from actual uinput state.
+
+**Fix:** Checked all `write()` return values; log errors and return `Err` from UHID reply functions. Keyboard event writes log on failure and bail out.
+

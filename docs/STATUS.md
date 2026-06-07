@@ -1,4 +1,4 @@
-# edgemap — Project Status (2026-06-06)
+# edgemap — Project Status (2026-06-08)
 
 ## Overview
 
@@ -92,11 +92,11 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - Case-sensitive section names (uppercase rejected)
 
 ### Hot Reload
-- SIGHUP (`kill -HUP <pid>`) triggers config re-read
+- FIFO commands (`edgemap reload`, `edgemap switch-config`) trigger config re-read
 - `Arc<RwLock<MappingConfig>>` — read lock per frame, write lock on reload
 - Failed reload reverts to passthrough (`MappingConfig::default`)
 - Debug snapshots cleared on reload
-- Turbo runtimes rebuilt on reload
+- Turbo/combo/macro runtimes rebuilt on reload
 
 ### Turbo System
 - **Turbo (hold-to-repeat)**: hold source → one-shot target → (delay_ms) → toggle at interval_ms
@@ -154,7 +154,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - L2: macro detection reads L1 (Physical source) or combo injection (Combo source via `Target::Macro`)
 - L2: macro injection writes step buttons every frame (per-frame maintain, same principle as turbo bug #23 fix)
 - Config validation: empty sequence reject, release_ms > press_ms, macro name vs button name conflict, same-key turbo+macro mutual exclusion
-- Hot reload: macro runtimes rebuilt on SIGHUP
+- Hot reload: macro runtimes rebuilt on FIFO reload
 
 ### Keyboard Target (v0.8.0)
 - **Keyboard output via uinput**: `remap = "key:<keyname>"` creates keystrokes on a virtual keyboard
@@ -181,7 +181,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - Multi-device: warn if more than one DualSense detected
 - EIO cooldown: 2-second sleep after disconnect
 
-### Unit Tests (143 total: 72 dseuhid + 71 edgemap shared-module imports, all passing)
+### Unit Tests (149 total: 75 dseuhid + 74 edgemap shared-module imports, all passing)
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `mapping.rs` | 13 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, keyboard target |

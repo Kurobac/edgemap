@@ -1124,7 +1124,7 @@ class EdgemapEditor(QMainWindow):
                         w.setEnabled(enabled)
             # replace the callback
             try: cb.currentTextChanged.disconnect()
-            except: pass
+            except TypeError: pass
             cb.currentTextChanged.connect(_orig_cb)
             _orig_cb(init_text)
 

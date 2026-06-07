@@ -954,7 +954,7 @@ class EdgemapEditor(QMainWindow):
                 if fn.endswith(".toml") and fn != "edgemap.toml":
                     path = os.path.join(edir, fn)
                     display = fn[:12] + "..." + fn[-16:] if len(fn) > 32 else fn
-                    profile_menu.addAction(display, lambda p=path: self._open_config(p))
+                    profile_menu.addAction(display, lambda _checked=False, p=path: self._open_config(p))
         self.profile_btn.setMenu(profile_menu)
         profile_menu.aboutToShow.connect(
             lambda: profile_menu.setMinimumWidth(self.profile_btn.width())

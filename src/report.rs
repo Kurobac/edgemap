@@ -434,7 +434,9 @@ pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: 
     raw[9] = state.r2_analog;
 
     raw[10..64].fill(0);
-    raw[35] = seq & 0x0F;
+    for &off in &[35, 39, 44, 47, 53, 56] {
+        raw[off] = 0x80;
+    }
 
     raw[30] = (state.battery_pct / 10) & 0x0F;
 }

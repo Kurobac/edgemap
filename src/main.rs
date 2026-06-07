@@ -147,6 +147,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
     }
 
     let mut config_path = parse_config_path();
+    let original_config_path = config_path.clone();
     let force_dualsense_cli = parse_force_dualsense();
 
     if force_dualsense_cli {
@@ -317,6 +318,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 info!("force_dualsense changed in config, recreating virtual device...");
             }
             proxy::ExitReason::DeviceGone => {
+                config_path = original_config_path.clone();
                 proxy.skip_restore();
                 info!("Device disconnected, waiting for reconnect...");
                 let _ = std::fs::write("/run/dseuhid/connected", b"disconnected");

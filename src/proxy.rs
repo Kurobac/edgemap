@@ -408,7 +408,7 @@ impl Proxy {
 
         for btn in ALL_BUTTONS.iter() {
             let now = snapshot.button(*btn);
-            let was = prev.map_or(false, |p| p.button(*btn));
+            let was = prev.is_some_and(|p| p.button(*btn));
             if now != was {
                 phys_changes.push(format!("{}{}", if now { "+" } else { "-" }, btn.name()));
             }
@@ -451,7 +451,7 @@ impl Proxy {
             EpollFlags::EPOLLIN | EpollFlags::EPOLLERR | EpollFlags::EPOLLHUP,
             1,
         );
-        if let Err(e) = ep_fd.add(&hidraw_bfd, hidraw_event) {
+        if let Err(e) = ep_fd.add(hidraw_bfd, hidraw_event) {
             error!("Failed to add hidraw to epoll: {e}");
             return ExitReason::UserShutdown;
         }
@@ -460,7 +460,7 @@ impl Proxy {
             EpollFlags::EPOLLIN | EpollFlags::EPOLLERR | EpollFlags::EPOLLHUP,
             2,
         );
-        if let Err(e) = ep_fd.add(&uhid_bfd, uhid_event) {
+        if let Err(e) = ep_fd.add(uhid_bfd, uhid_event) {
             error!("Failed to add uhid to epoll: {e}");
             return ExitReason::UserShutdown;
         }
@@ -470,7 +470,7 @@ impl Proxy {
             EpollFlags::EPOLLIN,
             3,
         );
-        if let Err(e) = ep_fd.add(&fifo_bfd, fifo_event) {
+        if let Err(e) = ep_fd.add(fifo_bfd, fifo_event) {
             warn!("Failed to add FIFO to epoll: {e} (control pipe unavailable)");
         }
 
@@ -487,8 +487,8 @@ impl Proxy {
             }
             match ep_fd.wait(&mut events, 16u16) {
                 Ok(n) => {
-                    for i in 0..n {
-                        let fd_num = events[i].data() as u64;
+                    for ev in events.iter().take(n) {
+                        let fd_num = ev.data();
 
                         if fd_num == 1 {
                             if let Err(e) = self.handle_hidraw_input(&mut seq) {
@@ -631,13 +631,12 @@ impl Proxy {
                                 t.turbo_active = true;
                                 t.last_toggle = Instant::now();
                                 debug!("turbo {:?}: starting toggle (interval={}ms)", t.src, t.interval_ms);
-                            } else if t.active && t.turbo_active {
-                                if t.last_toggle.elapsed().as_millis() >= t.interval_ms as u128 {
+                            } else if t.active && t.turbo_active
+                                && t.last_toggle.elapsed().as_millis() >= t.interval_ms as u128 {
                                     t.phase = !t.phase;
                                     t.last_toggle = Instant::now();
                                     debug!("turbo {:?}: toggle → {}", t.src, t.phase);
                                 }
-                            }
                             if t.active {
                                 state.set_button(t.src, t.phase);
                             }
@@ -750,7 +749,7 @@ impl Proxy {
                         for (code, pressed) in &keyboard_events {
                             current.insert(*code, *pressed);
                         }
-                        for (&code, _) in &self.last_keyboard {
+                        for &code in self.last_keyboard.keys() {
                             if !current.contains_key(&code) {
                                 self.keyboard.release(code);
                             }

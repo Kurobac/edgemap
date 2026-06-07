@@ -58,11 +58,11 @@ const IOC_WRITE: u64 = 1;
 const IOC_READWRITE: u64 = IOC_READ | IOC_WRITE;
 
 fn ioc_read(nr: u32, size: usize) -> u64 {
-    (IOC_READ << 30) | ((b'H' as u64) << 8) | ((nr as u64) << 0) | ((size as u64) << 16)
+    (IOC_READ << 30) | ((b'H' as u64) << 8) | (nr as u64) | ((size as u64) << 16)
 }
 
 fn ioc_readwrite(nr: u32, size: usize) -> u64 {
-    (IOC_READWRITE << 30) | ((b'H' as u64) << 8) | ((nr as u64) << 0) | ((size as u64) << 16)
+    (IOC_READWRITE << 30) | ((b'H' as u64) << 8) | (nr as u64) | ((size as u64) << 16)
 }
 
 pub fn hidraw_get_report_descriptor(fd: RawFd) -> io::Result<Vec<u8>> {
@@ -149,8 +149,7 @@ impl HidrawDevice {
                 debug!("device state OK: first input report valid");
             }
             Ok(n) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
+                return Err(io::Error::other(
                     format!("unexpected first report: {n} bytes"),
                 ));
             }
@@ -248,7 +247,7 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
                 for input_entry in entries.flatten() {
                     let input_path = input_entry.path();
                     if !input_path.is_dir() || !input_path.file_name()
-                        .map_or(false, |n| n.to_string_lossy().starts_with("input"))
+                        .is_some_and(|n| n.to_string_lossy().starts_with("input"))
                     {
                         continue;
                     }
@@ -318,7 +317,7 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
                     for input_entry in entries.flatten() {
                         let input_path = input_entry.path();
                         if !input_path.is_dir() || !input_path.file_name()
-                            .map_or(false, |n| n.to_string_lossy().starts_with("input"))
+                            .is_some_and(|n| n.to_string_lossy().starts_with("input"))
                         {
                             continue;
                         }

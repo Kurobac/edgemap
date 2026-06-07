@@ -72,9 +72,9 @@ fn resolve_config_path(raw: &str, base_dir: &Path) -> String {
     if raw.starts_with('/') {
         return raw.to_string();
     }
-    if raw.starts_with('~') {
+    if let Some(rest) = raw.strip_prefix('~') {
         if let Ok(home) = env::var("HOME") {
-            return home + &raw[1..];
+            return home + rest;
         }
     }
     base_dir.join(raw).to_string_lossy().into()
@@ -241,7 +241,7 @@ fn cmd_validate(args: &[String]) -> ! {
     let mut fail = 0;
     let mut entries: Vec<_> = match std::fs::read_dir(&dir) {
         Ok(d) => d.flatten().filter(|e| {
-            e.file_name().to_str().map_or(false, |n| n.ends_with(".toml") && n != "edgemap.toml")
+            e.file_name().to_str().is_some_and(|n| n.ends_with(".toml") && n != "edgemap.toml")
         }).collect(),
         Err(e) => {
             eprintln!("error: cannot read {}: {e}", dir.display());
@@ -569,7 +569,7 @@ fn cmd_daemon(args: &[String]) -> ! {
         // hot reload on mtime change
         if let Ok(meta) = std::fs::metadata(&config_path) {
             if let Ok(mtime) = meta.modified() {
-                if last_mtime.map_or(true, |t| mtime != t) {
+                if last_mtime != Some(mtime) {
                     match load_edgemap_config(&config_path) {
                         Ok(s) => {
                             state = s;
@@ -596,7 +596,7 @@ fn cmd_daemon(args: &[String]) -> ! {
         // detect dseuhid restart via PID change (systemctl restart is <1s)
         if let Ok(pid_str) = std::fs::read_to_string("/run/dseuhid/pid") {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                if last_pid.map_or(true, |prev| pid != prev) {
+                if last_pid != Some(pid) {
                     current_config.clear();
                     last_pid = Some(pid);
                 }
@@ -623,7 +623,7 @@ fn cmd_daemon(args: &[String]) -> ! {
         // connected: check mtime for hotplug / restart
         if let Ok(meta) = std::fs::metadata("/run/dseuhid/connected") {
             if let Ok(mtime) = meta.modified() {
-                if last_uhid_mtime.map_or(true, |t| mtime != t) {
+                if last_uhid_mtime != Some(mtime) {
                     log::info!("Gamepad connected");
                     send_notification("edgemap", "Gamepad connected");
                     current_config.clear();

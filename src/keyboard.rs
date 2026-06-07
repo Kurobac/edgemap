@@ -133,7 +133,7 @@ impl Drop for KeyboardDevice {
         if let Some(fd) = &self.fd {
             info!("uinput keyboard device destroyed");
             unsafe {
-                libc::ioctl(fd.as_raw_fd(), ((0u64) << 30) | ((0x55u64) << 8) | (0x02u64));
+                libc::ioctl(fd.as_raw_fd(), ((0x55u64) << 8) | (0x02u64));
             }
         }
     }
@@ -288,7 +288,7 @@ impl KeyboardDevice {
         let ret = libc::write(fd, &dev as *const UinputUserDev as *const libc::c_void, std::mem::size_of::<UinputUserDev>());
         if ret < 0 { return Err(io::Error::last_os_error()); }
 
-        let request = ((0u64) << 30) | ((0x55u64) << 8) | (0x01u64);
+        let request = ((0x55u64) << 8) | (0x01u64);
         let ret = libc::ioctl(fd, request);
         if ret < 0 { return Err(io::Error::last_os_error()); }
 
@@ -302,7 +302,7 @@ fn set_bit(fd: libc::c_int, cmd: u32, bit: u16) -> io::Result<()> {
         UI_SET_KEYBIT => 0x65,
         _ => return Ok(()),
     };
-    let request = ((1u64) << 30) | ((0x55u64) << 8) | ((cmd_nr as u64) << 0) | ((4u64) << 16);
+    let request = ((1u64) << 30) | ((0x55u64) << 8) | (cmd_nr as u64) | ((4u64) << 16);
     let ret = unsafe { libc::ioctl(fd, request, bit as libc::c_ulong) };
     if ret < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }

@@ -39,6 +39,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.7.3 | `143f1c5` | **Bugfixes**: dup_fifo_fd() missing exit on dup failure (#66); duplicate return{} in load_config (#67); /run/dseuhid/connected cleanup on shutdown + waiting-for-device log (#68); turbo toggle vs physical button press override (#69) |
 | v0.7.4 | `e6b5209` | **Bugfixes**: re-restrict hidraw after suspend/resume udev reset (#70, #71); non-root daemon spam prevention + cooldown; FIFO command confirmation output; zsh completions; notify-send app name grouping; GUI taskbar icon fix; turbo source as combo key comment |
 | v0.8.0 | `f56968c` | **Keyboard target**: uinput keyboard device for `key:xxx` targets; remap/combo/macro step → keyboard; GUI KeyboardPicker with 106 keycodes; split touchpad→keyboard; turbo+keyboard pipeline fix; six bugfixes (#72-#76); 143 tests (+8) |
+| v0.9.0 | current | **Code review cleanup**: deny_unknown_fields on all config sub-structs; analog write deferred to Phase 2; UHID/uinput write error checking; SIGHUP reload removed; `force_dualsense` as config option with UHID recreate; 149 tests (+6) |
 
 ## Implemented Features
 

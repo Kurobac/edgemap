@@ -39,7 +39,6 @@ systemctl --user enable --now edgemap
 
 ```bash
 cargo build --release
-# then install with the tarball's install.sh
 ```
 
 ### Build from source

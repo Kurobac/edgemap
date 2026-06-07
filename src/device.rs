@@ -302,14 +302,45 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
                 None => return,
             };
             let hidraw_path = PathBuf::from("/dev").join(&devname);
-            if hidraw_path.exists() {
-                if let Ok(meta) = fs::metadata(&hidraw_path) {
-                    if meta.permissions().mode() & 0o777 != 0 {
-                        info!("re-restricting hidraw node after udev reset");
-                        Self::restrict_node(&hidraw_path, &mut self.restored_paths).ok();
+            if !hidraw_path.exists() {
+                return;
+            }
+            if fs::metadata(&hidraw_path).map_or(true, |m| m.permissions().mode() & 0o777 == 0) {
+                return;
+            }
+
+            info!("re-restricting device nodes after udev reset");
+            self.restored_paths.clear();
+
+            let input_dir = sysfs.join("device/input");
+            if input_dir.exists() {
+                if let Ok(entries) = fs::read_dir(&input_dir) {
+                    for input_entry in entries.flatten() {
+                        let input_path = input_entry.path();
+                        if !input_path.is_dir() || !input_path.file_name()
+                            .map_or(false, |n| n.to_string_lossy().starts_with("input"))
+                        {
+                            continue;
+                        }
+                        if let Ok(ev_entries) = fs::read_dir(&input_path) {
+                            for ev_entry in ev_entries.flatten() {
+                                let ev_path = ev_entry.path();
+                                let ev_name = ev_path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("");
+                                if ev_name.starts_with("event") || ev_name.starts_with("js") {
+                                    let dev_path = PathBuf::from("/dev/input").join(ev_name);
+                                    if dev_path.exists() {
+                                        Self::restrict_node(&dev_path, &mut self.restored_paths).ok();
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
+
+            Self::restrict_node(&hidraw_path, &mut self.restored_paths).ok();
         }
     }
 

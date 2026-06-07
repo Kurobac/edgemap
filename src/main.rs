@@ -221,6 +221,19 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         }
 
+        let output_device = config_path.as_ref()
+            .and_then(|p| config::Config::load(p).ok())
+            .map(|c| c.output_device)
+            .unwrap_or_else(|| "dualsense".to_string());
+
+        if output_device == "dualshock4" {
+            for (report_id, size) in [(0x02u8, 37usize), (0x12u8, 16usize), (0xA3u8, 49usize)] {
+                let mut buf = vec![report_id];
+                buf.resize(size, 0);
+                report_cache.insert(report_id, buf);
+            }
+        }
+
         let force_dualsense = config_path.as_ref()
             .and_then(|p| config::Config::load(p).ok())
             .map(|c| c.force_dualsense)
@@ -228,6 +241,8 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
         let (uhid_pid, uhid_desc): (u32, &[u8]) = if force_dualsense {
             (device::DS5_PID as u32, &descriptor::DS_USB_DESCRIPTOR)
+        } else if output_device == "dualshock4" {
+            (device::DS4_PID as u32, &descriptor::DS4_USB_DESCRIPTOR)
         } else {
             (dev_info.pid as u32, hidraw.report_descriptor())
         };
@@ -309,7 +324,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         };
 
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, force_dualsense, keyboard, dup_fifo_fd(&fifo_fd));
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, force_dualsense, output_device, keyboard, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
             proxy::ExitReason::ConfigChanged => {
                 config_path = Some(proxy.config_path().to_string());

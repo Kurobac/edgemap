@@ -10,10 +10,16 @@ pub struct Config {
     pub version: u32,
     #[serde(default)]
     pub force_dualsense: bool,
+    #[serde(default = "default_output_device")]
+    pub output_device: String,
     #[serde(flatten)]
     pub buttons: HashMap<String, ButtonConfig>,
     #[serde(default)]
     pub macros: HashMap<String, MacroConfig>,
+}
+
+fn default_output_device() -> String {
+    "dualsense".to_string()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -343,6 +349,13 @@ pub const ALL_BUTTON_NAMES: &[&str] = &[
 ];
 
 pub fn validate(cfg: &Config) -> Result<(), String> {
+    if !matches!(cfg.output_device.as_str(), "dualsense" | "dualshock4") {
+        return Err(format!(
+            "Unknown output_device: {} (valid: dualsense, dualshock4)",
+            cfg.output_device
+        ));
+    }
+
     let mut has_split = false;
     let mut has_touch_left = false;
     let mut has_touch_right = false;

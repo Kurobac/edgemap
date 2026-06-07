@@ -382,6 +382,63 @@ pub fn apply_state_to_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) 
     raw[11] = b3;
 }
 
+pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) {
+    raw[0] = USB_INPUT_REPORT_ID;
+    raw[1] = state.left_stick_x;
+    raw[2] = state.left_stick_y;
+    raw[3] = state.right_stick_x;
+    raw[4] = state.right_stick_y;
+
+    let mut b5: u8 = 0;
+    if state.button(Button::Square) { b5 |= 0x10; }
+    if state.button(Button::Cross) { b5 |= 0x20; }
+    if state.button(Button::Circle) { b5 |= 0x40; }
+    if state.button(Button::Triangle) { b5 |= 0x80; }
+
+    let up = state.button(Button::DpadUp);
+    let down = state.button(Button::DpadDown);
+    let left = state.button(Button::DpadLeft);
+    let right = state.button(Button::DpadRight);
+    let dpad_val: u8 = match (up, down, left, right) {
+        (false, false, false, false) => 8,
+        (true, false, false, false) => 0,
+        (true, false, false, true) => 1,
+        (false, false, false, true) => 2,
+        (false, true, false, true) => 3,
+        (false, true, false, false) => 4,
+        (false, true, true, false) => 5,
+        (false, false, true, false) => 6,
+        (true, false, true, false) => 7,
+        _ => 8,
+    };
+    b5 |= dpad_val & 0x0F;
+    raw[5] = b5;
+
+    let mut b6: u8 = 0;
+    if state.button(Button::L1) { b6 |= 0x01; }
+    if state.button(Button::R1) { b6 |= 0x02; }
+    if state.button(Button::L2) { b6 |= 0x04; }
+    if state.button(Button::R2) { b6 |= 0x08; }
+    if state.button(Button::Create) { b6 |= 0x10; }
+    if state.button(Button::Options) { b6 |= 0x20; }
+    if state.button(Button::L3) { b6 |= 0x40; }
+    if state.button(Button::R3) { b6 |= 0x80; }
+    raw[6] = b6;
+
+    let mut b7: u8 = (seq & 0x3F) << 2;
+    if state.button(Button::PS) { b7 |= 0x01; }
+    if state.button(Button::Touchpad) { b7 |= 0x02; }
+    raw[7] = b7;
+
+    raw[8] = state.l2_analog;
+    raw[9] = state.r2_analog;
+
+    raw[10..64].fill(0);
+    raw[35] = seq & 0x0F;
+
+    raw[30] = (state.battery_pct / 10) & 0x0F;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

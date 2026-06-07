@@ -1,6 +1,6 @@
 [Unit]
 Description=DualSense Edge UHID Proxy
-After=multi-user.target
+After=systemd-udevd.service
 
 [Service]
 Type=simple

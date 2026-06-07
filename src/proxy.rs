@@ -835,11 +835,15 @@ impl Proxy {
                             match self.get_cached_report(rnum) {
                                 Some(data) => {
                                     trace!("GET_REPORT rnum={rnum}: served from cache");
-                                    let _ = self.uhid.send_get_report_reply(id, 0, &data);
+                                    if let Err(e) = self.uhid.send_get_report_reply(id, 0, &data) {
+                                        warn!("Failed to send GET_REPORT reply: {e}");
+                                    }
                                 }
                                 None => {
                                     warn!("GET_REPORT rnum={rnum}: not cached, returning error");
-                                    let _ = self.uhid.send_get_report_reply(id, 1, &[]);
+                                    if let Err(e) = self.uhid.send_get_report_reply(id, 1, &[]) {
+                                        warn!("Failed to send GET_REPORT reply: {e}");
+                                    }
                                 }
                             }
                         }
@@ -856,7 +860,9 @@ impl Proxy {
                                     warn!("Failed to forward set_report rnum={rnum}: {e}");
                                 }
                             }
-                            let _ = self.uhid.send_set_report_reply(id, 0);
+                            if let Err(e) = self.uhid.send_set_report_reply(id, 0) {
+                                warn!("Failed to send SET_REPORT reply: {e}");
+                            }
                         }
                     }
                 }

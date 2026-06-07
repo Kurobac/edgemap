@@ -2,6 +2,7 @@
 name = "dseuhid"
 version = "0.8.0"
 edition = "2021"
+default-run = "dseuhid"
 license = "GPL-3.0-or-later"
 
 [dependencies]

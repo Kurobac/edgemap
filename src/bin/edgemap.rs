@@ -76,6 +76,7 @@ fn resolve_config_path(raw: &str, base_dir: &Path) -> String {
         if let Ok(home) = env::var("HOME") {
             return home + rest;
         }
+        return raw.to_string();
     }
     base_dir.join(raw).to_string_lossy().into()
 }

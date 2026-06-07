@@ -244,9 +244,8 @@ pub struct Proxy {
     mapping: Arc<RwLock<MappingConfig>>,
     config_path: String,
     report_cache: HashMap<u8, Vec<u8>>,
-    force_dualsense: bool,
-    force_dualsense_changed: bool,
     output_device: String,
+    recreate_uhid: bool,
     keyboard: crate::keyboard::KeyboardDevice,
     last_keyboard: HashMap<u16, bool>,
     last_snapshot: Option<crate::report::GamepadState>,
@@ -299,7 +298,7 @@ impl Proxy {
         }
     }
 
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, force_dualsense: bool, output_device: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, output_device: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
         let fifo_fd = OwnedFd::from(fifo_file);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
@@ -314,7 +313,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, force_dualsense, force_dualsense_changed: false, output_device, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, output_device, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn skip_restore(&mut self) {
@@ -332,11 +331,9 @@ impl Proxy {
         }
         let mut new_mapping = MappingConfig::default();
         let mut cfg_ok = false;
-        let mut new_force_ds = self.force_dualsense;
         let mut new_output_device = self.output_device.clone();
         match crate::config::Config::load(&self.config_path) {
             Ok(cfg) => {
-                new_force_ds = cfg.force_dualsense;
                 new_output_device = cfg.output_device.clone();
                 if let Err(e) = crate::config::validate(&cfg) {
                     error!("Config reload validation failed: {e}, reverting to passthrough");
@@ -368,13 +365,9 @@ impl Proxy {
         if cfg_ok {
             info!("Config reloaded from {}", self.config_path);
         }
-        if new_force_ds != self.force_dualsense {
-            info!("force_dualsense changed ({} → {}), will recreate virtual device", self.force_dualsense, new_force_ds);
-            self.force_dualsense_changed = true;
-        }
         if new_output_device != self.output_device {
             info!("output_device changed ({} → {}), will recreate virtual device", self.output_device, new_output_device);
-            self.force_dualsense_changed = true;
+            self.recreate_uhid = true;
         }
         // rebuild turbo runtimes from the new mapping
         self.turbo_runtimes = self.mapping.read().unwrap().turbo_configs.iter()
@@ -495,7 +488,7 @@ impl Proxy {
                     break;
                 }
             }
-            if self.force_dualsense_changed {
+            if self.recreate_uhid {
                 break;
             }
         }
@@ -504,7 +497,7 @@ impl Proxy {
 
         if !RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
             ExitReason::UserShutdown
-        } else if self.force_dualsense_changed {
+        } else if self.recreate_uhid {
             ExitReason::ConfigChanged
         } else if DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
             ExitReason::DeviceGone

@@ -1,9 +1,10 @@
 [Desktop Entry]
 Name=edgemap Config Editor
-Comment=DualSense Edge remap configuration editor
+Comment=DualSense remap configuration editor
 Exec=edgemap-gui
 Icon=edgemap
 Terminal=false
 Type=Application
 StartupWMClass=edgemap
 Categories=Game;
+Keywords=dualsense;ds;

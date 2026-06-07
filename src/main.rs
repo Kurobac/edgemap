@@ -82,10 +82,6 @@ fn parse_config_path() -> Option<String> {
     None
 }
 
-fn parse_force_dualsense() -> bool {
-    env::args().any(|a| a == "--force-dualsense")
-}
-
 fn print_usage() {
     eprintln!(
         "dseuhid {} — DualSense UHID Proxy",
@@ -100,7 +96,6 @@ fn print_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -c, --config-path <path>  Config file (passthrough if not set)");
-    eprintln!("  --force-dualsense         Force virtual device as regular DualSense");
     eprintln!();
     eprintln!("Without a command, starts the UHID proxy daemon (requires root).");
 }
@@ -147,12 +142,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
     }
 
     let mut config_path = parse_config_path();
-    let original_config_path = config_path.clone();
-    let force_dualsense_cli = parse_force_dualsense();
-
-    if force_dualsense_cli {
-        info!("--force-dualsense: virtual device will appear as regular DualSense");
-    }
 
     info!("DualSense UHID proxy starting");
     proxy::setup_signal_handler();
@@ -228,11 +217,10 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         }
 
-        let force_dualsense = force_dualsense_cli
-            || config_path.as_ref()
-                .and_then(|p| config::Config::load(p).ok())
-                .map(|c| c.force_dualsense)
-                .unwrap_or(false);
+        let force_dualsense = config_path.as_ref()
+            .and_then(|p| config::Config::load(p).ok())
+            .map(|c| c.force_dualsense)
+            .unwrap_or(false);
 
         let (uhid_pid, uhid_desc): (u32, &[u8]) = if force_dualsense {
             (device::DS5_PID as u32, &descriptor::DS_USB_DESCRIPTOR)
@@ -318,7 +306,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 info!("force_dualsense changed in config, recreating virtual device...");
             }
             proxy::ExitReason::DeviceGone => {
-                config_path = original_config_path.clone();
+                config_path = None;
                 proxy.skip_restore();
                 info!("Device disconnected, waiting for reconnect...");
                 let _ = std::fs::write("/run/dseuhid/connected", b"disconnected");

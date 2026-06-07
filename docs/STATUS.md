@@ -33,7 +33,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.5.1 | `1fdf001` | **Hotplug fix (#58)**: dseuhid writes /run/dseuhid/connected, edgemap re-injects config on USB reconnect |
 | v0.5.2 | `0b954fc` | **Deferred validation + hotplug redo**: profile config validated at injection time; connected/disconnected marker content; bulk validate; version=2 check |
 | v0.6.0 | `6a47e24` | **GUI config editor (PyQt6)**: full Save/Save As, edgemap.toml editor, profile quick-switch, toolbar, keyboard shortcuts, macro/combo editors |
-| v0.7.0 | `7ec92d0` | **Regular DualSense support (0x0CE6)**: device detection for both DS and DSE; HID report descriptor read from physical device via HIDIOCGRDESC; `--force-dualsense` flag to virtualize dualsense edge as regular DS |
+| v0.7.0 | `7ec92d0` | **Regular DualSense support (0x0CE6)**: device detection for both DS and DSE; HID report descriptor read from physical device via HIDIOCGRDESC; `force_dualsense` config option to virtualize as regular DS |
 | v0.7.1 | `10f1fbb` | **GET_REPORT cache (0x05 calibration, 0x20 firmware)**: read calibration and firmware reports from physical device on startup; skip 0x09 (MAC address) to avoid sysfs naming conflict (BUGFIX #63) |
 | v0.7.2 | `6919430` | **Cleanup + fixes**: remove dead code (monitor, touchdemo, trigger_reload, dualsense_usb_descriptor); FIFO buffer 256→4096 (#65); GUI closeEvent unsaved changes prompt; BUGFIX #64 (Cargo incremental build cache) |
 | v0.7.3 | `143f1c5` | **Bugfixes**: dup_fifo_fd() missing exit on dup failure (#66); duplicate return{} in load_config (#67); /run/dseuhid/connected cleanup on shutdown + waiting-for-device log (#68); turbo toggle vs physical button press override (#69) |
@@ -176,7 +176,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 - Physical-only: reject UHID virtual devices (check `/sys/class/hidraw/N/device/uevent`)
 - Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported
 - HID report descriptor read from physical device via HIDIOCGRDESC, `DS_EDGE_USB_DESCRIPTOR` fallback
-- `--force-dualsense` flag: override virtual device to regular DS (PID 0x0CE6 + `DS_USB_DESCRIPTOR`)
+- `force_dualsense = true` config option: override virtual device to regular DS (PID 0x0CE6 + `DS_USB_DESCRIPTOR`) — reload triggers UHID recreate
 - State validation: read first input report on open()
 - Multi-device: warn if more than one DualSense detected
 - EIO cooldown: 2-second sleep after disconnect
@@ -192,7 +192,7 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 ### Tools
 | Tool | Binary | Description |
 |------|--------|-------------|
-| `dseuhid` | main | UHID proxy daemon (+ `--force-dualsense` flag, `version`, `help` subcommands) |
+| `dseuhid` | main | UHID proxy daemon (`-c`/`--config-path`, `version`, `help` subcommands) |
 | `edgemap` | `src/bin/edgemap.rs` | User-side CLI: validate, create-config, reload, switch-config (no root). Daemon mode (d/daemon): auto-create config, profile auto-switch, mtime hot reload, notify-send |
 | `edgemap-gui-v6.py` | GUI | PyQt6 config editor: two-column layout, remap/turbo/combo/macro editing, macro manager, toolbar with KDE-native icons |
 | `completions/` | zsh | zsh completions for `dseuhid` and `edgemap` commands (validate/switch-config auto-complete configs from `~/.config/edgemap/`) |

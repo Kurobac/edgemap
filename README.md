@@ -45,7 +45,7 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Hot reload | Mtime-based (edgemap) or FIFO command |
 | Passthrough | All DualSense HID data — gyro, touchpad, LED, rumble, adaptive triggers, HD haptics — forwarded untouched |
 | Regular DualSense | Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported |
-| DSE→DS virtualization | `--force-dualsense` flag makes Edge appear as regular DS for game compatibility |
+| DSE→DS virtualization | `force_dualsense = true` in config makes Edge appear as regular DS for game compatibility |
 | GET_REPORT cache | IMU calibration data read from physical device on startup (accurate gyro) |
 | GUI config editor | PyQt6 native editor — remap, turbo, combo, macro, macro manager, save/load |
 

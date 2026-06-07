@@ -97,7 +97,7 @@ fn print_usage() {
     eprintln!("  help            Print this help");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  -c, --config-path <path>  Config file (passthrough if not set)");
+    eprintln!("  -c, --config-path <path>  Config file (resets to passthrough on reconnect)");
     eprintln!();
     eprintln!("Without a command, starts the UHID proxy daemon (requires root).");
 }

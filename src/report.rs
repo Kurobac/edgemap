@@ -441,6 +441,39 @@ pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: 
     raw[30] = (state.battery_pct / 10) & 0x0F;
 }
 
+/// Convert DS4 output report (32 bytes, report ID 0x05) to
+/// DS5 output report (63 bytes, report ID 0x02) for compatible vibration.
+pub fn convert_ds4_output_to_ds5(ds4: &[u8]) -> [u8; 63] {
+    let mut ds5 = [0u8; 63];
+    ds5[0] = 0x02;
+
+    if ds4.len() < 11 {
+        return ds5;
+    }
+
+    let off = if ds4.len() >= 32 && ds4[0] == 0x05 { 1 } else { 0 };
+    if ds4.len() < off + 11 {
+        return ds5;
+    }
+
+    let flags = ds4[off];
+
+    if flags & 0x01 != 0 {
+        ds5[1] |= 0x03;
+        ds5[3] = ds4[off + 3];
+        ds5[4] = ds4[off + 4];
+    }
+
+    if flags & 0x02 != 0 {
+        ds5[2] |= 0x04;
+        ds5[45] = ds4[off + 5];
+        ds5[46] = ds4[off + 6];
+        ds5[47] = ds4[off + 7];
+    }
+
+    ds5
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

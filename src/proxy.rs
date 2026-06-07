@@ -811,7 +811,13 @@ impl Proxy {
                         UhidEvent::Output { rtype, ref data } => {
                             if rtype == 1 {
                                 trace!("UHID OUTPUT: size={}", data.len());
-                                if let Err(e) = self.hidraw.write_output(data) {
+                                let result = if self.output_device == "dualshock4" {
+                                    let ds5 = crate::report::convert_ds4_output_to_ds5(data);
+                                    self.hidraw.write_output(&ds5)
+                                } else {
+                                    self.hidraw.write_output(data)
+                                };
+                                if let Err(e) = result {
                                     error!("Failed to forward output report: {e}");
                                 }
                             } else {

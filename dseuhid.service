@@ -5,7 +5,8 @@ After=systemd-udevd.service
 [Service]
 Type=simple
 ExecStart=/usr/bin/dseuhid
-ExecReload=/bin/kill -HUP $MAINPID
+Environment=RUST_LOG=info
+ExecReload=/usr/bin/edgemap reload
 Restart=on-failure
 RestartSec=2
 

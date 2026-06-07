@@ -589,7 +589,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                 current_config.clear();
                 last_pid = None;
             }
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(Duration::from_secs(3));
             continue;
         }
 
@@ -616,7 +616,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                 send_notification("edgemap", "Gamepad disconnected");
             }
             last_uhid_state = Some(uhid_state);
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(Duration::from_secs(3));
             continue;
         }
 
@@ -671,13 +671,13 @@ fn cmd_daemon(args: &[String]) -> ! {
                     target = state.base_config.clone();
                     if !is_valid(&target) {
                         log::warn!("default config also invalid, keeping previous");
-                        std::thread::sleep(Duration::from_secs(1));
+                        std::thread::sleep(Duration::from_secs(3));
                         continue;
                     }
                 } else {
                     // base_config itself is invalid — just warn, don't spam
                     log::warn!("default config invalid, keeping previous");
-                    std::thread::sleep(Duration::from_secs(1));
+                    std::thread::sleep(Duration::from_secs(3));
                     continue;
                 }
             }
@@ -694,7 +694,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                 current_config = target;
             }
         }
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(3));
     }
 
     log::info!("daemon stopped");

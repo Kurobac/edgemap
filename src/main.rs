@@ -44,7 +44,9 @@ fn setup_fifo() -> std::fs::File {
             eprintln!("error: cannot open FIFO: {e}");
             std::process::exit(1);
         });
-    std::fs::write(PID_PATH, std::process::id().to_string()).ok();
+    if let Err(e) = std::fs::write(PID_PATH, std::process::id().to_string()) {
+        log::warn!("failed to write PID file: {e}");
+    }
     file
 }
 
@@ -147,7 +149,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
     info!("DualSense UHID proxy starting");
     proxy::setup_signal_handler();
-    proxy::setup_reload_handler();
 
     // check for existing instance
     if let Ok(pid_str) = std::fs::read_to_string(PID_PATH) {
@@ -161,7 +162,9 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
     let fifo_fd = setup_fifo();
 
-    let _ = std::fs::write("/run/dseuhid/connected", b"disconnected");
+    if let Err(e) = std::fs::write("/run/dseuhid/connected", b"disconnected") {
+        log::warn!("failed to write connected file: {e}");
+    }
 
     'outer: loop {
         let mut logged_waiting = false;
@@ -179,9 +182,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                     if !logged_waiting {
                         info!("Waiting for DualSense device...");
                         logged_waiting = true;
-                    }
-                    if proxy::try_clear_reload() {
-                        info!("received reload signal (no device connected)");
                     }
                     std::thread::sleep(Duration::from_secs(1));
                 }
@@ -248,7 +248,9 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
         info!("Created virtual HID device: {name}");
 
-        let _ = std::fs::write("/run/dseuhid/connected", b"connected");
+        if let Err(e) = std::fs::write("/run/dseuhid/connected", b"connected") {
+            log::warn!("failed to write connected file: {e}");
+        }
 
         if let Err(e) = hidraw.restrict_evdev_nodes() {
             info!("Failed to restrict physical evdev nodes: {e}");
@@ -318,7 +320,9 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 config_path = None;
                 proxy.skip_restore();
                 info!("Device disconnected, waiting for reconnect...");
-                let _ = std::fs::write("/run/dseuhid/connected", b"disconnected");
+                if let Err(e) = std::fs::write("/run/dseuhid/connected", b"disconnected") {
+                    log::warn!("failed to write connected file: {e}");
+                }
                 std::thread::sleep(Duration::from_secs(2));
             }
             proxy::ExitReason::UserShutdown => {

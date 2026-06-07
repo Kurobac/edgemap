@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use log::{debug, error, info, trace, warn};
@@ -197,24 +196,6 @@ impl MacroRuntime {
             }
         }
     }
-}
-
-static SHOULD_RELOAD: AtomicBool = AtomicBool::new(false);
-
-pub fn try_clear_reload() -> bool {
-    SHOULD_RELOAD.swap(false, Ordering::SeqCst)
-}
-
-pub fn setup_reload_handler() {
-    unsafe {
-        let handler = SigHandler::SigAction(handle_reload_signal);
-        let action = SigAction::new(handler, SaFlags::empty(), SigSet::empty());
-        let _ = sigaction(Signal::SIGHUP, &action);
-    }
-}
-
-extern "C" fn handle_reload_signal(_sig: libc::c_int, _info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
-    SHOULD_RELOAD.store(true, Ordering::SeqCst);
 }
 
 static ALL_BUTTONS: &[Button] = &[
@@ -481,10 +462,6 @@ impl Proxy {
 
         while RUNNING.load(std::sync::atomic::Ordering::SeqCst)
             && !DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
-            if SHOULD_RELOAD.load(Ordering::SeqCst) {
-                SHOULD_RELOAD.store(false, Ordering::SeqCst);
-                self.reload_config();
-            }
             match ep_fd.wait(&mut events, 16u16) {
                 Ok(n) => {
                     for ev in events.iter().take(n) {

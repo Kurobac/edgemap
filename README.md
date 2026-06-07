@@ -41,12 +41,6 @@ systemctl --user enable --now edgemap
 cargo build --release
 ```
 
-### Build from source
-
-```bash
-cargo build --release
-```
-
 edgemap daemon auto-creates `~/.config/edgemap/edgemap.toml` + `default.toml` on first run.
 Run `edgemap create-config` to print a template with full inline documentation.
 

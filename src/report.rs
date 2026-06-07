@@ -433,8 +433,40 @@ pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: 
     raw[8] = state.l2_analog;
     raw[9] = state.r2_analog;
 
+    let p0_contact  = raw[33];
+    let p0_x_lo     = raw[34];
+    let p0_x_hi_ylo = raw[35];
+    let p0_y_hi     = raw[36];
+    let p1_contact  = raw[37];
+    let p1_x_lo     = raw[38];
+    let p1_x_hi_ylo = raw[39];
+    let p1_y_hi     = raw[40];
+
     raw[10..64].fill(0);
-    for &off in &[35, 39, 44, 47, 53, 56] {
+
+    let mut active = false;
+    let mut write_point = |base: usize, contact: u8, x_lo: u8, comb: u8, y_hi: u8| {
+        if contact & 0x80 == 0 {
+            active = true;
+            let y_lo = (comb >> 4) & 0x0F;
+            let y = ((y_hi as u16) << 4) | (y_lo as u16);
+            let ys = ((y as u32) * 942 / 1080) as u16;
+            raw[base]     = contact;
+            raw[base + 1] = x_lo;
+            raw[base + 2] = (comb & 0x0F) | (((ys & 0x0F) as u8) << 4);
+            raw[base + 3] = (ys >> 4) as u8;
+        } else {
+            raw[base] = 0x80;
+        }
+    };
+
+    write_point(35, p0_contact, p0_x_lo, p0_x_hi_ylo, p0_y_hi);
+    write_point(39, p1_contact, p1_x_lo, p1_x_hi_ylo, p1_y_hi);
+
+    raw[33] = if active { 1 } else { 0 };
+    raw[34] = seq & 0x3F;
+
+    for &off in &[44, 47, 53, 56] {
         raw[off] = 0x80;
     }
 

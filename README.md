@@ -13,21 +13,39 @@ SDL-based remappers cannot preserve DualSense-specific features such as adaptive
 This project is provided ASIS. The author has tested it to the best of their ability,
 but makes no warranty regarding functionality or stability.
 
-## Quick start
+## Install
+
+### Arch Linux
+
+```bash
+# TODO: upload to AUR
+# yay -S dseuhid
+```
+
+### Other Linux (pre-compiled binary)
+
+Download the latest tarball from the [Releases](https://github.com/kurobac/edgemap/releases) page:
+
+```bash
+tar xzf edgemap-v*.tar.gz
+cd edgemap-v*
+sudo ./install.sh
+# then enable systemd service
+systemctl enable --now dseuhid
+systemctl --user enable --now edgemap
+```
+
+### Build from source
 
 ```bash
 cargo build --release
-sudo install -m755 target/release/dseuhid /usr/bin/dseuhid
-sudo install -m755 target/release/edgemap /usr/bin/edgemap
-sudo install -m755 edgemap-gui-v6.py /usr/bin/edgemap-gui
-sudo install -m644 edgemap.svg /usr/share/icons/hicolor/scalable/apps/edgemap.svg
-sudo install -m644 dseuhid.service /usr/lib/systemd/system/dseuhid.service
-install -Dm644 edgemap.service ~/.config/systemd/user/edgemap.service
+# then install with the tarball's install.sh
+```
 
-sudo systemctl daemon-reload
-sudo systemctl enable --now dseuhid
-systemctl --user daemon-reload
-systemctl --user enable --now edgemap
+### Build from source
+
+```bash
+cargo build --release
 ```
 
 edgemap daemon auto-creates `~/.config/edgemap/edgemap.toml` + `default.toml` on first run.

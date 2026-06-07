@@ -105,6 +105,8 @@ impl MappingConfig {
     pub fn apply(&self, l1: &GamepadState, state: &mut GamepadState, keyboard_out: &mut Vec<(u16, bool)>) {
         let snapshot = l1.clone();
         let mut button_targets: Vec<Button> = Vec::new();
+        let mut l2_target: Option<u8> = None;
+        let mut r2_target: Option<u8> = None;
 
         for rule in &self.rules {
             if !snapshot.button(rule.src) {
@@ -117,20 +119,17 @@ impl MappingConfig {
                     let analog = snapshot.l2_analog;
                     match &rule.dst {
                         Target::Button(Button::L2) => {
-                            // self-map: keep analog as-is
+                            l2_target = Some(analog);
                         }
                         Target::Button(Button::R2) | Target::TriggerFull(Trigger::R2) => {
-                            // transfer to R2
-                            state.r2_analog = analog;
-                            state.l2_analog = 0;
+                            r2_target = Some(analog);
+                            l2_target = Some(0);
                         }
                         Target::TriggerFull(Trigger::L2) => {
-                            // TriggerFull sets analog below, clear source
-                            state.l2_analog = 0;
+                            l2_target = Some(0);
                         }
                         _ => {
-                            // non-trigger target
-                            state.l2_analog = 0;
+                            l2_target = Some(0);
                         }
                     }
                 }
@@ -138,20 +137,17 @@ impl MappingConfig {
                     let analog = snapshot.r2_analog;
                     match &rule.dst {
                         Target::Button(Button::R2) => {
-                            // self-map: keep analog as-is
+                            r2_target = Some(analog);
                         }
                         Target::Button(Button::L2) | Target::TriggerFull(Trigger::L2) => {
-                            // transfer to L2
-                            state.l2_analog = analog;
-                            state.r2_analog = 0;
+                            l2_target = Some(analog);
+                            r2_target = Some(0);
                         }
                         Target::TriggerFull(Trigger::R2) => {
-                            // TriggerFull sets analog below, clear source
-                            state.r2_analog = 0;
+                            r2_target = Some(0);
                         }
                         _ => {
-                            // non-trigger target
-                            state.r2_analog = 0;
+                            r2_target = Some(0);
                         }
                     }
                 }
@@ -165,12 +161,12 @@ impl MappingConfig {
                 Target::TriggerFull(trigger) => {
                     match trigger {
                         Trigger::L2 => {
-                            state.set_button(Button::L2, true);
-                            state.l2_analog = 255;
+                            button_targets.push(Button::L2);
+                            l2_target = Some(255);
                         }
                         Trigger::R2 => {
-                            state.set_button(Button::R2, true);
-                            state.r2_analog = 255;
+                            button_targets.push(Button::R2);
+                            r2_target = Some(255);
                         }
                     }
                 }
@@ -191,7 +187,9 @@ impl MappingConfig {
             }
         }
 
-        // Phase 2: set all deferred button targets atomically
+        // Phase 2: apply all collected targets atomically
+        if let Some(v) = l2_target { state.l2_analog = v; }
+        if let Some(v) = r2_target { state.r2_analog = v; }
         for btn in &button_targets {
             state.set_button(*btn, true);
         }

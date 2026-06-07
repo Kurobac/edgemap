@@ -62,10 +62,7 @@ pub struct MacroStep {
 }
 
 fn is_valid_src(name: &str) -> bool {
-    matches!(
-        Button::from_name(name),
-        Some(_)
-    ) && name != "mic"
+    Button::from_name(name).is_some() && name != "mic"
         && name != "l2_analog"
         && name != "r2_analog"
 }
@@ -301,7 +298,7 @@ impl Config {
         }
 
         // Combo trigger: combo output points to a macro name
-        for (_btn_name, btn_conf) in &self.buttons {
+        for btn_conf in self.buttons.values() {
             if !matches!(btn_conf.remap.as_deref(), Some("combo")) {
                 continue;
             }
@@ -428,7 +425,7 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
 
         // turbo with trigger source + trigger target (analog transfer) is not allowed
         if btn_conf.turbo && matches!(btn_name.as_str(), "l2" | "r2") {
-            let target_is_trigger = matches!(remap, "l2" | "r2") || remap == "";
+            let target_is_trigger = matches!(remap, "l2" | "r2") || remap.is_empty();
             if target_is_trigger {
                 return Err(format!("[{btn_name}] turbo with trigger target '{remap}' is not supported"));
             }

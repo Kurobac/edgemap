@@ -60,6 +60,10 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | GET_REPORT cache | IMU calibration data read from physical device on startup (accurate gyro) |
 | GUI config editor | PyQt6 native editor — remap, turbo, combo, macro, macro manager, save/load |
 
+> **Note:** `force_dualsense = true` on a regular DualSense is harmless — the device
+> is already recognized as DS. Edge-specific button configs (paddles, FN keys) are
+> silently ignored on regular DualSense; they simply have no physical counterpart.
+
 ## Not supported (by design)
 
 - Bluetooth / wireless

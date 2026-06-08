@@ -92,8 +92,8 @@ pub const DS_USB_DESCRIPTOR: [u8; 289] = [
      0xC0,
 ];
 
-// DualShock 4 USB descriptor (467 bytes, PSDevWiki dump adjusted for v2 PID 0x09CC)
-// v2 adjustments (vs v1): report 0x02 calib 36→37B, 0x12 pairing 15→16B, 0xA3 fw 48→49B
+// DualShock 4 USB descriptor (467 bytes, PSDevWiki v1 PID 0x05C4)
+// Note: feature report sizes (0x02:37, 0x12:16, 0xA3:49) match kernel's v2 constants
 pub const DS4_USB_DESCRIPTOR: [u8; 467] = [
     0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0x85, 0x01,
     0x09, 0x30, 0x09, 0x31, 0x09, 0x32, 0x09, 0x35,

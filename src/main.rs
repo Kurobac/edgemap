@@ -248,7 +248,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             w16(&mut cal, 33, (-8192i16) as u16); // acc_z_minus
             report_cache.insert(0x02, cal);
 
-            // DS4 firmware info (report 0xA3, 49 bytes)
+            // DS4 firmware info (report 0xA3, 48 bytes)
             // Games read fw_version from sysfs; 0 would signal "unsupported".
             let mut fw = vec![0xA3u8; 49];
             fw.resize(49, 0);
@@ -259,6 +259,8 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             {
                 let mut buf = vec![0x12u8; 16];
                 buf.resize(16, 0);
+                // Non-zero MAC address (C0:13:37:00:00:01) — games may reject all-zero MAC
+                buf[1..7].copy_from_slice(&[0xC0, 0x13, 0x37, 0x00, 0x00, 0x01]);
                 report_cache.insert(0x12, buf);
             }
         }

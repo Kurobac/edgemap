@@ -743,6 +743,7 @@ impl Proxy {
                         // ========== L3: Output ==========
                         if self.output_device == "dualshock4" {
                             report::apply_state_to_ds4_report(&mut buf, &state, *seq);
+                            trace!("ds4 raw[..32]: {:02x?}", &buf[..32]);
                         } else {
                             report::apply_state_to_report(&mut buf, &state, *seq);
                         }

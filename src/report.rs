@@ -448,6 +448,7 @@ pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: 
 
     raw[13..25].copy_from_slice(&gyro_accel);
     raw[10..12].copy_from_slice(&(seq as u16).to_le_bytes());
+    raw[12] = 0x06;
 
     let mut active = false;
     let mut write_point = |base: usize, contact: u8, x_lo: u8, comb: u8, y_hi: u8| {
@@ -475,7 +476,7 @@ pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: 
         raw[off] = 0x80;
     }
 
-    raw[30] = (state.battery_pct / 10) & 0x0F;
+    raw[30] = 0x1B;
 }
 
 /// Convert DS4 output report (32 bytes, report ID 0x05) to

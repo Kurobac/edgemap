@@ -248,10 +248,18 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             w16(&mut cal, 33, (-8192i16) as u16); // acc_z_minus
             report_cache.insert(0x02, cal);
 
-            for (report_id, size) in [(0x12u8, 16usize), (0xA3u8, 49usize)] {
-                let mut buf = vec![report_id];
-                buf.resize(size, 0);
-                report_cache.insert(report_id, buf);
+            // DS4 firmware info (report 0xA3, 49 bytes)
+            // Games read fw_version from sysfs; 0 would signal "unsupported".
+            let mut fw = vec![0xA3u8; 49];
+            fw.resize(49, 0);
+            w16(&mut fw, 35, 0x0001);   // hw_version
+            w16(&mut fw, 41, 0x0100);   // fw_version
+            report_cache.insert(0xA3, fw);
+
+            {
+                let mut buf = vec![0x12u8; 16];
+                buf.resize(16, 0);
+                report_cache.insert(0x12, buf);
             }
         }
 

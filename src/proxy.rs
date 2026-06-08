@@ -840,12 +840,13 @@ impl Proxy {
                         }
                         UhidEvent::SetReport { id, rnum, rtype, ref data } => {
                             trace!("UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}", data.len());
-                            // Forward feature report data to real hardware
-                            if rtype == 0 {
-                                let mut full_data = vec![rnum];
-                                full_data.extend_from_slice(data);
-                                if let Err(e) = self.hidraw.send_feature_report(&full_data) {
-                                    warn!("Failed to forward set_report rnum={rnum}: {e}");
+                            if self.output_device != "dualshock4" {
+                                if rtype == 0 {
+                                    let mut full_data = vec![rnum];
+                                    full_data.extend_from_slice(data);
+                                    if let Err(e) = self.hidraw.send_feature_report(&full_data) {
+                                        warn!("Failed to forward set_report rnum={rnum}: {e}");
+                                    }
                                 }
                             }
                             if let Err(e) = self.uhid.send_set_report_reply(id, 0) {

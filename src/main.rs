@@ -207,8 +207,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         };
 
-        let name = format!("{} Remapper", dev_info.device_name());
-
         let mut report_cache = HashMap::new();
         for (report_id, size) in [(0x05u8, 41usize), (0x20u8, 64usize)] {
             let mut buf = vec![report_id];
@@ -226,11 +224,17 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             .map(|c| c.output_device)
             .unwrap_or_else(|| "auto".to_string());
 
+        let name = if output_device == "dualshock4" {
+            "Wireless Controller".to_string()
+        } else {
+            format!("{} Remapper", dev_info.device_name())
+        };
+
         if output_device == "dualshock4" {
             // DS4 calibration data (report 0x02, 37 bytes)
             // Produces 1:1 scale + zero bias so raw gyro/accel passes through unchanged.
-            let mut cal = vec![0x02u8; 37];
-            cal.resize(37, 0);
+            let mut cal = vec![0u8; 37];
+            cal[0] = 0x02;
             let w16 = |buf: &mut [u8], off, v: u16| buf[off..off+2].copy_from_slice(&v.to_le_bytes());
             w16(&mut cal,  7, 1024);        // gyro_pitch_plus
             w16(&mut cal,  9, (-1024i16) as u16); // gyro_pitch_minus
@@ -250,15 +254,15 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
             // DS4 firmware info (report 0xA3, 48 bytes)
             // Games read fw_version from sysfs; 0 would signal "unsupported".
-            let mut fw = vec![0xA3u8; 49];
-            fw.resize(49, 0);
+            let mut fw = vec![0u8; 49];
+            fw[0] = 0xA3;
             w16(&mut fw, 35, 0x0001);   // hw_version
-            w16(&mut fw, 41, 0x0100);   // fw_version
+            w16(&mut fw, 41, 0x0049);   // fw_version (real DS4 value)
             report_cache.insert(0xA3, fw);
 
             {
-                let mut buf = vec![0x12u8; 16];
-                buf.resize(16, 0);
+                let mut buf = vec![0u8; 16];
+                buf[0] = 0x12;
                 // Non-zero MAC address (C0:13:37:00:00:01) — games may reject all-zero MAC
                 buf[1..7].copy_from_slice(&[0xC0, 0x13, 0x37, 0x00, 0x00, 0x01]);
                 report_cache.insert(0x12, buf);
@@ -272,10 +276,15 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         } else {
             (dev_info.pid as u32, hidraw.report_descriptor())
         };
+        let uniq = if output_device == "dualshock4" {
+            "c0:13:37:00:00:01"
+        } else {
+            ""
+        };
         if let Err(e) = uhid.create(
             &name,
             "",
-            "",
+            uniq,
             0x0003, // BUS_USB
             dev_info.vid as u32,
             uhid_pid,

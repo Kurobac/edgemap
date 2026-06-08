@@ -12,6 +12,9 @@
 | 内核驱动 probe | UHID start/open 正常，device node 创建成功 |
 | Feature report (0x02/0x12/0xA3) | 全部缓存，非零 MAC + 1:1 校准值 + firmware 版本 |
 
+
+目标，让HIDRAW路径的游戏正常识别手柄。
+
 ## ❌ 仍在问题中的部分
 
 ### 类别 A — 完全不认的游戏 (CP2077 / TLOU)

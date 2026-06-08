@@ -252,19 +252,29 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             w16(&mut cal, 33, (-8192i16) as u16); // acc_z_minus
             report_cache.insert(0x02, cal);
 
-            // DS4 firmware info (report 0xA3, 48 bytes)
-            // Games read fw_version from sysfs; 0 would signal "unsupported".
+            // DS4 firmware info (report 0xA3, 49 bytes)
+            // Layout matches real DS4 dump (ViGEmBus/eccelerator reference).
             let mut fw = vec![0u8; 49];
             fw[0] = 0xA3;
-            w16(&mut fw, 35, 0x0001);   // hw_version
+            fw[1..12].copy_from_slice(b"Aug  3 2013");
+            fw[17..25].copy_from_slice(b"07:01:12");
+            w16(&mut fw, 34, 0x0001);   // hw_version
+            w16(&mut fw, 36, 0x0331);   // sub-version
             w16(&mut fw, 41, 0x0049);   // fw_version (real DS4 value)
+            fw[43] = 0x05;
+            w16(&mut fw, 46, 0x0380);   // build number
             report_cache.insert(0xA3, fw);
 
             {
                 let mut buf = vec![0u8; 16];
                 buf[0] = 0x12;
-                // Non-zero MAC address (C0:13:37:00:00:01) — games may reject all-zero MAC
-                buf[1..7].copy_from_slice(&[0xC0, 0x13, 0x37, 0x00, 0x00, 0x01]);
+                // MAC addresses in DS4 reversed byte order (matching ViGEmBus convention).
+                // Bytes 7-9: USB connection status (0x08 0x25 0x00 from real DS4 dump).
+                buf[1..7].copy_from_slice(&[0x01, 0x00, 0x00, 0x37, 0x13, 0xC0]); // target MAC (reversed C0:13:37:00:00:01)
+                buf[7] = 0x08;
+                buf[8] = 0x25;
+                buf[9] = 0x00;
+                // bytes 10-15: host MAC — USB connection: all zero (matching reWASD)
                 report_cache.insert(0x12, buf);
             }
         }

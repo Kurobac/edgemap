@@ -74,7 +74,7 @@ InputVal(0x02,0xC8)      count=0 nt=0xc0110004   count=0 ✅              count=
 
 ### Version Number 问题
 
-Wine 下 `HidD_GetAttributes.VersionNumber` 始终为 `0000`。原因是 UHID 设备的 parent chain 中没有带 `PRODUCT=` uevent 行的 "usb"/"input" ancestor。内核实际存储的 version (`/sys/class/input/input*/id/version`) 为 `0x8100`，但 Wine 的 `bus_udev.c` 不读取。DS5 forced 同样 Version=0000 但正常工作。
+Wine 下 `HidD_GetAttributes.VersionNumber` 始终为 `0000`。原因是 UHID 设备的 parent chain 中没有带 `PRODUCT=` uevent 行的 "usb"/"input" ancestor。内核实际存储的 version (`/sys/class/input/input*/id/version`) 为 `0x8100`，但 Wine 的 `bus_udev.c` 不读取。DS5 forced 同样 Version=0000 但正常工作。此问题除给Wine打补丁之外无解决办法，且是根本原因可能性较小。
 
 ### HID Descriptor Caps 对比
 

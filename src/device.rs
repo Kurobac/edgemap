@@ -309,7 +309,6 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
             }
 
             info!("re-restricting device nodes after udev reset");
-            self.restored_paths.clear();
 
             let input_dir = sysfs.join("device/input");
             if input_dir.exists() {
@@ -330,7 +329,7 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
                                 if ev_name.starts_with("event") || ev_name.starts_with("js") {
                                     let dev_path = PathBuf::from("/dev/input").join(ev_name);
                                     if dev_path.exists() {
-                                        if let Err(e) = Self::restrict_node(&dev_path, &mut self.restored_paths) {
+                                        if let Err(e) = fs::set_permissions(&dev_path, fs::Permissions::from_mode(0o000)) {
                                             log::warn!("re-restrict {} failed: {e}", ev_name);
                                         }
                                     }
@@ -341,7 +340,7 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
                 }
             }
 
-            if let Err(e) = Self::restrict_node(&hidraw_path, &mut self.restored_paths) {
+            if let Err(e) = fs::set_permissions(&hidraw_path, fs::Permissions::from_mode(0o000)) {
                 log::warn!("re-restrict {} failed: {e}", devname);
             }
         }

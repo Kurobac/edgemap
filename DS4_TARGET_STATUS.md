@@ -4,164 +4,101 @@
 
 | 组件 | 验证方式 |
 |------|---------|
+| DS4 HID 描述符 (467 bytes) | 与 ViGEmBus 逐字节一致；与 reWASD Caps 完全匹配 |
 | Raw input report 格式 | Windows reWASD 抓包逐字节对比，完全一致 |
-| 按钮/摇杆/扳机 | Steam + evtest + 原神 hidraw 路径 |
+| 按钮/摇杆/扳机 | Steam + evtest 正确 |
 | 触摸板（点击+坐标） | evtest + Steam 手柄测试 |
-| LED 输出 | Steam 调整颜色 + 原神也能发 LED |
-| SDL/evdev 路径 | sdl2-jstest + 所有 SDL 游戏 |
+| DS Edge passthrough 模式 | 正常工作（游戏认手柄） |
+| DS5 forced 模式 | 正常工作（游戏认手柄） |
 | 内核驱动 probe | UHID start/open 正常，device node 创建成功 |
-| Feature report (0x02/0x12/0xA3) | 全部缓存，非零 MAC + 1:1 校准值 + firmware 版本 |
-
-
-目标，让HIDRAW路径的游戏正常识别手柄。
+| Feature report 数据 (0x02/0x12/0xA3) | Wine 测试程序验证全部四步可正常调用 |
+| Wine HID 转发层 | 测试程序确认 HidD_GetFeature(0x12/0xA3/0x02) + HidD_SetFeature(0x14) 全部成功 |
 
 ## ❌ 仍在问题中的部分
 
-### 类别 A — 完全不认的游戏 (CP2077 / TLOU)
+### HIDRAW 路径游戏完全不认 (CP2077 / TLOU)
 
-**UHID 事件序列：**
+通过 `WINEDEBUG=+hid` 对比 DS4（不工作）vs DS5 forced（工作），两者行为分叉点精确定位：
+
 ```
-GetReport rnum=0x12, 0xA3, 0x81, 0x02    ← kernel probe，全部缓存命中
-SetReport rnum=0x13                        ← kernel driver 校准握手 (0x13, 23bytes)
-Output rtype=1                             ← Proton/游戏发 LED 命令
-GetReport rnum=0x12                        ← 反复查询 (~2s/次)
-```
+DS4: open → SonyIOCTL → attributes → collection
+     open → attributes → deepInspect → GetFeature(0x12) → close   ← 仅读串号，中止
+     open → attributes → deepInspect → close                       ← 后续仅轮询
 
-**Proton 日志确认：**
-- `bus_main_thread creating hidraw device 054c:05c4 with usages 0001:0005`
-- `sdl_add_device controller id 0, is_gamepad 1`
-- `deliver_next_report ... input report length 64` — 投递正常
-- Proton 层**没有任何 `write feature report`**（对比 DS5 passthrough 有 `rnum=8`）
-
-**关键特征：**
-1. 游戏**不发送任何 SET_REPORT**（对比 DS5 passthrough 有 `rnum=8`）
-2. **不断重读 MAC (0x12)** — Proton 层认为设备身份不明确
-3. 游戏发了 LED 命令 → 设备已被 open、能通信
-4. 改名 `"Wireless Controller"` 后游戏行为有变化（kernel SetReport 触发）
-5. `uniq` 填非空 MAC 后重读频率没有实质性减少
-
-### 类别 B — 认手柄但 gyro/vibration 不工作 (原神)
-
-- 显示了陀螺仪菜单 → 游戏按 VID/PID/Descriptor 识别为 DS4
-- 按键/摇杆正常 → input report 字节正确
-- gyro/vibration 不工作 → evtest 验证 gyro 数据正确、Output 震动转换在 Steam 验证过
-
-可能原因：
-- gyro 校准值和游戏预期不一致（手工 1:1 构造，非真 DS4 值）
-- vibration 走的路径需要 SET_REPORT 握手先完成（和类别 A 同一根因）
-
-## 🔍 已排除的原因
-
-| 原因 | 验证 |
-|------|------|
-| HID report 格式错误 | reWASD Windows 逐字节对比完全一致 |
-| Feature report 缺失 (0x04-0x15) | reWASD 也是 error |
-| MAC 地址全零 | 已改为 `C0:13:37:00:00:01` |
-| 设备名称 | 已改为 `"Wireless Controller"` |
-| SET_REPORT 转发 broken pipe | 已跳过 DS4 下的物理转发 |
-| `HIDIOCGRAWUNIQ` 为空 | 已填 `"c0:13:37:00:00:01"` |
-| PID 版本 (0x05C4 vs 0x09CC) | v2 下的游戏没测过 |
-
-## 💡 最可能的根因
-
-**游戏在比 SET_REPORT 更早的阶段就决定"不用这个 DS4"**。
-
-DS5 passthrough 模式下游戏发 `SET_REPORT rnum=8` 作为初始化握手。
-DS4 模式下**没有任何来自游戏的 SET_REPORT**——游戏在枚举阶段就排除了设备。
-
-可能的卡点：
-- `HIDIOCGDEVINFO` ioctl 返回的 version (Proton 显示 `version 0000`)
-- `HIDIOCGRAWPHYS` 返回的 phys 路径
-- HID descriptor 解析出的 caps 数量不符预期
-- 游戏 hardcoded 的 DS4 controller PID 白名单
-
-## 🎯 Windows API Monitor 抓到的游戏初始化序列 (CP2077)
-
-| # | API | Report | Size | Result |
-|---|-----|--------|------|--------|
-| 1 | HidD_GetFeature | 0x12 (MAC) | 16B | TRUE |
-| 2 | HidD_GetFeature | 0xA3 (firmware) | 49B | TRUE |
-| 3 | **HidD_SetFeature** | **0x14 (init)** | **17B** | **TRUE** |
-| 4 | HidD_GetFeature | 0x02 (calibration) | 37B | TRUE |
-
-游戏在查完 0xA3 后发 SetFeature(0x14) 初始化手柄。这是 Linux 上缺失的关键步骤。
-
-## 🔴 重大 Bug 发现并修复：Feature Report 数据被 report ID 填满
-
-```rust
-// ❌ bug: vec![0x12u8; 16] 把所有 16 字节填成 0x12
-//    buf.resize(16, 0) 是 no-op (size 已=16)
-//    只有 buf[1..7] 被 MAC 覆盖，其余字节全是 0x12 垃圾
-let mut buf = vec![0x12u8; 16];
-buf.resize(16, 0);
+DS5: open → SonyIOCTL → attributes → collection
+     open → attributes → deepInspect → GetFeature(0x09) → GetFeature(0x20) → close  ← 串号+固件
+     open → attributes → deepInspect → close
 ```
 
-修复后：`vec![0u8; SIZE]` + `buf[0] = report_id`，其余为零。
+DS4 在 Linux 下只读 0x12（串号），不读 0xA3（固件），不发 SET_REPORT；DS5 读两个 feature report。DS Edge (auto) 和 DS5 forced 均正常工作。
 
-影响：0x02、0x12、0xA3 三个报告全部修复。
+### DeepInspect 三路对比（已排除）
 
-## 🔴 HID Descriptor Report Count Bug 修复
+用 `tools/hid-inspect.exe` 在三个环境对比了游戏 deepInspect 阶段的精确 API 返回值：
 
-HID 规范：Report Count 不含 report ID 字节。PSDevWiki 的数字是总大小（含 ID），直接填入导致 Proton 解析出错误 caps。
-
-| Report | 修复前(错) | 修复后(正) | 内核硬编码(含ID) |
-|--------|-----------|-----------|-----------------|
-| 0x02 cal | 0x25(37) | 0x24(36) | 37 |
-| 0x12 MAC | 0x10(16) | 0x0F(15) | 16 |
-| 0xA3 fw | 0x31(49) | 0x30(48) | 49 |
-
-修复后 MAC 不再被 Proton 无限重读（20+ 次 → 1 次）。
-
-## 🔍 Linux strace vs Windows API Monitor 对比
-
-| | Windows (API Monitor) | Linux (strace) |
-|---|---|---|
-| Open /dev/hidraw ×2 | N/A | ✅ PID 287869 + 287883 |
-| HIDIOCGFEATURE(0x12) → 16B | ✅ Thread 73 | ✅ fd 55 & fd 68 |
-| HIDIOCGFEATURE(0xA3) → 49B | ✅ Thread 77 | ❌ **不存在** |
-| HIDIOCSFEATURE(0x14) → 17B | ✅ Thread 77 | ❌ **不存在** |
-| HIDIOCGFEATURE(0x02) → 37B | ✅ Thread 77 | ❌ **不存在** |
-
-Linux 上两次 HIDIOCGFEATURE 都查询 0x12 且都返回 16B——Thread 77 从未查询 0xA3。
-两个进程（steam + winedevic）各 open 一次 hidraw11，共享同一设备。
-
-## 🔁 已排除的因素
-
-| 假设 | 证据 |
-|------|------|
-| Raw report 格式错误 | ✅ reWASD 逐字节对比一致 |
-| Feature report 数据内容 | ✅ 已修复 report ID 填充 bug，0x12 返回干净数据 |
-| HID Descriptor Report Count | ✅ 三个关键报告已修复 |
-| Version Number (HID Attributes) | ✅ reWASD 返回 0x0100，我们也是 0x0100 |
-| Proton 白名单 | ✅ 源码确认 is_dualshock4_gamepad() 返回 TRUE |
-| 0x12 数据被 Proton 截断 | ✅ strace 确认 ioctl 返回 16B |
-| 设备名称 | ✅ 改为 "Wireless Controller" |
-| MAC 地址全零 | ✅ 改为 C0:13:37:00:00:01 |
-| FIRMWARE 版本 | ✅ 改为真实 DS4 值 0x0049 |
-
-## ⏳ 待确认：真 DS4 硬件对比
-
-已购买真 DS4 硬件，到货后用同一 strace 抓取初始化序列，对比：
-- HIDIOCGFEATURE 查询顺序和返回字节数
-- 是否有 HIDIOCSFEATURE (SetFeature 0x14)
-- 游戏完整初始化流程和我们的差异
-
-**工具：** [API Monitor](http://www.rohitab.com/apimonitor)（免费，< 2MB）
-
-**监听 API：**
 ```
-Data Access:         ReadFile, WriteFile
-Device I/O:          DeviceIoControl
-HID:                 HidD_GetFeature, HidD_SetFeature,
-                     HidD_GetInputReport, HidD_SetOutputReport,
-                     HidD_GetAttributes, HidD_GetPreparsedData
+                         reWASD DS4 (Win,认)    dseuhid DS4 (Linux)   dseuhid DS5 (Linux,认)
+LinkCollectionNodes      count=1 nt=0x110000     count=1 ✅              count=1 ✅
+OutputBtn(0x0F,0x9A)     count=0 nt=0xc0110004   count=0 ✅              count=0 ✅
+InputBtn(Button,0)       count=1 min=1 max=14    count=1 ✅              count=1 min=1 max=15
+InputVal(X=0x30)         count=1 nt=0x110000     count=1 ✅              count=1 ✅
+InputVal(Y=0x31)         count=1 nt=0x110000     count=1 ✅              count=1 ✅
+InputVal(0x02,0xC8)      count=0 nt=0xc0110004   count=0 ✅              count=0 ✅
 ```
 
-**关注点：**
-- `HidD_GetAttributes` → VersionNumber 返回值
-- `HidD_GetPreparsedData` → 解析后的 caps 数量
-- `HidD_SetFeature / HidD_GetFeature` → 初始化握手顺序和参数
-- `ReadFile` → 第一次成功读取的时间点和数据大小
+**每一项的 ntstatus 和 count 三路完全相同。deepInspect 不是分叉点。**
+
+## 🔍 详细排查历程
+
+### Wine/Proton HID 转发层验证
+
+编写了 Windows 测试程序 (`tools/hid-inspect.exe` + `tools/ds4-probe.c`)，在 Wine 下模拟游戏的四步 DS4 初始化，全部成功。**Wine 层能完美转发全部调用，游戏主动选择不走完整初始化。**
+
+### 游戏 HID 调用链（WINEDEBUG=+hid trace）
+
+- DS Edge (auto) 和 DS5 (forced) 均正常工作
+- DS4 模式下游戏仅读 0x12，之后不再调用任何 GET_FEATURE/SET_FEATURE
+- 游戏发 Sony 私有 IOCTL `0xb04b0` (HID_BUFFER_CTL_CODE(300)) 14 次探测，Wine 返回 STATUS_NOT_SUPPORTED——DS4/DS5 都收到这个结果，但 DS5 继续正常
+- DS5 PID + DS4 描述符 hack 失败：hid-playstation 内核驱动因 PID/描述符不一致导致输出报告解析错乱
+
+### Feature Report 数据修复历史
+
+| 修复项 | 改动 | 文件 |
+|--------|------|------|
+| 0x12 MAC 字节序 | 反转序匹配 ViGEmBus/reWASD | `src/main.rs` |
+| 0x12 bytes 7-9 | 填入 `0x08 0x25 0x00` (USB 就绪状态) | `src/main.rs` |
+| 0x12 host MAC (10-15) | 清零匹配 reWASD (USB 连接无须 host MAC) | `src/main.rs` |
+| 0xA3 firmware 字符串 | 填入 `"Aug  3 2013"` + `"07:01:12"` 匹配 ViGEmBus | `src/main.rs` |
+| 0xA3 hw_version offset | 修正 off-by-one | `src/main.rs` |
+| 0xA3 extra fields | 填入 0x0331/0x05/0x0380 | `src/main.rs` |
+
+### Version Number 问题
+
+Wine 下 `HidD_GetAttributes.VersionNumber` 始终为 `0000`。原因是 UHID 设备的 parent chain 中没有带 `PRODUCT=` uevent 行的 "usb"/"input" ancestor。内核实际存储的 version (`/sys/class/input/input*/id/version`) 为 `0x8100`，但 Wine 的 `bus_udev.c` 不读取。DS5 forced 同样 Version=0000 但正常工作。
+
+### HID Descriptor Caps 对比
+
+dseuhid DS4 与 Windows reWASD DS4 的 `HidP_GetCaps` 返回值完全一致：InputReportByteLength=64, OutputReportByteLength=32, FeatureReportByteLength=64, NumberInputButtonCaps=1, NumberInputValueCaps=9, NumberFeatureValueCaps=43。
+
+## 💡 当前根因假设
+
+DS4 的 DeepInspect 返回值与 Windows reWASD 完全相同，deepInspect 非分叉原因。**分叉在 PID 层面**——游戏看到 `PID=05C4` 进入 DS4 SDK 路径，`PID=0CE6` 进入 DS5 路径。
+
+DS4 路径在 Windows 下正常工作，在 Linux/Proton 下中止。三路 deepInspect 完全一致后，真正的差异只剩：
+
+| 差异 | Linux dseuhid DS4 | Windows reWASD DS4 |
+|------|-------------------|---------------------|
+| VersionNumber | **0000** | **0100** |
+| 0x12 MAC 地址 | `01 00 00 37 13 c0` | `01 a1 f3 49 2c 72` |
+| 0x02 校准数据 | 1:1 neutral (±1024/8192) | 真实 DS4 值 (不对称) |
+| Manufacturer | "hidraw" | "Sony Computer Entertainment" |
+
+**最可能触发游戏 DS4 路径中止的：`VersionNumber == 0x0000`。**DS5 路径不检查 version，DS4 路径检查。Version=0 被 SDK 解读为"非真硬件/virtual"并跳过后续初始化。
+
+## ⏳ 下一步
+
+1. **真 DS4 硬件对比**（已购买）：同一系统、同一 Proton 版本测试真 DS4，确认是虚拟化特有问题还是 Proton DS4 兼容性问题
+2. **Version 注入实验**：尝试让 Wine 返回非零版本号（修改 `bus_udev.c` 添加 sysfs version 读取 fallback，或使用 LD_PRELOAD 拦截 ioctl）
 
 ## 📊 已实现功能清单
 
@@ -170,16 +107,12 @@ HID:                 HidD_GetFeature, HidD_SetFeature,
 | DS4 HID 描述符 (467 bytes) | ✅ | `src/descriptor.rs` |
 | Input report 写入 (DS4 64-byte layout) | ✅ | `src/report.rs:apply_state_to_ds4_report()` |
 | Output report 转换 (DS4→DS5 rumble+LED) | ✅ | `src/report.rs:convert_ds4_output_to_ds5()` |
-| 触摸板坐标转发 (Y轴 1080→942) | ✅ | `src/report.rs` (fill(0) before snapshot) |
-| 陀螺仪/加速度计转发 (1:1 calibration) | ✅ | `src/report.rs` + `src/main.rs` (cal data) |
+| 触摸板坐标转发 (Y轴 1080→942) | ✅ | `src/report.rs` |
+| 陀螺仪/加速度计转发 (1:1 calibration) | ✅ | `src/report.rs` + `src/main.rs` |
 | Feature report 缓存 (0x02/0x12/0xA3) | ✅ | `src/main.rs` |
-| 固件版本 (hw=0x0001, fw=0x0100) | ✅ | `src/main.rs` |
-| 非零 MAC (C0:13:37:00:00:01) | ✅ | `src/main.rs` |
-| 设备名 "Wireless Controller" | ✅ | `src/main.rs` |
-| 非空 uniq 字符串 | ✅ | `src/main.rs` |
+| 固件信息 + MAC 地址 | ✅ | `src/main.rs` |
 | Output device 枚举 (auto/dualsense/dualshock4) | ✅ | `src/config.rs` |
 | GUI Output Device 下拉菜单 | ✅ | `edgemap-gui-v6.py` |
 | UHID reload 检测 output_device 变化 | ✅ | `src/proxy.rs` |
-| 传感器温度 (byte 12=0x06) | ✅ | `src/report.rs` |
-| 电池状态 (byte 30=0x1B) | ✅ | `src/report.rs` |
-| 触摸点 INACTIVE 标志 (0x80) | ✅ | `src/report.rs` |
+| 传感器温度 + 电池状态 + 触摸点 INACTIVE | ✅ | `src/report.rs` |
+| 诊断工具 (hid-inspect, ds4-probe) | ✅ | `tools/` |

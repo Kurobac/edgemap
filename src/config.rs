@@ -8,12 +8,16 @@ use crate::report::Button;
 pub struct Config {
     #[serde(default)]
     pub version: u32,
-    #[serde(default)]
-    pub force_dualsense: bool,
+    #[serde(default = "default_output_device")]
+    pub output_device: String,
     #[serde(flatten)]
     pub buttons: HashMap<String, ButtonConfig>,
     #[serde(default)]
     pub macros: HashMap<String, MacroConfig>,
+}
+
+fn default_output_device() -> String {
+    "auto".to_string()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -343,6 +347,13 @@ pub const ALL_BUTTON_NAMES: &[&str] = &[
 ];
 
 pub fn validate(cfg: &Config) -> Result<(), String> {
+    if !matches!(cfg.output_device.as_str(), "auto" | "dualsense" | "dualshock4") {
+        return Err(format!(
+            "Unknown output_device: {} (valid: auto, dualsense, dualshock4)",
+            cfg.output_device
+        ));
+    }
+
     let mut has_split = false;
     let mut has_touch_left = false;
     let mut has_touch_right = false;
@@ -583,7 +594,8 @@ pub fn default_content() -> &'static str {
 #   remap = "dpad_right"
 #
 # ── Global Options ──────────────────────────────
-#   force_dualsense = true      # virtualize as regular DualSense (0x0CE6)
+#   output_device = "dualsense"    # force regular DualSense (was force_dualsense)
+#   output_device = "dualshock4"   # emulate as DualShock 4
 
 version = 2
 
@@ -809,15 +821,22 @@ mod tests {
         let cfg: Config = toml::from_str(default_content()).unwrap();
         assert_eq!(cfg.version, 2);
         assert_eq!(cfg.buttons.len(), 22);
-        assert_eq!(cfg.force_dualsense, false);
+        assert_eq!(cfg.output_device, "auto");
         assert!(validate(&cfg).is_ok());
     }
 
     #[test]
-    fn force_dualsense_config() {
-        let cfg = parse("force_dualsense = true\n[cross]\nremap = \"cross\"\n");
+    fn output_device_config() {
+        let cfg = parse("output_device = \"dualshock4\"\n[cross]\nremap = \"cross\"\n");
         assert!(validate(&cfg).is_ok());
-        assert_eq!(cfg.force_dualsense, true);
+        assert_eq!(cfg.output_device, "dualshock4");
+
+        let cfg = parse("output_device = \"dualsense\"\n[cross]\nremap = \"cross\"\n");
+        assert!(validate(&cfg).is_ok());
+        assert_eq!(cfg.output_device, "dualsense");
+
+        let cfg = parse("output_device = \"nintendo_switch\"\n[cross]\nremap = \"cross\"\n");
+        assert!(validate(&cfg).is_err());
     }
 
     #[test]

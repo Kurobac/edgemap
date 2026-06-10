@@ -382,6 +382,136 @@ pub fn apply_state_to_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) 
     raw[11] = b3;
 }
 
+pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) {
+    raw[0] = USB_INPUT_REPORT_ID;
+    raw[1] = state.left_stick_x;
+    raw[2] = state.left_stick_y;
+    raw[3] = state.right_stick_x;
+    raw[4] = state.right_stick_y;
+
+    let mut b5: u8 = 0;
+    if state.button(Button::Square) { b5 |= 0x10; }
+    if state.button(Button::Cross) { b5 |= 0x20; }
+    if state.button(Button::Circle) { b5 |= 0x40; }
+    if state.button(Button::Triangle) { b5 |= 0x80; }
+
+    let up = state.button(Button::DpadUp);
+    let down = state.button(Button::DpadDown);
+    let left = state.button(Button::DpadLeft);
+    let right = state.button(Button::DpadRight);
+    let dpad_val: u8 = match (up, down, left, right) {
+        (false, false, false, false) => 8,
+        (true, false, false, false) => 0,
+        (true, false, false, true) => 1,
+        (false, false, false, true) => 2,
+        (false, true, false, true) => 3,
+        (false, true, false, false) => 4,
+        (false, true, true, false) => 5,
+        (false, false, true, false) => 6,
+        (true, false, true, false) => 7,
+        _ => 8,
+    };
+    b5 |= dpad_val & 0x0F;
+    raw[5] = b5;
+
+    let mut b6: u8 = 0;
+    if state.button(Button::L1) { b6 |= 0x01; }
+    if state.button(Button::R1) { b6 |= 0x02; }
+    if state.button(Button::L2) { b6 |= 0x04; }
+    if state.button(Button::R2) { b6 |= 0x08; }
+    if state.button(Button::Create) { b6 |= 0x10; }
+    if state.button(Button::Options) { b6 |= 0x20; }
+    if state.button(Button::L3) { b6 |= 0x40; }
+    if state.button(Button::R3) { b6 |= 0x80; }
+    raw[6] = b6;
+
+    let mut b7: u8 = (seq & 0x3F) << 2;
+    if state.button(Button::PS) { b7 |= 0x01; }
+    if state.button(Button::Touchpad) { b7 |= 0x02; }
+    raw[7] = b7;
+
+    raw[8] = state.l2_analog;
+    raw[9] = state.r2_analog;
+
+    let p0_contact  = raw[33];
+    let p0_x_lo     = raw[34];
+    let p0_x_hi_ylo = raw[35];
+    let p0_y_hi     = raw[36];
+    let p1_contact  = raw[37];
+    let p1_x_lo     = raw[38];
+    let p1_x_hi_ylo = raw[39];
+    let p1_y_hi     = raw[40];
+
+    let gyro_accel: [u8; 12] = raw[16..28].try_into().unwrap();
+
+    raw[10..64].fill(0);
+
+    raw[13..25].copy_from_slice(&gyro_accel);
+    raw[10..12].copy_from_slice(&(seq as u16).to_le_bytes());
+    raw[12] = 0x06;
+
+    let mut active = false;
+    let mut write_point = |base: usize, contact: u8, x_lo: u8, comb: u8, y_hi: u8| {
+        if contact & 0x80 == 0 {
+            active = true;
+            let y_lo = (comb >> 4) & 0x0F;
+            let y = ((y_hi as u16) << 4) | (y_lo as u16);
+            let ys = ((y as u32) * 942 / 1080) as u16;
+            raw[base]     = contact;
+            raw[base + 1] = x_lo;
+            raw[base + 2] = (comb & 0x0F) | (((ys & 0x0F) as u8) << 4);
+            raw[base + 3] = (ys >> 4) as u8;
+        } else {
+            raw[base] = 0x80;
+        }
+    };
+
+    write_point(35, p0_contact, p0_x_lo, p0_x_hi_ylo, p0_y_hi);
+    write_point(39, p1_contact, p1_x_lo, p1_x_hi_ylo, p1_y_hi);
+
+    raw[33] = if active { 1 } else { 0 };
+    raw[34] = seq & 0x3F;
+
+    for &off in &[44, 47, 53, 56] {
+        raw[off] = 0x80;
+    }
+
+    raw[30] = 0x1B;
+}
+
+/// Convert DS4 output report (32 bytes, report ID 0x05) to
+/// DS5 output report (63 bytes, report ID 0x02) for compatible vibration.
+pub fn convert_ds4_output_to_ds5(ds4: &[u8]) -> [u8; 63] {
+    let mut ds5 = [0u8; 63];
+    ds5[0] = 0x02;
+
+    if ds4.len() < 11 {
+        return ds5;
+    }
+
+    let off = if ds4.len() >= 32 && ds4[0] == 0x05 { 1 } else { 0 };
+    if ds4.len() < off + 11 {
+        return ds5;
+    }
+
+    let flags = ds4[off];
+
+    if flags & 0x01 != 0 {
+        ds5[1] |= 0x03;
+        ds5[3] = ds4[off + 3];
+        ds5[4] = ds4[off + 4];
+    }
+
+    if flags & 0x02 != 0 {
+        ds5[2] |= 0x04;
+        ds5[45] = ds4[off + 5];
+        ds5[46] = ds4[off + 6];
+        ds5[47] = ds4[off + 7];
+    }
+
+    ds5
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

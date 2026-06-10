@@ -244,8 +244,8 @@ pub struct Proxy {
     mapping: Arc<RwLock<MappingConfig>>,
     config_path: String,
     report_cache: HashMap<u8, Vec<u8>>,
-    force_dualsense: bool,
-    force_dualsense_changed: bool,
+    output_device: String,
+    recreate_uhid: bool,
     keyboard: crate::keyboard::KeyboardDevice,
     last_keyboard: HashMap<u16, bool>,
     last_snapshot: Option<crate::report::GamepadState>,
@@ -298,7 +298,7 @@ impl Proxy {
         }
     }
 
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, force_dualsense: bool, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, output_device: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
         let fifo_fd = OwnedFd::from(fifo_file);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
@@ -313,7 +313,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, force_dualsense, force_dualsense_changed: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, output_device, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn skip_restore(&mut self) {
@@ -331,10 +331,10 @@ impl Proxy {
         }
         let mut new_mapping = MappingConfig::default();
         let mut cfg_ok = false;
-        let mut new_force_ds = self.force_dualsense;
+        let mut new_output_device = self.output_device.clone();
         match crate::config::Config::load(&self.config_path) {
             Ok(cfg) => {
-                new_force_ds = cfg.force_dualsense;
+                new_output_device = cfg.output_device.clone();
                 if let Err(e) = crate::config::validate(&cfg) {
                     error!("Config reload validation failed: {e}, reverting to passthrough");
                 } else {
@@ -365,9 +365,9 @@ impl Proxy {
         if cfg_ok {
             info!("Config reloaded from {}", self.config_path);
         }
-        if new_force_ds != self.force_dualsense {
-            info!("force_dualsense changed ({} → {}), will recreate virtual device", self.force_dualsense, new_force_ds);
-            self.force_dualsense_changed = true;
+        if new_output_device != self.output_device {
+            info!("output_device changed ({} → {}), will recreate virtual device", self.output_device, new_output_device);
+            self.recreate_uhid = true;
         }
         // rebuild turbo runtimes from the new mapping
         self.turbo_runtimes = self.mapping.read().unwrap().turbo_configs.iter()
@@ -488,7 +488,7 @@ impl Proxy {
                     break;
                 }
             }
-            if self.force_dualsense_changed {
+            if self.recreate_uhid {
                 break;
             }
         }
@@ -497,7 +497,7 @@ impl Proxy {
 
         if !RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
             ExitReason::UserShutdown
-        } else if self.force_dualsense_changed {
+        } else if self.recreate_uhid {
             ExitReason::ConfigChanged
         } else if DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
             ExitReason::DeviceGone
@@ -741,7 +741,12 @@ impl Proxy {
                         self.last_keyboard = current;
 
                         // ========== L3: Output ==========
-                        report::apply_state_to_report(&mut buf, &state, *seq);
+                        if self.output_device == "dualshock4" {
+                            report::apply_state_to_ds4_report(&mut buf, &state, *seq);
+                            trace!("ds4 raw[..32]: {:02x?}", &buf[..32]);
+                        } else {
+                            report::apply_state_to_report(&mut buf, &state, *seq);
+                        }
                         // per-frame output at trace level
                         {
                             let mut btn_names: Vec<&str> = Vec::new();
@@ -800,7 +805,13 @@ impl Proxy {
                         UhidEvent::Output { rtype, ref data } => {
                             if rtype == 1 {
                                 trace!("UHID OUTPUT: size={}", data.len());
-                                if let Err(e) = self.hidraw.write_output(data) {
+                                let result = if self.output_device == "dualshock4" {
+                                    let ds5 = crate::report::convert_ds4_output_to_ds5(data);
+                                    self.hidraw.write_output(&ds5)
+                                } else {
+                                    self.hidraw.write_output(data)
+                                };
+                                if let Err(e) = result {
                                     error!("Failed to forward output report: {e}");
                                 }
                             } else {
@@ -829,12 +840,13 @@ impl Proxy {
                         }
                         UhidEvent::SetReport { id, rnum, rtype, ref data } => {
                             trace!("UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}", data.len());
-                            // Forward feature report data to real hardware
-                            if rtype == 0 {
-                                let mut full_data = vec![rnum];
-                                full_data.extend_from_slice(data);
-                                if let Err(e) = self.hidraw.send_feature_report(&full_data) {
-                                    warn!("Failed to forward set_report rnum={rnum}: {e}");
+                            if self.output_device != "dualshock4" {
+                                if rtype == 0 {
+                                    let mut full_data = vec![rnum];
+                                    full_data.extend_from_slice(data);
+                                    if let Err(e) = self.hidraw.send_feature_report(&full_data) {
+                                        warn!("Failed to forward set_report rnum={rnum}: {e}");
+                                    }
                                 }
                             }
                             if let Err(e) = self.uhid.send_set_report_reply(id, 0) {

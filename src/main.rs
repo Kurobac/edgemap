@@ -207,8 +207,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         };
 
-        let name = format!("{} Remapper", dev_info.device_name());
-
         let mut report_cache = HashMap::new();
         for (report_id, size) in [(0x05u8, 41usize), (0x20u8, 64usize)] {
             let mut buf = vec![report_id];
@@ -221,20 +219,82 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         }
 
-        let force_dualsense = config_path.as_ref()
+        let output_device = config_path.as_ref()
             .and_then(|p| config::Config::load(p).ok())
-            .map(|c| c.force_dualsense)
-            .unwrap_or(false);
+            .map(|c| c.output_device)
+            .unwrap_or_else(|| "auto".to_string());
 
-        let (uhid_pid, uhid_desc): (u32, &[u8]) = if force_dualsense {
+        let name = if output_device == "dualshock4" {
+            "Wireless Controller".to_string()
+        } else {
+            format!("{} Remapper", dev_info.device_name())
+        };
+
+        if output_device == "dualshock4" {
+            // DS4 calibration data (report 0x02, 37 bytes)
+            // Produces 1:1 scale + zero bias so raw gyro/accel passes through unchanged.
+            let mut cal = vec![0u8; 37];
+            cal[0] = 0x02;
+            let w16 = |buf: &mut [u8], off, v: u16| buf[off..off+2].copy_from_slice(&v.to_le_bytes());
+            w16(&mut cal,  7, 1024);        // gyro_pitch_plus
+            w16(&mut cal,  9, (-1024i16) as u16); // gyro_pitch_minus
+            w16(&mut cal, 11, 1024);        // gyro_yaw_plus
+            w16(&mut cal, 13, (-1024i16) as u16); // gyro_yaw_minus
+            w16(&mut cal, 15, 1024);        // gyro_roll_plus
+            w16(&mut cal, 17, (-1024i16) as u16); // gyro_roll_minus
+            w16(&mut cal, 19, 1);           // gyro_speed_plus
+            w16(&mut cal, 21, 1);           // gyro_speed_minus
+            w16(&mut cal, 23, 8192);        // acc_x_plus
+            w16(&mut cal, 25, (-8192i16) as u16); // acc_x_minus
+            w16(&mut cal, 27, 8192);        // acc_y_plus
+            w16(&mut cal, 29, (-8192i16) as u16); // acc_y_minus
+            w16(&mut cal, 31, 8192);        // acc_z_plus
+            w16(&mut cal, 33, (-8192i16) as u16); // acc_z_minus
+            report_cache.insert(0x02, cal);
+
+            // DS4 firmware info (report 0xA3, 49 bytes)
+            // Layout matches real DS4 dump (ViGEmBus/eccelerator reference).
+            let mut fw = vec![0u8; 49];
+            fw[0] = 0xA3;
+            fw[1..12].copy_from_slice(b"Aug  3 2013");
+            fw[17..25].copy_from_slice(b"07:01:12");
+            w16(&mut fw, 34, 0x0001);   // hw_version
+            w16(&mut fw, 36, 0x0331);   // sub-version
+            w16(&mut fw, 41, 0x0049);   // fw_version (real DS4 value)
+            fw[43] = 0x05;
+            w16(&mut fw, 46, 0x0380);   // build number
+            report_cache.insert(0xA3, fw);
+
+            {
+                let mut buf = vec![0u8; 16];
+                buf[0] = 0x12;
+                // MAC addresses in DS4 reversed byte order (matching ViGEmBus convention).
+                // Bytes 7-9: USB connection status (0x08 0x25 0x00 from real DS4 dump).
+                buf[1..7].copy_from_slice(&[0x01, 0x00, 0x00, 0x37, 0x13, 0xC0]); // target MAC (reversed C0:13:37:00:00:01)
+                buf[7] = 0x08;
+                buf[8] = 0x25;
+                buf[9] = 0x00;
+                // bytes 10-15: host MAC — USB connection: all zero (matching reWASD)
+                report_cache.insert(0x12, buf);
+            }
+        }
+
+        let (uhid_pid, uhid_desc): (u32, &[u8]) = if output_device == "dualshock4" {
+            (device::DS4_PID as u32, &descriptor::DS4_USB_DESCRIPTOR)
+        } else if output_device == "dualsense" {
             (device::DS5_PID as u32, &descriptor::DS_USB_DESCRIPTOR)
         } else {
             (dev_info.pid as u32, hidraw.report_descriptor())
         };
+        let uniq = if output_device == "dualshock4" {
+            "c0:13:37:00:00:01"
+        } else {
+            ""
+        };
         if let Err(e) = uhid.create(
             &name,
             "",
-            "",
+            uniq,
             0x0003, // BUS_USB
             dev_info.vid as u32,
             uhid_pid,
@@ -246,7 +306,16 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             continue;
         }
 
-        info!("Created virtual HID device: {name}");
+        let device_label = if output_device == "dualshock4" {
+            "DualShock 4"
+        } else if output_device == "dualsense" {
+            "DualSense (forced)"
+        } else if uhid_pid == device::DS5_EDGE_PID as u32 {
+            "DualSense Edge (auto)"
+        } else {
+            "DualSense (auto)"
+        };
+        info!("Created virtual HID device: {name} (output: {device_label})");
 
         if let Err(e) = std::fs::write("/run/dseuhid/connected", b"connected") {
             log::warn!("failed to write connected file: {e}");
@@ -309,12 +378,12 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         };
 
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, force_dualsense, keyboard, dup_fifo_fd(&fifo_fd));
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, output_device, keyboard, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
             proxy::ExitReason::ConfigChanged => {
                 config_path = Some(proxy.config_path().to_string());
                 proxy.skip_restore();
-                info!("force_dualsense changed in config, recreating virtual device...");
+                info!("output_device changed in config, recreating virtual device...");
             }
             proxy::ExitReason::DeviceGone => {
                 config_path = None;

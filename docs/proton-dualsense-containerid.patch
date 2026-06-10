@@ -1,0 +1,94 @@
+diff --git a/dlls/winealsa.drv/alsa.c b/dlls/winealsa.drv/alsa.c
+index aea4ddf..38e5b28 100644
+--- a/dlls/winealsa.drv/alsa.c
++++ b/dlls/winealsa.drv/alsa.c
+@@ -2301,6 +2301,9 @@ static NTSTATUS alsa_get_prop_value(void *args)
+     static const PROPERTYKEY devicepath_key = { /* undocumented? - {b3f8fa53-0004-438e-9003-51a46e139bfc},2 */
+         {0xb3f8fa53, 0x0004, 0x438e, {0x90, 0x03, 0x51, 0xa4, 0x6e, 0x13, 0x9b, 0xfc}}, 2
+     };
++    static const PROPERTYKEY containerid_key = { /* DEVPKEY_Device_ContainerId */
++        {0x8c7ed206, 0x3f8a, 0x4827, {0xb3, 0xab, 0xae, 0x9e, 0x1f, 0xae, 0xfc, 0x6c}}, 2
++    };
+ 
+     if(IsEqualPropertyKey(*prop, devicepath_key))
+     {
+@@ -2407,6 +2410,45 @@ static NTSTATUS alsa_get_prop_value(void *args)
+ 
+         params->result = S_OK;
+         return STATUS_SUCCESS;
++    } else if (IsEqualPropertyKey(*prop, containerid_key)) {
++        USHORT vendor_id = 0, product_id = 0;
++        GUID container_id;
++        int card, device;
++        FILE *fuevent;
++
++        memset(&container_id, 0, sizeof(container_id));
++
++        if (sscanf(name, "plughw:%u,%u", &card, &device)) {
++            char uevent[MAX_PATH];
++            sprintf(uevent, "/sys/class/sound/card%u/device/uevent", card);
++            fuevent = fopen(uevent, "r");
++            if (fuevent) {
++                char line[256];
++                while (fgets(line, sizeof(line), fuevent)) {
++                    char *val;
++                    if ((val = strchr(line, '='))) {
++                        *val++ = 0;
++                        if (!strcmp(line, "PRODUCT"))
++                            sscanf(val, "%hx/%hx/", &vendor_id, &product_id);
++                    }
++                }
++                fclose(fuevent);
++            }
++        }
++
++        if (vendor_id == 0x054C && (product_id == 0x0CE6 || product_id == 0x0DF2))
++            container_id.Data1 = MAKELONG(vendor_id, product_id);
++
++        if (*params->buffer_size < sizeof(GUID)) {
++            *params->buffer_size = sizeof(GUID);
++            params->result = E_NOT_SUFFICIENT_BUFFER;
++            return STATUS_SUCCESS;
++        }
++        out->vt = VT_CLSID;
++        out->puuid = params->buffer;
++        *out->puuid = container_id;
++        params->result = S_OK;
++        return STATUS_SUCCESS;
+     }
+ 
+     TRACE("Unimplemented property %s,%u\n", wine_dbgstr_guid(&prop->fmtid), (unsigned)prop->pid);
+diff --git a/dlls/winebus.sys/main.c b/dlls/winebus.sys/main.c
+index 4bc9671..4678761 100644
+--- a/dlls/winebus.sys/main.c
++++ b/dlls/winebus.sys/main.c
+@@ -302,6 +302,12 @@ static WCHAR *get_container_id(DEVICE_OBJECT *device)
+ 
+     /* Check if we have a bus provided container ID override. */
+     if (!IsEqualGUID(&ext->desc.bus_container_id, &GUID_NULL)) guid = &ext->desc.bus_container_id;
++    else if (is_dualsense_gamepad(ext->desc.vid, ext->desc.pid))
++    {
++        memset(&ext->container_id, 0, sizeof(ext->container_id));
++        ext->container_id.Data1 = MAKELONG(ext->desc.vid, ext->desc.pid);
++        guid = &ext->container_id;
++    }
+     if ((dst = ExAllocatePool(PagedPool, GUID_STRING_LENGTH * sizeof(WCHAR))))
+     {
+         swprintf(dst, GUID_STRING_LENGTH, L"{%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+diff --git a/dlls/winepulse.drv/pulse.c b/dlls/winepulse.drv/pulse.c
+index c051a9a..146f09f 100644
+--- a/dlls/winepulse.drv/pulse.c
++++ b/dlls/winepulse.drv/pulse.c
+@@ -632,6 +632,12 @@ static GUID get_container_id(const char *sysfs_path)
+ 
+     create_usb_dev_container_id(init_time, vid, pid, bus_num, dev_num, &tmp_guid);
+ 
++    if (vid == 0x054C && (pid == 0x0CE6 || pid == 0x0DF2))
++    {
++        memset(&tmp_guid, 0, sizeof(tmp_guid));
++        tmp_guid.Data1 = MAKELONG(vid, pid);
++    }
++
+ exit:
+     if (udev)
+         udev_unref(udev);

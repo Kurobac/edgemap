@@ -41,25 +41,28 @@ The game cannot associate the two devices → no HD haptics data is sent.
 ## Fix
 
 Special-case DualSense (054C:0CE6) and DualSense Edge (054C:0DF2):
-both the HID side and audio side compute ContainerId from VID+PID only (Data2/3/4 all zero).
+both the HID side and audio side compute a fixed ContainerId using Sony VID only,
+with a marker to identify this patch in debug logs.
 
 ```
-// All three sides return: {0DF2054C-0000-0000-0000-000000000000}
-// or {0CE6054C-0000-0000-0000-000000000000} (standard DualSense)
+// All three sides return: {0000054C-ED6E-0001-0000-000000000000}
+// VID=0x054C, Data2=0xED6E ("edgemap"), Data3=0x0001, Data4 all zero.
+// Using VID only (not VID+PID) ensures force_dualsense works — the virtual
+// device may report a different PID but the real audio interface VID is unchanged.
 ```
 
 ### Files Modified (3)
 
 | File | Function / Location | Change |
 |------|--------------------|--------|
-| `wine/dlls/winebus.sys/main.c` | `get_container_id()` | When `bus_container_id` is NULL and device is Sony pad → `memset` + set only `Data1` |
+| `wine/dlls/winebus.sys/main.c` | `get_container_id()` | When `bus_container_id` is NULL and device is Sony pad → hardcoded GUID |
 | `wine/dlls/winepulse.drv/pulse.c` | `get_container_id()` | After USB topology computation, override Sony pads with same |
 | `wine/dlls/winealsa.drv/alsa.c` | `alsa_get_prop_value()` | Add `DEVPKEY_Device_ContainerId` property handler |
 
 ### Side Effects
 
 When a physical DualSense is connected directly (no dseuhid), its ContainerId changes from
-USB-topology-based to VID+PID-only. ContainerId's sole purpose is cross-device correlation —
+USB-topology-based to a fixed value. ContainerId's sole purpose is cross-device correlation —
 as long as HID and Audio remain consistent, there is no functional impact.
 Multiple DualSense pads would share the same ContainerId (dseuhid only virtualizes one).
 
@@ -106,10 +109,10 @@ cp build64/dlls/winebus.sys/winebus.so     $DEST/x86_64-unix/winebus.so
 WINEDEBUG=+hid PROTON_LOG=1 %command%
 
 # Check ContainerId
-grep "0DF2054C" ~/steam-1091500.log
+grep "0000054C" ~/steam-1091500.log
 
-# Expected: all Returning container ID entries are all-zero after Data1
-# {0DF2054C-0000-0000-0000-000000000000}
+# Expected:
+# {0000054C-ED6E-0001-0000-000000000000}
 ```
 
 ## Related Files

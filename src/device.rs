@@ -14,7 +14,7 @@ const HIDRAW_PREFIX: &str = "hidraw";
 pub const SONY_VID: u16 = 0x054C;
 pub const DS5_PID: u16 = 0x0CE6;
 pub const DS5_EDGE_PID: u16 = 0x0DF2;
-pub const DS4_PID: u16 = 0x05C4;
+pub const DS4_PID: u16 = 0x09CC;
 
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {

@@ -8,10 +8,23 @@ This project is entirely vibecoded. The author has no programming knowledge and 
 
 This project was created solely for the author's own needs. Remap without losing any DualSense features.
 
-SDL-based remappers cannot preserve DualSense-specific features such as adaptive triggers and HD haptics. Steam Input is slightly different — games supporting [Native mode](https://partner.steamgames.com/doc/features/steam_controller/concepts) retain DualSense features while using Steam Input, but for Legacy Mode only games, Steam maps the controller to a standard XInput device.
+SDL-based remappers cannot preserve DualSense-specific features such as adaptive triggers and HD haptics. 
+Steam Input is slightly different — games supporting [Native mode](https://partner.steamgames.com/doc/features/steam_controller/concepts) retain DualSense features while using Steam Input, but for Legacy Mode only games, Steam maps the controller to a standard XInput device.
 
 This project is provided ASIS. The author has tested it to the best of their ability,
 but makes no warranty regarding functionality or stability.
+
+## Note on HD haptics
+
+dseuhid does not touch the USB audio channel that carries DualSense HD haptics
+data. Some games work fine out of the box (e.g. Genshin Impact). However,
+certain games (e.g. Cyberpunk 2077) use Windows ContainerId or device-tree
+traversal to locate the audio endpoint associated with the controller — the
+UHID virtual device cannot satisfy this. These games require a patched Proton
+build to restore HD haptics. If HD haptics don't work with a physical
+DualSense on vanilla Proton, dseuhid will not help either.
+
+See [docs/HD-HAPTICS-FIX.md](docs/HD-HAPTICS-FIX.md) for the technical details.
 
 ## Install
 

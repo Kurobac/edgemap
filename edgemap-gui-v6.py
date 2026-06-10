@@ -971,19 +971,18 @@ class EdgemapEditor(QMainWindow):
             self.statusBar().insertPermanentWidget(0, device_btn)
 
         dev = self.config.get("output_device", "auto")
-        label = {"auto": "Auto", "dualsense": "DualSense", "dualshock4": "DualShock 4"}.get(dev, "Auto")
+        label = {"auto": "Auto", "dualsense": "DualSense"}.get(dev, "Auto")
         self.device_btn.setText(label)
 
         dev_menu = self.device_btn.menu() or QMenu(self.device_btn)
         dev_menu.clear()
         for text, val in [("Auto (match physical)", "auto"),
-                           ("DualSense", "dualsense"),
-                           ("DualShock 4", "dualshock4")]:
+                           ("DualSense", "dualsense")]:
             dev_menu.addAction(text, lambda _checked=False, v=val: self._set_output_device(v))
         self.device_btn.setMenu(dev_menu)
     def _set_output_device(self, val):
         self.config["output_device"] = val
-        label = {"auto": "Auto", "dualsense": "DualSense", "dualshock4": "DualShock 4"}.get(val, "Auto")
+        label = {"auto": "Auto", "dualsense": "DualSense"}.get(val, "Auto")
         self.device_btn.setText(label)
     # ── table builder ──
 

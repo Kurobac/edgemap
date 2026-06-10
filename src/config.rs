@@ -1,3 +1,4 @@
+use log::warn;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -353,6 +354,9 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             cfg.output_device
         ));
     }
+    if cfg.output_device == "dualshock4" {
+        warn!("output_device=\"dualshock4\" is experimental: native DS4 games may not work under Proton");
+    }
 
     let mut has_split = false;
     let mut has_touch_left = false;
@@ -595,7 +599,6 @@ pub fn default_content() -> &'static str {
 #
 # ── Global Options ──────────────────────────────
 #   output_device = "dualsense"    # force regular DualSense (was force_dualsense)
-#   output_device = "dualshock4"   # emulate as DualShock 4
 
 version = 2
 

@@ -20,8 +20,8 @@ dseuhid does not touch the USB audio channel that carries DualSense HD haptics
 data. Some games work fine out of the box (e.g. Genshin Impact). However,
 certain games (e.g. Cyberpunk 2077) use Windows ContainerId or device-tree
 traversal to locate the audio endpoint associated with the controller — the
-UHID virtual device cannot satisfy this. These games require a patched Proton
-build to restore HD haptics. If HD haptics don't work with a physical
+UHID virtual device cannot satisfy this. These games require a [patched Protonbuild](https://github.com/Kurobac/proton-eg-patch) 
+to restore HD haptics. If HD haptics don't work with a physical
 DualSense on vanilla Proton, dseuhid will not help either.
 
 See [docs/HD-HAPTICS-FIX.md](docs/HD-HAPTICS-FIX.md) for the technical details.

@@ -424,3 +424,9 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 **Fix:** Checked all `write()` return values; log errors and return `Err` from UHID reply functions. Keyboard event writes log on failure and bail out.
 
+### #84 — Bluetooth DualSense selected by `find_dualsense()`, causing parse input report spam
+
+**Root cause:** `HIDIOCGRAWINFO` ioctl returns `bustype` (3=USB, 5=Bluetooth), but `find_dualsense()` only checked VID/PID. A Bluetooth DualSense shares the same VID/PID, so it was selected just like a USB one. Bluetooth HID reports use a different format (report ID 0x31, 78 bytes vs USB's 0x01, 64 bytes), causing `parse_input_report()` to fail on every frame (1000 Hz = 1000 warn messages per second).
+
+**Fix:** Added `bustype != BUS_USB` check in `find_dualsense()` to skip non-USB DualSense devices.
+

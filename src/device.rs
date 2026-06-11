@@ -16,6 +16,8 @@ pub const DS5_PID: u16 = 0x0CE6;
 pub const DS5_EDGE_PID: u16 = 0x0DF2;
 pub const DS4_PID: u16 = 0x09CC;
 
+const BUS_USB: u32 = 0x0003;
+
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     pub path: PathBuf,
@@ -437,6 +439,11 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
             continue;
         }
         if devinfo.product != DS5_EDGE_PID && devinfo.product != DS5_PID {
+            continue;
+        }
+
+        if devinfo.bustype != BUS_USB {
+            debug!("skipping non-USB DualSense {} (bustype={})", name_str, devinfo.bustype);
             continue;
         }
 

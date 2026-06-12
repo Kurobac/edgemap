@@ -320,6 +320,9 @@ impl UhidDevice {
 
 impl Drop for UhidDevice {
     fn drop(&mut self) {
+        if let Err(e) = std::fs::write("/run/dseuhid/connected", b"disconnected") {
+            log::warn!("failed to write connected file: {e}");
+        }
         let _ = self.destroy();
     }
 }

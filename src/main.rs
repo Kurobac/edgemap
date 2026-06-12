@@ -322,8 +322,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         }
 
         if let Err(e) = hidraw.restrict_evdev_nodes() {
-            info!("Failed to restrict physical evdev nodes: {e}");
-            info!("You may see two controllers in games — select the virtual one.");
+            warn!("Failed to restrict physical evdev nodes: {e}");
         }
 
         info!("Proxy starting");
@@ -389,9 +388,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 config_path = None;
                 proxy.skip_restore();
                 info!("Device disconnected, waiting for reconnect...");
-                if let Err(e) = std::fs::write("/run/dseuhid/connected", b"disconnected") {
-                    log::warn!("failed to write connected file: {e}");
-                }
                 std::thread::sleep(Duration::from_secs(2));
             }
             proxy::ExitReason::UserShutdown => {

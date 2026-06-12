@@ -16,7 +16,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -562,7 +562,6 @@ fn cmd_daemon(args: &[String]) -> ! {
 
     let mut current_config = String::new();
     let mut last_pid: Option<i32> = None;
-    let mut last_uhid_mtime: Option<SystemTime> = None;
     let mut last_uhid_state: Option<String> = None;
 
     while DAEMON_RUNNING.load(Ordering::SeqCst) {
@@ -603,7 +602,7 @@ fn cmd_daemon(args: &[String]) -> ! {
             }
         }
 
-        // detect device connection state via /run/dseuhid/connected
+        // detect UHID virtual device state via /run/dseuhid/connected
         let uhid_state = std::fs::read_to_string("/run/dseuhid/connected")
             .unwrap_or_default()
             .trim()
@@ -612,24 +611,21 @@ fn cmd_daemon(args: &[String]) -> ! {
         // disconnected: skip injection entirely
         if uhid_state != "connected" {
             if last_uhid_state.as_deref() == Some("connected") {
-                log::info!("Gamepad disconnected");
-                send_notification("edgemap", "Gamepad disconnected");
+                log::info!("UHID device stopped");
+                send_notification("edgemap", "UHID device stopped");
             }
             last_uhid_state = Some(uhid_state);
             std::thread::sleep(Duration::from_secs(3));
             continue;
         }
 
-        // connected: check mtime for hotplug / restart
-        if let Ok(meta) = std::fs::metadata("/run/dseuhid/connected") {
-            if let Ok(mtime) = meta.modified() {
-                if last_uhid_mtime != Some(mtime) {
-                    log::info!("Gamepad connected");
-                    send_notification("edgemap", "Gamepad connected");
-                    current_config.clear();
-                    last_uhid_mtime = Some(mtime);
-                }
-            }
+        // connected: detect new UHID device via content transition
+        // (only a "non-connected" → "connected" transition means the UHID
+        // device was recreated and needs config re-injection)
+        if last_uhid_state.as_deref() != Some("connected") {
+            log::info!("UHID device ready");
+            send_notification("edgemap", "UHID device ready");
+            current_config.clear();
         }
         last_uhid_state = Some(uhid_state);
 

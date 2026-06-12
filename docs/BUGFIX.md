@@ -430,3 +430,9 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 **Fix:** Added `bustype != BUS_USB` check in `find_dualsense()` to skip non-USB DualSense devices.
 
+### #85 — edgemap re-applies config on every connected mtime change
+
+**Root cause:** edgemap daemon cleared `current_config` on any mtime change of `/run/dseuhid/connected`. UHID recreate (e.g. `output_device` change) rewrites `"connected"` with a new mtime, triggering unnecessary re-injection of the same config.
+
+**Fix:** Replaced mtime comparison with content transition detection: only clear `current_config` when `last_uhid_state` transitions from non-`"connected"` to `"connected"` (a genuine new UHID device instance). Also moved the `"disconnected"` write from `main.rs` DeviceGone handler into `UhidDevice::drop()`, so any UHID teardown (DeviceGone, ConfigChanged, kernel failure) correctly writes `"disconnected"`. Updated notification text from "Gamepad connected/disconnected" to "UHID device ready/stopped" to reflect the file's actual semantics.
+

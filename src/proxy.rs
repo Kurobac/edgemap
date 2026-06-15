@@ -334,7 +334,6 @@ impl Proxy {
         let mut new_output_device = self.output_device.clone();
         match crate::config::Config::load(&self.config_path) {
             Ok(cfg) => {
-                new_output_device = cfg.output_device.clone();
                 if let Err(e) = crate::config::validate(&cfg) {
                     error!("Config reload validation failed: {e}, reverting to passthrough");
                 } else {
@@ -347,6 +346,7 @@ impl Proxy {
                                 }
                             }
                             new_mapping = m;
+                            new_output_device = cfg.output_device.clone();
                             cfg_ok = true;
                         }
                         Err(e) => {
@@ -726,19 +726,25 @@ impl Proxy {
                         for (code, pressed) in &keyboard_events {
                             current.insert(*code, *pressed);
                         }
+                        let mut failed_releases = Vec::new();
                         for &code in self.last_keyboard.keys() {
                             if !current.contains_key(&code) {
-                                self.keyboard.release(code);
+                                if !self.keyboard.release(code) {
+                                    failed_releases.push(code);
+                                }
                             }
                         }
                         for (&code, &pressed) in &current {
                             if pressed {
-                                self.keyboard.press(code);
+                                let _ = self.keyboard.press(code);
                             } else {
-                                self.keyboard.release(code);
+                                let _ = self.keyboard.release(code);
                             }
                         }
                         self.last_keyboard = current;
+                        for code in failed_releases {
+                            self.last_keyboard.insert(code, true);
+                        }
 
                         // ========== L3: Output ==========
                         if self.output_device == "dualshock4" {

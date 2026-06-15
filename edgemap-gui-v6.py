@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """edgemap config editor — v6 (two-column Excel style)"""
 
-import os, sys, tomllib, signal, re, subprocess, copy
+import os, sys, tomllib, signal, re, subprocess, copy, tempfile
 from tomllib import TOMLDecodeError
 
 from PyQt6.QtCore import Qt, QTimer
@@ -1371,24 +1371,31 @@ class EdgemapEditor(QMainWindow):
                 lines.append("")
         return "\n".join(lines) + "\n"
 
-    def _validate_and_write(self, content, target_path):
-        tmp = "/tmp/edgemap_validate.toml"
+    def _validate_content(self, content):
         try:
-            with open(tmp, "w") as f:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".toml") as f:
                 f.write(content)
-        except OSError as e:
-            QMessageBox.warning(self, "Error", f"Cannot write {tmp}: {e}")
-            return False
-        try:
-            result = subprocess.run(["edgemap", "v", tmp], capture_output=True, text=True, timeout=10)
+                f.flush()
+                result = subprocess.run(
+                    ["edgemap", "v", f.name],
+                    capture_output=True, text=True, timeout=10
+                )
         except FileNotFoundError:
             QMessageBox.warning(self, "Error", "edgemap binary not found in PATH.")
+            return False
+        except OSError as e:
+            QMessageBox.warning(self, "Error", f"Cannot validate config: {e}")
             return False
         except subprocess.TimeoutExpired:
             QMessageBox.warning(self, "Error", "Validation timed out.")
             return False
         if result.returncode != 0:
             QMessageBox.warning(self, "Error", f"Config validation failed:\n{result.stderr}")
+            return False
+        return True
+
+    def _validate_and_write(self, content, target_path):
+        if not self._validate_content(content):
             return False
         try:
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
@@ -1412,23 +1419,7 @@ class EdgemapEditor(QMainWindow):
 
     def _save_as_config(self):
         content = self._build_toml()
-        tmp = "/tmp/edgemap_validate.toml"
-        try:
-            with open(tmp, "w") as f:
-                f.write(content)
-        except OSError as e:
-            QMessageBox.warning(self, "Error", f"Cannot write {tmp}: {e}")
-            return
-        try:
-            result = subprocess.run(["edgemap", "v", tmp], capture_output=True, text=True, timeout=10)
-        except FileNotFoundError:
-            QMessageBox.warning(self, "Error", "edgemap binary not found in PATH.")
-            return
-        except subprocess.TimeoutExpired:
-            QMessageBox.warning(self, "Error", "Validation timed out.")
-            return
-        if result.returncode != 0:
-            QMessageBox.warning(self, "Error", f"Config validation failed:\n{result.stderr}")
+        if not self._validate_content(content):
             return
 
         path, _ = QFileDialog.getSaveFileName(

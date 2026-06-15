@@ -228,41 +228,41 @@ impl KeyboardDevice {
         Self { fd: None, held_keys: HashSet::new() }
     }
 
-    pub fn press(&mut self, code: u16) {
-        if !self.held_keys.insert(code) { return; }
-        self.send_event(code, 1);
+    pub fn press(&mut self, code: u16) -> bool {
+        if self.held_keys.contains(&code) { return true; }
+        if self.send_event(code, 1).is_ok() {
+            self.held_keys.insert(code);
+            true
+        } else {
+            false
+        }
     }
 
-    pub fn release(&mut self, code: u16) {
-        if !self.held_keys.remove(&code) { return; }
-        self.send_event(code, 0);
+    pub fn release(&mut self, code: u16) -> bool {
+        if !self.held_keys.contains(&code) { return true; }
+        if self.send_event(code, 0).is_ok() {
+            self.held_keys.remove(&code);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn flush_held(&mut self) {
-        let held: Vec<u16> = self.held_keys.drain().collect();
-        for code in held { self.send_event(code, 0); }
+        let held: Vec<u16> = self.held_keys.iter().copied().collect();
+        for code in held { let _ = self.release(code); }
     }
 
-    fn send_event(&self, code: u16, value: i32) {
+    fn send_event(&self, code: u16, value: i32) -> io::Result<()> {
         if let Some(ref fd) = self.fd {
             let ev = InputEvent { time_sec: 0, time_usec: 0, ev_type: 0x01, code, value };
-            unsafe {
-                let ptr = &ev as *const InputEvent as *const u8;
-                let ret = libc::write(fd.as_raw_fd(), ptr as *const libc::c_void, std::mem::size_of::<InputEvent>());
-                if ret < 0 {
-                    log::error!("uinput event write failed: {}", io::Error::last_os_error());
-                    return;
-                }
-            }
+            write_input_event(fd.as_raw_fd(), &ev)
+                .inspect_err(|e| log::error!("uinput event write failed: {e}"))?;
             let syn = InputEvent { time_sec: 0, time_usec: 0, ev_type: 0x00, code: 0, value: 0 };
-            unsafe {
-                let ptr = &syn as *const InputEvent as *const u8;
-                let ret = libc::write(fd.as_raw_fd(), ptr as *const libc::c_void, std::mem::size_of::<InputEvent>());
-                if ret < 0 {
-                    log::error!("uinput syn write failed: {}", io::Error::last_os_error());
-                }
-            }
+            write_input_event(fd.as_raw_fd(), &syn)
+                .inspect_err(|e| log::error!("uinput syn write failed: {e}"))?;
         }
+        Ok(())
     }
 
     unsafe fn create_device(fd: libc::c_int) -> io::Result<()> {
@@ -303,6 +303,20 @@ impl KeyboardDevice {
     }
 }
 
+fn write_input_event(fd: libc::c_int, event: &InputEvent) -> io::Result<()> {
+    let size = std::mem::size_of::<InputEvent>();
+    let ret = unsafe {
+        libc::write(fd, event as *const InputEvent as *const libc::c_void, size)
+    };
+    if ret < 0 {
+        Err(io::Error::last_os_error())
+    } else if ret as usize != size {
+        Err(io::Error::new(io::ErrorKind::WriteZero, "short uinput event write"))
+    } else {
+        Ok(())
+    }
+}
+
 fn set_bit(fd: libc::c_int, cmd: u32, bit: u16) -> io::Result<()> {
     let cmd_nr = match cmd {
         UI_SET_EVBIT => 0x64,
@@ -331,3 +345,31 @@ const ALL_KEYCODES: &[u16] = &[
     KEY_SEMICOLON, KEY_APOSTROPHE, KEY_COMMA, KEY_DOT, KEY_SLASH, KEY_GRAVE,
     KEY_VOLUMEUP, KEY_VOLUMEDOWN, KEY_MUTE, KEY_PLAYPAUSE, KEY_STOPCD, KEY_PREVIOUSSONG, KEY_NEXTSONG,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn press_tracks_key_only_after_successful_write() {
+        let file = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+        let mut keyboard = KeyboardDevice { fd: Some(OwnedFd::from(file)), held_keys: HashSet::new() };
+
+        assert!(keyboard.press(KEY_A));
+
+        assert!(keyboard.held_keys.contains(&KEY_A));
+    }
+
+    #[test]
+    fn failed_press_is_retried_and_failed_release_stays_held() {
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let mut keyboard = KeyboardDevice { fd: Some(OwnedFd::from(file)), held_keys: HashSet::new() };
+
+        assert!(!keyboard.press(KEY_A));
+        assert!(!keyboard.held_keys.contains(&KEY_A));
+
+        keyboard.held_keys.insert(KEY_A);
+        assert!(!keyboard.release(KEY_A));
+        assert!(keyboard.held_keys.contains(&KEY_A));
+    }
+}

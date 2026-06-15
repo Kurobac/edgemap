@@ -47,6 +47,9 @@ sudo systemctl enable --now dseuhid
 systemctl --user daemon-reload
 systemctl --user enable --now edgemap
 ```
+>**Note:** install.sh assumes a writable /usr.
+>If you are using an immutable distribution,
+>please install manually.
 
 ### Build from source
 

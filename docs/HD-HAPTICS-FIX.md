@@ -47,7 +47,7 @@ with a marker to identify this patch in debug logs.
 ```
 // All three sides return: {0000054C-ED6E-0001-0000-000000000000}
 // VID=0x054C, Data2=0xED6E ("edgemap"), Data3=0x0001, Data4 all zero.
-// Using VID only (not VID+PID) ensures force_dualsense works — the virtual
+// Using VID only (not VID+PID) ensures output_device="dualsense" works — the virtual
 // device may report a different PID but the real audio interface VID is unchanged.
 ```
 

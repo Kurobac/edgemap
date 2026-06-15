@@ -1,8 +1,8 @@
-# edgemap — Project Status (2026-06-08)
+# edgemap — Project Status (2026-06-15)
 
 ## Overview
 
-UHID proxy for DualSense and DualSense Edge wireless controllers (PID 0x0CE6 / 0x0DF2, USB only). Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Reads physical DualSense input via `/dev/hidraw`, applies button remapping frame-by-frame, and forwards all other HID data (gyro, touchpad, LED, rumble, adaptive trigger FFB, HD haptics via audio) transparently through a virtual HID device via `/dev/uhid`.
+UHID proxy for USB DualSense and DualSense Edge controllers (PID 0x0CE6 / 0x0DF2). Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Reads physical DualSense input via `/dev/hidraw`, applies button remapping frame-by-frame, and forwards all other HID data (gyro, touchpad, LED, rumble, adaptive trigger FFB, HD haptics via audio) transparently through a virtual HID device via `/dev/uhid`.
 
 Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/uhid` and `/dev/hidraw` access (daemon only). Kernel compatibility: tested 7.0, should work 6.7+, may work 5.12+.
 
@@ -39,7 +39,8 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.7.3 | `143f1c5` | **Bugfixes**: dup_fifo_fd() missing exit on dup failure (#66); duplicate return{} in load_config (#67); /run/dseuhid/connected cleanup on shutdown + waiting-for-device log (#68); turbo toggle vs physical button press override (#69) |
 | v0.7.4 | `e6b5209` | **Bugfixes**: re-restrict hidraw after suspend/resume udev reset (#70, #71); non-root daemon spam prevention + cooldown; FIFO command confirmation output; zsh completions; notify-send app name grouping; GUI taskbar icon fix; turbo source as combo key comment |
 | v0.8.0 | `f56968c` | **Keyboard target**: uinput keyboard device for `key:xxx` targets; remap/combo/macro step → keyboard; GUI KeyboardPicker with 106 keycodes; split touchpad→keyboard; turbo+keyboard pipeline fix; six bugfixes (#72-#76); 143 tests (+8) |
-| v0.9.0 | current | **Code review cleanup**: deny_unknown_fields on all config sub-structs; analog write deferred to Phase 2; UHID/uinput write error checking; SIGHUP reload removed; `force_dualsense` as config option with UHID recreate; 149 tests (+6) |
+| v0.9.0 | `53323f8` | **Code review cleanup**: strict config fields; analog write deferred to Phase 2; SIGHUP reload removed; UHID/uinput write error checking; 149 tests (+6) |
+| v1.0.0 | current | **Stable release**: `output_device` enum, DS4 investigation code retained but hidden from GUI, USB-only detection, UHID state tracking, hardened reload/install/keyboard failure paths; 153 tests |
 
 ## Implemented Features
 
@@ -95,15 +96,14 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 ### Hot Reload
 - FIFO commands (`edgemap reload`, `edgemap switch-config`) trigger config re-read
 - `Arc<RwLock<MappingConfig>>` — read lock per frame, write lock on reload
-- Failed reload reverts to passthrough (`MappingConfig::default`)
+- Failed reload reverts to passthrough (`MappingConfig::default`) without changing `output_device`
 - Debug snapshots cleared on reload
 - Turbo/combo/macro runtimes rebuilt on reload
 
 ### Turbo System
-- **Turbo (hold-to-repeat)**: hold source → one-shot target → (delay_ms) → toggle at interval_ms
-- State machine in `proxy.rs`, reads from snapshot, runs after mapping rules
-- Per-frame target maintain (not just on toggle events)
-- Source suppression: digital + analog cleared while turbo active
+- **Turbo (hold-to-repeat)**: hold source → optional delay → toggle source at interval_ms for L2 processing
+- State machine in `proxy.rs`, reads the physical snapshot and runs in L1
+- Source suppression: physical digital + analog state is cleared before the toggled source is generated
 - Config: `turbo = true`, `turbo_interval_ms` (default 50ms), `turbo_delay_ms` (default 0ms)
 - Self-turbo: `[cross] turbo=true` (no remap field) → target = cross itself
 - All standard/Edge buttons supported as turbo source
@@ -129,14 +129,16 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 ### Pipeline Architecture (v0.0.9+)
 Three-layer per-frame processing model:
 ```
-Layer 1 (physical filter): parse → touchpad → TURBO → BLOCK → freeze(L1)
-Layer 2 (virtual generate): REMAP (reads L1, writes state) [+ combo/macro slots]
-Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
+Layer 1 (physical filter): parse → touchpad → TURBO → combo detection → BLOCK → freeze(L1)
+Layer 2 (virtual generate): macro detection → REMAP → combo injection → macro injection → keyboard flush
+Layer 3 (output): apply_state_to_report → UHID_INPUT2
 ```
 - **Turbo** runs in L1 before freeze: reads physical snapshot, writes to state
+- **Combo detection** runs in L1 before block and suppresses modifier + key
 - **Block** (`remap="block"`) now in L1: clears digital + analog (L2/R2)
 - **Remap** (`MappingConfig::apply`) reads frozen L1, writes virtual output
-- Downstream layers never affect upstream; L2 components are parallel and isolated
+- Combo injection runs after remap so source clearing cannot erase combo output
+- Keyboard flush combines remap, combo, and macro keyboard events
 
 ### Combo System (v0.0.10)
 - **Modifier key combinations**: hold DSE button + press standard key → mapped output
@@ -175,20 +177,22 @@ Layer 3 (output): L1 passthrough + L2 outputs → apply_state_to_report → UHID
 ### Device Detection
 - Scan `/dev/hidraw*`, ioctl HIDIOCGRAWINFO for VID/PID
 - Physical-only: reject UHID virtual devices (check `/sys/class/hidraw/N/device/uevent`)
+- USB-only: reject Bluetooth DualSense devices before opening them
 - Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported
 - HID report descriptor read from physical device via HIDIOCGRDESC, `DS_EDGE_USB_DESCRIPTOR` fallback
-- `force_dualsense = true` config option: override virtual device to regular DS (PID 0x0CE6 + `DS_USB_DESCRIPTOR`) — reload triggers UHID recreate
+- `output_device = "dualsense"` overrides the virtual device to regular DS (PID 0x0CE6 + `DS_USB_DESCRIPTOR`); changing it on reload recreates UHID
 - State validation: read first input report on open()
 - Multi-device: warn if more than one DualSense detected
 - EIO cooldown: 2-second sleep after disconnect
 
-### Unit Tests (149 total: 75 dseuhid + 74 edgemap shared-module imports, all passing)
+### Unit Tests (153 total: 77 dseuhid + 76 edgemap shared-module imports, all passing)
 | Module | Tests | Coverage |
 |--------|-------|----------|
-| `mapping.rs` | 13 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, keyboard target |
-| `report.rs` | 11 | byte position for all button groups (face/shoulder/system/Edge), all-button roundtrip, byte11 preservation, stick/trigger values, seq |
-| `config.rs` | 46 | valid sources/targets (incl. key:xxx), trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro, keyboard step), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
+| `mapping.rs` | 15 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, keyboard target |
+| `report.rs` | 10 | byte position for all button groups (face/shoulder/system/Edge), all-button roundtrip, byte11 preservation, stick/trigger values, seq |
+| `config.rs` | 49 | valid sources/targets (incl. key:xxx), trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro, keyboard step), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
 | `device.rs` | 1 | sysfs path resolution |
+| `keyboard.rs` | 2 | successful press tracking, failed press/release state preservation |
 
 ### Tools
 | Tool | Binary | Description |

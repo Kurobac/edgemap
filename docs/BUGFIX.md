@@ -436,3 +436,32 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 **Fix:** Replaced mtime comparison with content transition detection: only clear `current_config` when `last_uhid_state` transitions from non-`"connected"` to `"connected"` (a genuine new UHID device instance). Also moved the `"disconnected"` write from `main.rs` DeviceGone handler into `UhidDevice::drop()`, so any UHID teardown (DeviceGone, ConfigChanged, kernel failure) correctly writes `"disconnected"`. Updated notification text from "Gamepad connected/disconnected" to "UHID device ready/stopped" to reflect the file's actual semantics.
 
+### #86 — Invalid reload could recreate UHID and terminate the daemon
+
+**Root cause:** `reload_config()` copied `output_device` before validating the new config. An invalid config with a different output device triggered UHID recreation; the outer loop then loaded the same invalid config and exited.
+
+**Fix:** Only accept the new `output_device` after validation and mapping construction both succeed.
+
+### #87 — GUI validation used a shared predictable `/tmp` path
+
+**Root cause:** Save and Save As both wrote `/tmp/edgemap_validate.toml`, allowing concurrent GUI instances to overwrite each other and exposing a symlink-following risk.
+
+**Fix:** Use `tempfile.NamedTemporaryFile` and share one validation helper.
+
+### #88 — Failed uinput writes corrupted held-key tracking
+
+**Root cause:** Keyboard press/release updated `held_keys` before confirming both the key event and SYN write succeeded. A failed release could leave a key stuck while the proxy forgot to retry it.
+
+**Fix:** Update held-key state only after complete writes, detect short writes, and retain failed releases for retry on later frames.
+
+### #89 — Release tarball installer referenced the wrong icon path
+
+**Root cause:** `install.sh` expected `usr/share/icons/edgemap.svg`, while the release workflow packages the icon under `usr/share/icons/hicolor/scalable/apps/`.
+
+**Fix:** Make the installer source path match the tarball layout.
+
+### #90 — Release installer ran user systemd command as root
+
+**Root cause:** `sudo ./install.sh` executed `systemctl --user daemon-reload` as root. On systems without a root user manager, this failed and `set -e` made an otherwise successful installation exit with an error. The release tarball also omitted the existing desktop entry.
+
+**Fix:** Keep system-level daemon reload in the installer, move the user daemon reload to the documented post-install command, and package/install `edgemap.desktop`.

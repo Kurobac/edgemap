@@ -82,7 +82,7 @@ write output report id 5   length 32:   ← LED
 
 ### DS4→DS4 Pure Passthrough Demo
 
-A standalone binary (`src/bin/ds4-passthru.rs`) was written: real DS4 physical device → UHID virtual DS4 pure passthrough. **Real data + UHID → game still doesn't work.** Confirms the issue is not in data generation.
+A standalone binary (`src/bin/ds4-passthru.rs`) was written for this investigation: real DS4 physical device → UHID virtual DS4 pure passthrough. **Real data + UHID → game still doesn't work.** Confirms the issue is not in data generation. The diagnostic binary was removed after verification.
 
 ### Proton source patches attempted
 
@@ -144,7 +144,7 @@ feature 7: RId 20 (0x14), RCnt 16 ✅
 
 DS4 Target HID code is worth preserving. Once someone breaks through from the Proton side, it can be enabled immediately.
 
-## Changes Worth Merging to Main
+## Changes Merged to Main
 
 | Change | Files | Notes |
 |--------|-------|-------|
@@ -152,7 +152,7 @@ DS4 Target HID code is worth preserving. Once someone breaks through from the Pr
 | Feature Report data bug fix | `main.rs` | `vec![0u8; SIZE]` + `buf[0] = report_id` |
 | HID Descriptor Report Count fix | `descriptor.rs` | Three reports RCnt -1 |
 | Non-zero feature report data | `main.rs` | MAC, fw_version, calibration, battery, sensor temp |
-| GUI Output Device dropdown | `edgemap-gui-v6.py` | Replaces force_dualsense checkbox |
+| GUI Output Device dropdown | `edgemap-gui-v6.py` | Exposes auto/dualsense; dualshock4 remains config-only |
 
 ## 📊 Implemented Feature Checklist
 
@@ -165,10 +165,10 @@ DS4 Target HID code is worth preserving. Once someone breaks through from the Pr
 | Gyro/accelerometer forwarding (1:1 calibration) | ✅ | `src/report.rs` + `src/main.rs` |
 | Feature report cache (0x02/0x12/0xA3) | ✅ | `src/main.rs` |
 | Output device enum (auto/dualsense/dualshock4) | ✅ | `src/config.rs` |
-| GUI Output Device dropdown | ✅ | `edgemap-gui-v6.py` |
+| GUI Output Device dropdown | ✅ auto/dualsense; DS4 hidden | `edgemap-gui-v6.py` |
 | UHID reload detection for output_device changes | ✅ | `src/proxy.rs` |
 | Sensor temp + battery status + touch INACTIVE | ✅ | `src/report.rs` |
-| DS4 pure passthrough verification demo | ✅ | `src/bin/ds4-passthru.rs` |
+| DS4 pure passthrough verification demo | ✅ Completed; diagnostic binary removed | — |
 
 ## 📝 Artifacts
 

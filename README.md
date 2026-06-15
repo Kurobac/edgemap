@@ -11,7 +11,7 @@ This project was created solely for the author's own needs. Remap without losing
 SDL-based remappers cannot preserve DualSense-specific features such as adaptive triggers and HD haptics. 
 Steam Input is slightly different — games supporting [Native mode](https://partner.steamgames.com/doc/features/steam_controller/concepts) retain DualSense features while using Steam Input, but for Legacy Mode only games, Steam maps the controller to a standard XInput device.
 
-This project is provided ASIS. The author has tested it to the best of their ability,
+This project is provided AS IS. The author has tested it to the best of their ability,
 but makes no warranty regarding functionality or stability.
 
 ## Note on HD haptics
@@ -31,8 +31,7 @@ See [docs/HD-HAPTICS-FIX.md](docs/HD-HAPTICS-FIX.md) for the technical details.
 ### Arch Linux
 
 ```bash
-# TODO: upload to AUR
-# yay -S dseuhid
+# AUR package is not published yet.
 ```
 
 ### Other Linux (pre-compiled binary)
@@ -41,10 +40,11 @@ Download the latest tarball from the [Releases](https://github.com/kurobac/edgem
 
 ```bash
 tar xzf edgemap-v*.tar.gz
-cd edgemap-v*
+cd edgemap-v*-x86_64/
 sudo ./install.sh
-# then enable systemd service
-systemctl enable --now dseuhid
+# then enable systemd services
+sudo systemctl enable --now dseuhid
+systemctl --user daemon-reload
 systemctl --user enable --now edgemap
 ```
 
@@ -65,17 +65,54 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Turbo | Hold-to-repeat with configurable interval and delay |
 | Combo | Modifier key + key → injected output |
 | Macro | Timed key sequences, hold (loop) and single (one-shot) modes |
+| Keyboard target | Remap, combo, macro, and split-touchpad output to 106 uinput keyboard keys |
 | Profile auto-switch | Match running processes (comm/cmdline), auto-switch remap config |
 | Hot reload | Mtime-based (edgemap) or FIFO command |
 | Passthrough | All DualSense HID data — gyro, touchpad, LED, rumble, adaptive triggers, HD haptics — forwarded untouched |
 | Regular DualSense | Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported |
-| DSE→DS virtualization | `force_dualsense = true` in config makes Edge appear as regular DS for game compatibility |
+| DSE→DS virtualization | `output_device = "dualsense"` makes Edge appear as regular DS for game compatibility |
 | GET_REPORT cache | IMU calibration data read from physical device on startup (accurate gyro) |
 | GUI config editor | PyQt6 native editor — remap, turbo, combo, macro, macro manager, save/load |
 
-> **Note:** `force_dualsense = true` on a regular DualSense is harmless — the device
+> **Note:** `output_device = "dualsense"` on a regular DualSense is harmless — the device
 > is already recognized as DS. Edge-specific button configs (paddles, FN keys) are
 > silently ignored on regular DualSense; they simply have no physical counterpart.
+
+## Configuration
+
+Button sections use lowercase names. Missing sections and `remap = "passthrough"` both leave
+the physical input untouched.
+
+```toml
+version = 2
+output_device = "auto" # "auto" or "dualsense"
+
+[cross]
+remap = "circle"
+
+[right_paddle]
+remap = "key:space"
+
+[left_paddle]
+remap = "combo"
+
+[[left_paddle.combos]]
+key = "cross"
+output = "triangle"
+```
+
+`edgemap daemon` creates `~/.config/edgemap/edgemap.toml` for profile switching:
+
+```toml
+config = "default.toml"
+
+[profiles.example]
+config = "example.toml"
+match_process = "game.exe"
+```
+
+Profiles are checked in declaration order. `match_process` is an exact process-name match;
+`match_cmdline` is a substring match. When both are set, both must match.
 
 ## Not supported (by design)
 
@@ -87,10 +124,12 @@ Run `edgemap create-config` to print a template with full inline documentation.
 ## Requirements
 
 - Linux with `uhid` kernel module
+- `acl` utilities (`getfacl` and `setfacl`) for hiding/restoring physical device nodes
 - Kernel: tested 7.0, should work 6.7+, may work 5.12+
 - DualSense (0x0CE6) or DualSense Edge (0x0DF2) controller, USB only
 - Root for `dseuhid` only
-- pyqt6 for GUI support
+- `python-pyqt6` for GUI support (optional)
+- `libnotify` for profile-switch notifications (optional)
 
 ## Special Thanks
 

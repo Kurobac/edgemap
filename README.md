@@ -43,6 +43,7 @@ tar xzf edgemap-v*.tar.gz
 cd edgemap-v*-x86_64/
 sudo ./install.sh
 # then enable systemd services
+sudo systemctl daemon-reload
 sudo systemctl enable --now dseuhid
 systemctl --user daemon-reload
 systemctl --user enable --now edgemap

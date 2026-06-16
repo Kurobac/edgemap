@@ -11,4 +11,16 @@ install -Dm644 usr/share/icons/hicolor/scalable/apps/edgemap.svg /usr/share/icon
 install -Dm644 usr/share/zsh/site-functions/_dseuhid /usr/share/zsh/site-functions/
 install -Dm644 usr/share/zsh/site-functions/_edgemap /usr/share/zsh/site-functions/
 
-systemctl daemon-reload
+if ! python3 -c "import PyQt6" 2> /dev/null; then
+    echo
+    echo "Optional dependency missing: python-pyqt6"
+    echo "The GUI editor will not work."
+    echo "Install it using your distribution package manager."
+    echo
+fi
+
+echo "Installation complete. You can start the daemon using:"
+echo "sudo systemctl daemon-reload"
+echo "sudo systemctl enable --now dseuhid"
+echo "systemctl --user daemon-reload"
+echo "systemctl --user enable --now edgemap"

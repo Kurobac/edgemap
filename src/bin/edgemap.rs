@@ -583,11 +583,16 @@ fn cmd_daemon(args: &[String]) -> ! {
 
         let alive = check_dseuhid_alive();
         if !alive {
+            if last_uhid_state.as_deref() == Some("connected") {
+                log::info!("UHID device stopped");
+                send_notification("edgemap", "UHID device stopped");
+            }
             if !current_config.is_empty() {
                 log::warn!("dseuhid disconnected");
-                current_config.clear();
-                last_pid = None;
             }
+            current_config.clear();
+            last_pid = None;
+            last_uhid_state = Some("disconnected".to_string());
             std::thread::sleep(Duration::from_secs(3));
             continue;
         }
@@ -597,6 +602,7 @@ fn cmd_daemon(args: &[String]) -> ! {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
                 if last_pid != Some(pid) {
                     current_config.clear();
+                    last_uhid_state = None;
                     last_pid = Some(pid);
                 }
             }

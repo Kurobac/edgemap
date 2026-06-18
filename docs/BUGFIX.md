@@ -465,3 +465,9 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 **Root cause:** `sudo ./install.sh` executed `systemctl --user daemon-reload` as root. On systems without a root user manager, this failed and `set -e` made an otherwise successful installation exit with an error. The release tarball also omitted the existing desktop entry.
 
 **Fix:** Keep system-level daemon reload in the installer, move the user daemon reload to the documented post-install command, and package/install `edgemap.desktop`.
+
+### #91 — Login-time uaccess ACL lost when stopping a boot-started daemon
+
+**Root cause:** When the controller was already connected during boot, dseuhid started before the desktop login and saved the device nodes' pre-login ACLs. systemd-logind added the active user's dynamic `uaccess` ACL at login, but daemon shutdown later restored the old snapshot and removed that grant.
+
+**Fix:** Track every hidden hidraw/event/js node independently. When logind or udev changes a node back to a non-zero mode, capture its current mode and ACL before hiding it again. Shutdown restores this latest snapshot, so login-time and post-resume ACL changes are preserved without trying to replay udev policy.

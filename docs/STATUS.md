@@ -40,7 +40,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.7.4 | `e6b5209` | **Bugfixes**: re-restrict hidraw after suspend/resume udev reset (#70, #71); non-root daemon spam prevention + cooldown; FIFO command confirmation output; zsh completions; notify-send app name grouping; GUI taskbar icon fix; turbo source as combo key comment |
 | v0.8.0 | `f56968c` | **Keyboard target**: uinput keyboard device for `key:xxx` targets; remap/combo/macro step → keyboard; GUI KeyboardPicker with 106 keycodes; split touchpad→keyboard; turbo+keyboard pipeline fix; six bugfixes (#72-#76); 143 tests (+8) |
 | v0.9.0 | `53323f8` | **Code review cleanup**: strict config fields; analog write deferred to Phase 2; SIGHUP reload removed; UHID/uinput write error checking; 149 tests (+6) |
-| v1.0.0 | current | **Stable release**: `output_device` enum, DS4 investigation code retained but hidden from GUI, USB-only detection, UHID state tracking, hardened reload/install/keyboard failure paths; 153 tests |
+| v1.0.0 | current | **Stable release**: `output_device` enum, DS4 investigation code retained but hidden from GUI, USB-only detection, UHID state tracking, hardened reload/install/keyboard/ACL failure paths; 153 tests |
 
 ## Implemented Features
 
@@ -191,7 +191,7 @@ Layer 3 (output): apply_state_to_report → UHID_INPUT2
 | `mapping.rs` | 15 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, keyboard target |
 | `report.rs` | 10 | byte position for all button groups (face/shoulder/system/Edge), all-button roundtrip, byte11 preservation, stick/trigger values, seq |
 | `config.rs` | 49 | valid sources/targets (incl. key:xxx), trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro, keyboard step), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
-| `device.rs` | 1 | sysfs path resolution |
+| `device.rs` | 1 | sysfs hidraw path resolution |
 | `keyboard.rs` | 2 | successful press tracking, failed press/release state preservation |
 
 ### Tools

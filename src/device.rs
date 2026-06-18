@@ -112,8 +112,14 @@ pub struct HidrawDevice {
     fd: OwnedFd,
 
     sysfs_path: Option<PathBuf>,
-    restored_paths: Vec<(PathBuf, u32, String)>,
+    restored_nodes: Vec<RestoredNode>,
     report_desc: Vec<u8>,
+}
+
+struct RestoredNode {
+    path: PathBuf,
+    mode: u32,
+    acl: String,
 }
 
 impl HidrawDevice {
@@ -141,7 +147,7 @@ impl HidrawDevice {
         let device = Self {
             fd,
             sysfs_path,
-            restored_paths: Vec::new(),
+            restored_nodes: Vec::new(),
             report_desc,
         };
 
@@ -218,21 +224,45 @@ impl HidrawDevice {
         }
     }
 
-fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io::Result<()> {
-        let orig = fs::metadata(path)?.permissions().mode();
-
-        let acl_data = std::process::Command::new("getfacl")
+    fn read_acl(path: &Path) -> io::Result<String> {
+        let output = std::process::Command::new("getfacl")
             .args(["--absolute-names", &path.to_string_lossy()])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "getfacl failed with {}",
+                output.status
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
 
-        let _ = std::process::Command::new("setfacl")
+    fn clear_acl(path: &Path) {
+        match std::process::Command::new("setfacl")
             .args(["-b", &path.to_string_lossy()])
-            .output();
+            .output()
+        {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => warn!("Failed to clear ACL on {:?}: {}", path, output.status),
+            Err(e) => warn!("Failed to clear ACL on {:?}: {e}", path),
+        }
+    }
 
+    fn restrict_node(path: &Path, restored: &mut Vec<RestoredNode>) -> io::Result<()> {
+        let mode = fs::metadata(path)?.permissions().mode();
+        let acl = Self::read_acl(path).unwrap_or_else(|e| {
+            warn!("Failed to save ACL on {:?}: {e}", path);
+            String::new()
+        });
+
+        restored.push(RestoredNode {
+            path: path.to_path_buf(),
+            mode,
+            acl,
+        });
+
+        Self::clear_acl(path);
         fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))?;
-        restored.push((path.to_path_buf(), orig, acl_data));
         Ok(())
     }
 
@@ -249,8 +279,10 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
             if let Ok(entries) = fs::read_dir(&input_dir) {
                 for input_entry in entries.flatten() {
                     let input_path = input_entry.path();
-                    if !input_path.is_dir() || !input_path.file_name()
-                        .is_some_and(|n| n.to_string_lossy().starts_with("input"))
+                    if !input_path.is_dir()
+                        || !input_path
+                            .file_name()
+                            .is_some_and(|n| n.to_string_lossy().starts_with("input"))
                     {
                         continue;
                     }
@@ -258,13 +290,12 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
                     if let Ok(ev_entries) = fs::read_dir(&input_path) {
                         for ev_entry in ev_entries.flatten() {
                             let ev_path = ev_entry.path();
-                            let ev_name = ev_path.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("");
+                            let ev_name =
+                                ev_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                             if ev_name.starts_with("event") || ev_name.starts_with("js") {
                                 let dev_path = PathBuf::from("/dev/input").join(ev_name);
                                 if dev_path.exists() {
-                                    Self::restrict_node(&dev_path, &mut self.restored_paths)?;
+                                    Self::restrict_node(&dev_path, &mut self.restored_nodes)?;
                                     hidden.push(ev_name.to_string());
                                 }
                             }
@@ -275,12 +306,10 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
         }
 
         if let Some(ref sysfs) = self.sysfs_path {
-            let devname = sysfs.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let devname = sysfs.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let hidraw_path = PathBuf::from("/dev").join(devname);
             if hidraw_path.exists() {
-                Self::restrict_node(&hidraw_path, &mut self.restored_paths)?;
+                Self::restrict_node(&hidraw_path, &mut self.restored_nodes)?;
                 hidden.push(devname.to_string());
             }
         }
@@ -294,99 +323,87 @@ fn restrict_node(path: &Path, restored: &mut Vec<(PathBuf, u32, String)>) -> io:
     }
 
     pub fn clear_restored_paths(&mut self) {
-        self.restored_paths.clear();
+        self.restored_nodes.clear();
     }
 
     pub fn re_restrict_self(&mut self) {
-        if let Some(ref sysfs) = self.sysfs_path {
-            let devname = match sysfs.file_name() {
-                Some(n) => n.to_string_lossy().to_string(),
-                None => return,
+        let mut restricted = 0;
+        for node in &mut self.restored_nodes {
+            let mode = match fs::metadata(&node.path) {
+                Ok(metadata) => metadata.permissions().mode(),
+                Err(e) => {
+                    warn!("Failed to inspect {:?} for re-restriction: {e}", node.path);
+                    continue;
+                }
             };
-            let hidraw_path = PathBuf::from("/dev").join(&devname);
-            if !hidraw_path.exists() {
-                return;
-            }
-            if fs::metadata(&hidraw_path).map_or(true, |m| m.permissions().mode() & 0o777 == 0) {
-                return;
+            if mode & 0o777 == 0 {
+                continue;
             }
 
-            info!("re-restricting device nodes after udev reset");
-
-            let input_dir = sysfs.join("device/input");
-            if input_dir.exists() {
-                if let Ok(entries) = fs::read_dir(&input_dir) {
-                    for input_entry in entries.flatten() {
-                        let input_path = input_entry.path();
-                        if !input_path.is_dir() || !input_path.file_name()
-                            .is_some_and(|n| n.to_string_lossy().starts_with("input"))
-                        {
-                            continue;
-                        }
-                        if let Ok(ev_entries) = fs::read_dir(&input_path) {
-                            for ev_entry in ev_entries.flatten() {
-                                let ev_path = ev_entry.path();
-                                let ev_name = ev_path.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("");
-                                if ev_name.starts_with("event") || ev_name.starts_with("js") {
-                                    let dev_path = PathBuf::from("/dev/input").join(ev_name);
-                                    if dev_path.exists() {
-                                        if let Err(e) = fs::set_permissions(&dev_path, fs::Permissions::from_mode(0o000)) {
-                                            log::warn!("re-restrict {} failed: {e}", ev_name);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            match Self::read_acl(&node.path) {
+                Ok(acl) => {
+                    node.mode = mode;
+                    node.acl = acl;
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to refresh ACL snapshot on {:?}, keeping previous snapshot: {e}",
+                        node.path
+                    );
                 }
             }
 
-            if let Err(e) = fs::set_permissions(&hidraw_path, fs::Permissions::from_mode(0o000)) {
-                log::warn!("re-restrict {} failed: {e}", devname);
+            Self::clear_acl(&node.path);
+            match fs::set_permissions(&node.path, fs::Permissions::from_mode(0o000)) {
+                Ok(()) => restricted += 1,
+                Err(e) => warn!("Failed to re-restrict {:?}: {e}", node.path),
             }
+        }
+
+        if restricted > 0 {
+            info!("re-restricted {restricted} device nodes after external permission reset");
         }
     }
 
     fn restore_permissions(&self) {
-        if self.restored_paths.is_empty() {
+        if self.restored_nodes.is_empty() {
             return;
         }
-        info!("restore {} device nodes", self.restored_paths.len());
+        info!("restore {} device nodes", self.restored_nodes.len());
         let mut acl_batch = String::new();
-        for (path, orig_mode, acl_data) in &self.restored_paths {
-            if !path.exists() {
+        for node in &self.restored_nodes {
+            if !node.path.exists() {
                 continue;
             }
-            if let Err(e) = fs::set_permissions(path, std::fs::Permissions::from_mode(*orig_mode))
+            if let Err(e) =
+                fs::set_permissions(&node.path, std::fs::Permissions::from_mode(node.mode))
             {
-                log::warn!("Failed to restore permissions on {:?}: {e}", path);
+                log::warn!("Failed to restore permissions on {:?}: {e}", node.path);
             } else {
-                log::debug!("Restored permissions on {:?}", path);
+                log::debug!("Restored permissions on {:?}", node.path);
             }
 
-            if !acl_data.is_empty() {
-                acl_batch.push_str(acl_data);
+            if !node.acl.is_empty() {
+                acl_batch.push_str(&node.acl);
             }
         }
 
         if !acl_batch.is_empty() {
-            let mut child = match std::process::Command::new("setfacl")
+            let child = std::process::Command::new("setfacl")
                 .arg("--restore=-")
                 .stdin(std::process::Stdio::piped())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    log::warn!("Failed to spawn setfacl: {e}");
-                    return;
+                .spawn();
+            match child {
+                Ok(mut child) => {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        if let Err(e) = stdin.write_all(acl_batch.as_bytes()) {
+                            log::warn!("Failed to write ACL data to setfacl: {e}");
+                        }
+                    }
+                    let _ = child.wait();
                 }
-            };
-            if let Err(e) = child.stdin.take().unwrap().write_all(acl_batch.as_bytes()) {
-                log::warn!("Failed to write ACL data to setfacl: {e}");
+                Err(e) => log::warn!("Failed to spawn setfacl: {e}"),
             }
-            let _ = child.wait();
         }
     }
 }

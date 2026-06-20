@@ -44,41 +44,69 @@ fn print_usage() {
     eprintln!("  {:<28}Watch daemon and inject config (auto-start)", "d, daemon [--config <path>]");
 }
 
-fn edgemap_config_dir() -> PathBuf {
-    if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
-        if !xdg.is_empty() {
-            return PathBuf::from(xdg).join("edgemap");
-        }
+fn required_home() -> Result<String, String> {
+    match env::var("HOME") {
+        Ok(home) if !home.is_empty() => Ok(home),
+        Ok(_) | Err(env::VarError::NotPresent) => Err("HOME is not set or is empty".to_string()),
+        Err(env::VarError::NotUnicode(_)) => Err("HOME is not valid Unicode".to_string()),
     }
-    if let Ok(home) = env::var("HOME") {
-        return PathBuf::from(home).join(".config").join("edgemap");
-    }
-    PathBuf::from(".")
 }
 
-fn edgemap_state_dir() -> PathBuf {
-    if let Ok(xdg) = env::var("XDG_STATE_HOME") {
-        if !xdg.is_empty() {
-            return PathBuf::from(xdg).join("edgemap");
+fn resolve_xdg_dir(
+    xdg: Option<&Path>,
+    home: Option<&str>,
+    fallback: &Path,
+) -> Result<PathBuf, String> {
+    if let Some(xdg) = xdg {
+        if !xdg.as_os_str().is_empty() && xdg.is_absolute() {
+            return Ok(xdg.join("edgemap"));
         }
     }
-    if let Ok(home) = env::var("HOME") {
-        return PathBuf::from(home).join(".local").join("state").join("edgemap");
-    }
-    PathBuf::from(".")
+    let home = home.ok_or_else(|| "HOME is not set or is empty".to_string())?;
+    Ok(PathBuf::from(home).join(fallback).join("edgemap"))
 }
 
-fn resolve_config_path(raw: &str, base_dir: &Path) -> String {
+fn xdg_dir(var: &str, fallback: &Path) -> Result<PathBuf, String> {
+    let xdg = env::var_os(var).map(PathBuf::from);
+    if xdg.as_deref().is_some_and(|path| {
+        !path.as_os_str().is_empty() && path.is_absolute()
+    }) {
+        return resolve_xdg_dir(xdg.as_deref(), None, fallback);
+    }
+    let home = required_home()?;
+    resolve_xdg_dir(xdg.as_deref(), Some(&home), fallback)
+}
+
+fn edgemap_config_dir() -> Result<PathBuf, String> {
+    xdg_dir("XDG_CONFIG_HOME", Path::new(".config"))
+}
+
+fn edgemap_state_dir() -> Result<PathBuf, String> {
+    xdg_dir("XDG_STATE_HOME", Path::new(".local/state"))
+}
+
+fn resolve_config_path_with_home(
+    raw: &str,
+    base_dir: &Path,
+    home: Option<&str>,
+) -> Result<String, String> {
     if raw.starts_with('/') {
-        return raw.to_string();
+        return Ok(raw.to_string());
     }
     if let Some(rest) = raw.strip_prefix('~') {
-        if let Ok(home) = env::var("HOME") {
-            return home + rest;
-        }
-        return raw.to_string();
+        let home = home.ok_or_else(|| "HOME is not set or is empty".to_string())?;
+        return Ok(home.to_string() + rest);
     }
-    base_dir.join(raw).to_string_lossy().into()
+    Ok(base_dir.join(raw).to_string_lossy().into())
+}
+
+fn resolve_config_path(raw: &str, base_dir: &Path) -> Result<String, String> {
+    let home = if raw.starts_with('~') {
+        Some(required_home()?)
+    } else {
+        None
+    };
+    resolve_config_path_with_home(raw, base_dir, home.as_deref())
 }
 
 static DAEMON_RUNNING: AtomicBool = AtomicBool::new(true);
@@ -182,22 +210,26 @@ fn profile_matches(pid: u32, profile: &ProfileConfig) -> bool {
     true
 }
 
-fn find_matching_profile(profiles: &[(String, ProfileConfig)], config_dir: &Path, base_config: &str) -> Option<String> {
+fn find_matching_profile(
+    profiles: &[(String, ProfileConfig)],
+    config_dir: &Path,
+    base_config: &str,
+) -> Result<Option<String>, String> {
     let pids: Vec<u32> = match std::fs::read_dir("/proc") {
         Ok(d) => d.flatten()
             .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse().ok()))
             .collect(),
-        Err(_) => return None,
+        Err(_) => return Ok(None),
     };
     for (profile_name, profile_cfg) in profiles {
         for &pid in &pids {
             if profile_matches(pid, profile_cfg) {
                 log::debug!("profile '{}' matched by pid {pid}", profile_name);
-                return Some(resolve_config_path(&profile_cfg.config, config_dir));
+                return resolve_config_path(&profile_cfg.config, config_dir).map(Some);
             }
         }
     }
-    Some(resolve_config_path(base_config, config_dir))
+    resolve_config_path(base_config, config_dir).map(Some)
 }
 
 fn cmd_validate(args: &[String]) -> ! {
@@ -233,7 +265,10 @@ fn cmd_validate(args: &[String]) -> ! {
     }
 
     // No path given — validate all configs in ~/.config/edgemap/
-    let dir = edgemap_config_dir();
+    let dir = edgemap_config_dir().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     if !dir.exists() {
         println!("Config directory does not exist: {}", dir.display());
         std::process::exit(0);
@@ -373,7 +408,9 @@ fn cmd_switch_config(args: &[String]) -> ! {
         std::process::exit(1);
     }
     let path = &args[2];
-    let path_str = if path.starts_with('.') {
+    let path_str = if Path::new(path).is_absolute() {
+        path.clone()
+    } else if path.starts_with('.') {
         std::fs::canonicalize(path)
             .unwrap_or_else(|e| {
                 eprintln!("error: cannot resolve {}: {}", path, e);
@@ -381,9 +418,18 @@ fn cmd_switch_config(args: &[String]) -> ! {
             })
             .to_string_lossy()
             .to_string()
+    } else if path.starts_with('~') {
+        resolve_config_path(path, Path::new("")).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        })
     } else {
-        let config_dir = edgemap_config_dir();
-        resolve_config_path(path, &config_dir)
+        edgemap_config_dir()
+            .and_then(|dir| resolve_config_path(path, &dir))
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            })
     };
     let cfg = match config::Config::load(&path_str) {
         Ok(c) => c,
@@ -430,7 +476,7 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("default.toml")
         .to_string();
-    let base_config = resolve_config_path(&base_config_raw, &dir);
+    let base_config = resolve_config_path(&base_config_raw, &dir)?;
 
     // defer validation of base/default config to daemon loop (pre-injection)
 
@@ -452,7 +498,7 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
 
     let mut valid_profiles: Vec<(String, String)> = Vec::new();
     for (name, pcfg) in &profiles {
-        let p_path = resolve_config_path(&pcfg.config, &dir);
+        let p_path = resolve_config_path(&pcfg.config, &dir)?;
         if pcfg.match_process.is_empty() && pcfg.match_cmdline.is_empty() {
             log::warn!("profile '{name}': no match_process or match_cmdline, skipping");
             continue;
@@ -475,13 +521,13 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
 }
 
 fn cmd_daemon(args: &[String]) -> ! {
-    let mut edgemap_config_path = edgemap_config_dir().join("edgemap.toml");
+    let mut config_arg: Option<&str> = None;
 
     // parse optional --config <path> from args
     let mut i = 2;
     while i < args.len() {
         if args[i] == "--config" && i + 1 < args.len() {
-            edgemap_config_path = PathBuf::from(resolve_config_path(&args[i + 1], &edgemap_config_dir()));
+            config_arg = Some(&args[i + 1]);
             i += 1;
         } else {
             eprintln!("error: unknown argument '{}'", args[i]);
@@ -491,9 +537,28 @@ fn cmd_daemon(args: &[String]) -> ! {
         i += 1;
     }
 
+    let edgemap_config_path = match config_arg {
+        Some(path) if Path::new(path).is_absolute() => Ok(PathBuf::from(path)),
+        Some(path) if path.starts_with('~') => resolve_config_path(path, Path::new(""))
+            .map(PathBuf::from),
+        Some(path) => edgemap_config_dir()
+            .and_then(|dir| resolve_config_path(path, &dir))
+            .map(PathBuf::from),
+        None => edgemap_config_dir().map(|dir| dir.join("edgemap.toml")),
+    }
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let pid_path = edgemap_state_dir().join("edgemap.pid");
+    let pid_path = edgemap_state_dir()
+        .unwrap_or_else(|e| {
+            log::error!("{e}");
+            std::process::exit(1);
+        })
+        .join("edgemap.pid");
     if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
         if let Ok(pid) = pid_str.trim().parse::<i32>() {
             if unsafe { libc::kill(pid, 0) } == 0 {
@@ -642,8 +707,15 @@ fn cmd_daemon(args: &[String]) -> ! {
                 .filter(|(name, _)| state.valid_profiles.iter().any(|(vn, _)| vn == name))
                 .cloned()
                 .collect();
-            find_matching_profile(&valid, &state.dir, &state.base_config_raw)
-                .unwrap_or(state.base_config.clone())
+            match find_matching_profile(&valid, &state.dir, &state.base_config_raw) {
+                Ok(Some(path)) => path,
+                Ok(None) => state.base_config.clone(),
+                Err(e) => {
+                    log::error!("cannot resolve profile config: {e}");
+                    std::thread::sleep(Duration::from_secs(3));
+                    continue;
+                }
+            }
         };
 
         if wanted != current_config {
@@ -687,7 +759,10 @@ fn cmd_daemon(args: &[String]) -> ! {
             let cmd = format!("switch-config {}", target);
             if try_send_fifo_command(cmd.as_bytes()) {
                 let label = state.profiles.iter()
-                    .find(|(_, pc)| resolve_config_path(&pc.config, &state.dir) == target)
+                    .find(|(_, pc)| {
+                        resolve_config_path(&pc.config, &state.dir).as_deref()
+                            == Ok(target.as_str())
+                    })
                     .map(|(name, _)| format!("profile '{name}'"))
                     .unwrap_or_else(|| "default config".to_string());
                 log::info!("dseuhid connected");
@@ -725,5 +800,55 @@ fn main() {
             eprintln!("Run 'edgemap help' for usage.");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn absolute_xdg_path_is_used_without_home() {
+        assert_eq!(
+            resolve_xdg_dir(Some(Path::new("/tmp/xdg")), None, Path::new(".config")),
+            Ok(PathBuf::from("/tmp/xdg/edgemap"))
+        );
+    }
+
+    #[test]
+    fn invalid_xdg_paths_fall_back_to_home() {
+        for xdg in [Path::new(""), Path::new("relative/path")] {
+            assert_eq!(
+                resolve_xdg_dir(Some(xdg), Some("/home/test"), Path::new(".config")),
+                Ok(PathBuf::from("/home/test/.config/edgemap"))
+            );
+        }
+    }
+
+    #[test]
+    fn missing_home_rejects_xdg_fallback() {
+        assert!(resolve_xdg_dir(None, None, Path::new(".local/state")).is_err());
+    }
+
+    #[test]
+    fn absolute_config_path_does_not_need_home() {
+        assert_eq!(
+            resolve_config_path_with_home("/tmp/config.toml", Path::new("/base"), None),
+            Ok("/tmp/config.toml".to_string())
+        );
+    }
+
+    #[test]
+    fn tilde_config_path_requires_home() {
+        assert!(resolve_config_path_with_home("~/config.toml", Path::new("/base"), None)
+            .is_err());
+        assert_eq!(
+            resolve_config_path_with_home(
+                "~/config.toml",
+                Path::new("/base"),
+                Some("/home/test")
+            ),
+            Ok("/home/test/config.toml".to_string())
+        );
     }
 }

@@ -153,17 +153,9 @@ class ComboDialog(QDialog):
                 def handler(text):
                     nonlocal last_valid_ref
                     if text == "Keyboard...":
-                        oc.blockSignals(True)
-                        try:
-                            pre = oc.currentText() if oc.currentText().startswith("key:") else None
-                            picker = KeyboardPicker(self, pre)
-                            if picker.exec() == QDialog.DialogCode.Accepted and picker.key_name():
-                                oc.setCurrentText(picker.key_name())
-                                oc.blockSignals(False)
-                                return
-                        finally:
-                            oc.blockSignals(False)
-                        oc.setCurrentText(last_valid_ref)
+                        selected = pick_keyboard_target(self, oc, last_valid_ref)
+                        if selected:
+                            last_valid_ref = selected
                     else:
                         last_valid_ref = text
                 return handler
@@ -306,17 +298,9 @@ class MacroEditor(QDialog):
                 def handler(text):
                     nonlocal last_ref
                     if text == "Keyboard...":
-                        cbox.blockSignals(True)
-                        try:
-                            pre = cbox.currentText() if cbox.currentText().startswith("key:") else None
-                            picker = KeyboardPicker(self, pre)
-                            if picker.exec() == QDialog.DialogCode.Accepted and picker.key_name():
-                                cbox.setCurrentText(picker.key_name())
-                                cbox.blockSignals(False)
-                                return
-                        finally:
-                            cbox.blockSignals(False)
-                        cbox.setCurrentText(last_ref)
+                        selected = pick_keyboard_target(self, cbox, last_ref)
+                        if selected:
+                            last_ref = selected
                     else:
                         last_ref = text
                 return handler
@@ -623,6 +607,21 @@ class KeyboardPicker(QDialog):
             if name:
                 self._selected = "key:" + name
                 self.accept()
+
+
+def pick_keyboard_target(parent, combo, previous):
+    current = previous if previous.startswith("key:") else None
+    picker = KeyboardPicker(parent, current)
+    selected = None
+    if picker.exec() == QDialog.DialogCode.Accepted:
+        selected = picker.key_name()
+
+    was_blocked = combo.blockSignals(True)
+    try:
+        combo.setCurrentText(selected or previous)
+    finally:
+        combo.blockSignals(was_blocked)
+    return selected
 
 
 class EdgemapConfigDialog(QDialog):
@@ -1019,16 +1018,24 @@ class EdgemapEditor(QMainWindow):
 
     # ── single row ──
 
+    @staticmethod
+    def _default_remap(name):
+        return {
+            "touchpad_left": "dpad_left",
+            "touchpad_right": "dpad_right",
+        }.get(name, "passthrough")
+
     def _add_row(self, table, row, name):
         btn = self.config.get(name, {})
-        cur = btn.get("remap", name) or name
+        default_remap = self._default_remap(name)
+        cur = btn.get("remap", default_remap) or default_remap
 
         # touchpad split mode: left/right are disabled unless touchpad=split
         is_split_child = name in ("touchpad_left", "touchpad_right")
         touchpad_remap = self.config.get("touchpad", {}).get("remap", "")
         disabled = is_split_child and touchpad_remap != "split"
         if is_split_child and not btn:
-            btn["remap"] = "dpad_left" if name == "touchpad_left" else "dpad_right"
+            btn["remap"] = default_remap
             cur = btn["remap"]
 
         # Col 0: button name
@@ -1044,6 +1051,8 @@ class EdgemapEditor(QMainWindow):
         rl.setSpacing(2)
 
         cb = QComboBox()
+        cb.setEditable(True)
+        cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         # touchpad_left/right cannot use combo mode
         if name in ("touchpad_left", "touchpad_right"):
             cb.addItems([t for t in TARGETS if t != "combo"])
@@ -1062,8 +1071,6 @@ class EdgemapEditor(QMainWindow):
             cb.setCurrentText("split")
         elif cur.startswith("key:"):
             cb.setCurrentText(cur)
-        cb.setEditable(True)
-        cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         cb.lineEdit().setStyleSheet("padding-left: 8px; border: none;")
         cb.setStyleSheet("QComboBox QAbstractItemView { padding-left: 8px; }")
         cb.wheelEvent = lambda e: None
@@ -1090,17 +1097,11 @@ class EdgemapEditor(QMainWindow):
             except TypeError: pass
 
             if text == "Keyboard...":
-                cb.blockSignals(True)
-                try:
-                    pre = cb.currentText() if cb.currentText().startswith("key:") else None
-                    picker = KeyboardPicker(self, pre)
-                    if picker.exec() == QDialog.DialogCode.Accepted and picker.key_name():
-                        cb.setCurrentText(picker.key_name())
-                        cb.blockSignals(False)
-                        return
-                finally:
-                    cb.blockSignals(False)
-                cb.setCurrentText(last_valid_text)
+                edit_btn.hide()
+                selected = pick_keyboard_target(self, cb, last_valid_text)
+                if selected:
+                    self.config.setdefault(name, {})["remap"] = selected
+                    last_valid_text = selected
                 return
 
             if text == "combo":
@@ -1336,11 +1337,8 @@ class EdgemapEditor(QMainWindow):
                 if tp.get("remap", "") != "split":
                     continue
             btn = self.config.get(name, {})
-            remap = btn.get("remap", name) or name
-            if remap == "passthrough":
-                continue
-            if name in ("touchpad_left", "touchpad_right") and not remap:
-                remap = "dpad_left" if name == "touchpad_left" else "dpad_right"
+            default_remap = self._default_remap(name)
+            remap = btn.get("remap", default_remap) or default_remap
             lines.append(f"[{name}]")
             if remap:
                 lines.append(f'remap = "{self._escape(remap)}"')

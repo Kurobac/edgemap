@@ -58,7 +58,8 @@ systemctl --user enable --now edgemap
 cargo build --release
 ```
 
-edgemap daemon auto-creates `~/.config/edgemap/edgemap.toml` + `default.toml` on first run.
+edgemap daemon auto-creates `edgemap.toml` + `default.toml` under
+`$XDG_CONFIG_HOME/edgemap` (default: `~/.config/edgemap`) on first run.
 Run `edgemap create-config` to print a template with full inline documentation.
 
 ## Features
@@ -105,7 +106,7 @@ key = "cross"
 output = "triangle"
 ```
 
-`edgemap daemon` creates `~/.config/edgemap/edgemap.toml` for profile switching:
+`edgemap daemon` creates `edgemap.toml` in the XDG config directory for profile switching:
 
 ```toml
 config = "default.toml"

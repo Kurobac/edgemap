@@ -471,3 +471,63 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 **Root cause:** When the controller was already connected during boot, dseuhid started before the desktop login and saved the device nodes' pre-login ACLs. systemd-logind added the active user's dynamic `uaccess` ACL at login, but daemon shutdown later restored the old snapshot and removed that grant.
 
 **Fix:** Track every hidden hidraw/event/js node independently. When logind or udev changes a node back to a non-zero mode, capture its current mode and ACL before hiding it again. Shutdown restores this latest snapshot, so login-time and post-resume ACL changes are preserved without trying to replay udev policy.
+
+### #92 — edgemap silently used the working directory when HOME was missing
+
+**Root cause:** Config/state directory helpers fell back to `.` when `HOME` was unavailable and accepted relative XDG base-directory values.
+
+**Fix:** Return explicit path errors, require HOME only when a fallback or `~` expansion is needed, and ignore relative XDG values per the XDG Base Directory specification.
+
+### #93 — GUI discarded explicit passthrough mappings
+
+**Root cause:** The TOML serializer skipped every `remap = "passthrough"` section and treated missing button sections as self-maps. Reopening a sparse config could therefore change its displayed meaning or generate invalid Edge-button self targets.
+
+**Fix:** Preserve explicit passthrough sections and use passthrough as the GUI default for missing buttons. Split-touchpad children retain their `dpad_left`/`dpad_right` defaults.
+
+### #94 — Keyboard target picker desynchronized UI and saved config
+
+**Root cause:** Picker results were assigned while ComboBox signals were blocked, so the main config model and last-valid value were not updated. Existing `key:xxx` targets were also set before the ComboBox became editable, leaving `Keyboard...` selected and opening the picker during startup.
+
+**Fix:** Initialize editable ComboBoxes before assigning keyboard targets and centralize picker success/cancel handling across remaps, combo outputs, and macro steps.
+
+### #95 — Cancelling Save As could close the GUI with unsaved changes
+
+**Root cause:** `_save_config()` returned success unconditionally after calling Save As, even when validation, file selection, or writing failed.
+
+**Fix:** Make Save As return a real boolean result and propagate it to the close-event handler.
+
+### #96 — Loading a macro remap replaced its target with the literal word macro
+
+**Root cause:** The GUI displays macro targets with a generic `macro` selector entry, and its initialization callback wrote that presentation value back into the config model.
+
+**Fix:** Separate presentation-only initialization from user-triggered writeback so the real macro name remains intact.
+
+### #97 — GUI-generated TOML did not safely quote strings
+
+**Root cause:** Profile fields and macro table keys were interpolated directly into TOML. Quotes, backslashes, control characters, or non-bare macro names could produce invalid files; edgemap.toml was overwritten without validating the generated content.
+
+**Fix:** Use one TOML-compatible quoting helper for generated strings and quoted macro keys, then parse generated edgemap.toml before writing it.
+
+### #98 — Profile editor replaced paths not present in its dropdown
+
+**Root cause:** Default/profile config selectors were non-editable. Absolute paths, `~` paths, relative paths outside the discovered file list, and future files could not be displayed and were silently replaced.
+
+**Fix:** Make selectors editable without inserting arbitrary values into the dropdown, preserving deferred path validation.
+
+### #99 — Macro rename/delete operations broke references
+
+**Root cause:** Renaming only changed the macro table key, deleting ignored active references, and duplicate names could overwrite existing macros. Button remaps and combo outputs were left pointing at missing names.
+
+**Fix:** Reject duplicate names, migrate button/combo references on rename, and block deletion while references remain.
+
+### #100 — GUI ignored XDG_CONFIG_HOME
+
+**Root cause:** GUI loading, menus, dialogs, profile editing, and path labels hard-coded `~/.config/edgemap`, diverging from the edgemap CLI.
+
+**Fix:** Route every GUI config path through the same absolute-XDG/HOME-fallback rules and fail clearly when no valid base directory exists.
+
+### #101 — Macro Apply button used inconsistent default styling
+
+**Root cause:** Edit and Delete disabled focus while Apply retained dialog auto-default/focus behavior, causing Qt themes to emphasize it differently.
+
+**Fix:** Give all three action buttons matching `NoFocus` and `autoDefault = false` properties.

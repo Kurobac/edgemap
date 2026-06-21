@@ -30,8 +30,11 @@ See [docs/HD-HAPTICS-FIX.md](docs/HD-HAPTICS-FIX.md) for the technical details.
 
 ### Arch Linux
 
+Install from AUR:
+
 ```bash
-# AUR package is not published yet.
+paru -S edgemap
+# or use your favourite AUR helper
 ```
 
 ### Other Linux (pre-compiled binary)

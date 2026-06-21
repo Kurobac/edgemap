@@ -69,7 +69,7 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Turbo | Hold-to-repeat with configurable interval and delay |
 | Combo | Modifier key + key → injected output |
 | Macro | Timed key sequences, hold (loop) and single (one-shot) modes |
-| Keyboard target | Remap, combo, macro, and split-touchpad output to 106 uinput keyboard keys |
+| Keyboard target | Remap, combo, macro, and split-touchpad output to 107 uinput keyboard keys |
 | Profile auto-switch | Match running processes (comm/cmdline), auto-switch remap config |
 | Hot reload | Mtime-based (edgemap) or FIFO command |
 | Passthrough | All DualSense HID data — gyro, touchpad, LED, rumble, adaptive triggers, HD haptics — forwarded untouched |

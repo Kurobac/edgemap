@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """edgemap config editor — v6 (two-column Excel style)"""
 
-import os, sys, tomllib, signal, re, subprocess, copy, tempfile
+import os, sys, tomllib, signal, re, subprocess, copy, tempfile, json
 from tomllib import TOMLDecodeError
 
 from PyQt6.QtCore import Qt, QTimer
@@ -60,8 +60,57 @@ TARGETS = [
 COLUMNS = 3  # Button, Remap, Turbo
 
 
+def toml_quote(value):
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def edgemap_config_dir(env=None):
+    env = os.environ if env is None else env
+    xdg = env.get("XDG_CONFIG_HOME", "")
+    if xdg and os.path.isabs(xdg):
+        return os.path.join(xdg, "edgemap")
+    home = env.get("HOME", "")
+    if not home:
+        raise RuntimeError("HOME is not set or is empty")
+    return os.path.join(home, ".config", "edgemap")
+
+
+def find_macro_references(config, macro_name):
+    references = []
+    for button, button_config in config.items():
+        if button in ("macros", "version", "output_device") or not isinstance(button_config, dict):
+            continue
+        if button_config.get("remap") == macro_name:
+            references.append(f"{button} remap")
+        for index, combo in enumerate(button_config.get("combos", []), start=1):
+            if combo.get("output") == macro_name:
+                key = combo.get("key") or str(index)
+                references.append(f"{button} combo[{key}]")
+    return references
+
+
+def rename_macro(config, old_name, new_name):
+    macros = config.setdefault("macros", {})
+    if old_name not in macros:
+        raise ValueError(f"Macro '{old_name}' does not exist")
+    if new_name != old_name and new_name in macros:
+        raise ValueError(f"Macro '{new_name}' already exists")
+    if new_name == old_name:
+        return
+
+    for button_config in config.values():
+        if not isinstance(button_config, dict) or button_config is macros:
+            continue
+        if button_config.get("remap") == old_name:
+            button_config["remap"] = new_name
+        for combo in button_config.get("combos", []):
+            if combo.get("output") == old_name:
+                combo["output"] = new_name
+    macros[new_name] = macros.pop(old_name)
+
+
 def load_config():
-    path = os.path.expanduser("~/.config/edgemap/default.toml")
+    path = os.path.join(edgemap_config_dir(), "default.toml")
     if not os.path.exists(path):
         return {}
     try:
@@ -215,6 +264,7 @@ class MacroEditor(QDialog):
     def __init__(self, parent, name, macros):
         super().__init__(parent)
         self.name = name
+        self.macros = macros
         self.is_new = not name
         display = name or "(new macro)"
         self.setWindowTitle(f"Macro: {display}")
@@ -365,6 +415,9 @@ class MacroEditor(QDialog):
         if not new_name:
             QMessageBox.warning(self, "Error", "Macro name cannot be empty.")
             return
+        if new_name != self.name and new_name in self.macros:
+            QMessageBox.warning(self, "Error", f"Macro '{new_name}' already exists.")
+            return
         if not self.steps:
             QMessageBox.warning(self, "Error", "Macro must have at least one step.")
             return
@@ -391,9 +444,10 @@ class MacroEditor(QDialog):
 
 class MacroPicker(QDialog):
     """List existing macros; pick one to apply, or create/edit/delete."""
-    def __init__(self, parent, macros, for_button=None):
+    def __init__(self, parent, config, for_button=None):
         super().__init__(parent)
-        self.macros = macros
+        self.config = config
+        self.macros = config.setdefault("macros", {})
         self.for_button = for_button
         self.selected = None
         title = f"Select Macro{f' for {for_button}' if for_button else ''}"
@@ -420,16 +474,20 @@ class MacroPicker(QDialog):
         edit_btn = QPushButton("Edit")
         edit_btn.clicked.connect(self._edit)
         edit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        edit_btn.setAutoDefault(False)
         btn_row.addWidget(edit_btn)
         del_btn = QPushButton("Delete")
         del_btn.clicked.connect(self._delete)
         del_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        del_btn.setAutoDefault(False)
         btn_row.addWidget(del_btn)
         btn_row.addStretch()
 
         if for_button:
             apply_btn = QPushButton(f"Apply to {for_button}")
             apply_btn.clicked.connect(self._apply)
+            apply_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            apply_btn.setAutoDefault(False)
             btn_row.addWidget(apply_btn)
 
         layout.addLayout(btn_row)
@@ -451,7 +509,7 @@ class MacroPicker(QDialog):
 
     def _create_new(self):
         dlg = MacroEditor(self, "", self.macros)
-        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.name and dlg.name not in self.macros:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             self.macros[dlg.name] = {"mode": dlg.mode, "sequence": dlg.steps}
             self._refresh()
 
@@ -462,9 +520,16 @@ class MacroPicker(QDialog):
         name = item.data(Qt.ItemDataRole.UserRole)
         dlg = MacroEditor(self, name, self.macros)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.macros[name] = {"mode": dlg.mode, "sequence": dlg.steps}
+            updated = {"mode": dlg.mode, "sequence": dlg.steps}
             if dlg.name != name:
-                self.macros[dlg.name] = self.macros.pop(name)
+                try:
+                    rename_macro(self.config, name, dlg.name)
+                except ValueError as e:
+                    QMessageBox.warning(self, "Error", str(e))
+                    return
+                self.macros[dlg.name] = updated
+            else:
+                self.macros[name] = updated
             self._refresh()
 
     def _delete(self):
@@ -472,6 +537,22 @@ class MacroPicker(QDialog):
         if not item:
             return
         name = item.data(Qt.ItemDataRole.UserRole)
+        references = find_macro_references(self.config, name)
+        if references:
+            QMessageBox.warning(
+                self,
+                "Macro in use",
+                f"Cannot delete '{name}'. It is referenced by:\n" + "\n".join(references),
+            )
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete macro",
+            f"Delete macro '{name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
         row = self.list.currentRow()
         del self.macros[name]
         self._refresh()
@@ -625,14 +706,14 @@ def pick_keyboard_target(parent, combo, previous):
 
 
 class EdgemapConfigDialog(QDialog):
-    """Editor for ~/.config/edgemap/edgemap.toml."""
+    """Editor for edgemap.toml in the XDG config directory."""
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle("edgemap.toml Editor")
         self.resize(620, 440)
         self.setFixedSize(620, 440)
 
-        self.path = os.path.expanduser("~/.config/edgemap/edgemap.toml")
+        self.path = os.path.join(edgemap_config_dir(), "edgemap.toml")
 
         data = {}
         if os.path.exists(self.path):
@@ -668,6 +749,8 @@ class EdgemapConfigDialog(QDialog):
         fl = QFormLayout()
         self.cfg_combo = QComboBox()
         self.cfg_combo.setFixedWidth(200)
+        self.cfg_combo.setEditable(True)
+        self.cfg_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self._fill_config_combo(self.cfg_combo, data["config"])
         fl.addRow("Default config:", self.cfg_combo)
         layout.addLayout(fl)
@@ -690,6 +773,8 @@ class EdgemapConfigDialog(QDialog):
         pf = QFormLayout()
         self.pf_config = QComboBox()
         self.pf_config.setFixedWidth(200)
+        self.pf_config.setEditable(True)
+        self.pf_config.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.pf_process = QLineEdit()
         self.pf_process.setFixedWidth(200)
         self.pf_cmdline = QLineEdit()
@@ -761,7 +846,7 @@ class EdgemapConfigDialog(QDialog):
         self.prof_list.takeItem(self.prof_list.currentRow())
 
     def _fill_config_combo(self, combo, current):
-        edir = os.path.expanduser("~/.config/edgemap")
+        edir = edgemap_config_dir()
         combo.clear()
         if os.path.isdir(edir):
             for fn in sorted(os.listdir(edir)):
@@ -811,21 +896,26 @@ class EdgemapConfigDialog(QDialog):
                 return
 
         # Build TOML
-        lines = [f'config = "{self.cfg_combo.currentText()}"']
+        lines = [f"config = {toml_quote(self.cfg_combo.currentText())}"]
         if self.prof_list.count() > 0:
             lines.append("")
             for i in range(self.prof_list.count()):
                 item = self.prof_list.item(i)
                 d = item.data(Qt.ItemDataRole.UserRole) or {}
                 lines.append(f"[profiles.{item.text()}]")
-                lines.append(f'config = "{d.get("config", "default.toml")}"')
+                lines.append(f"config = {toml_quote(d.get('config', 'default.toml'))}")
                 if d.get("match_process"):
-                    lines.append(f'match_process = "{d["match_process"]}"')
+                    lines.append(f"match_process = {toml_quote(d['match_process'])}")
                 if d.get("match_cmdline"):
-                    lines.append(f'match_cmdline = "{d["match_cmdline"]}"')
+                    lines.append(f"match_cmdline = {toml_quote(d['match_cmdline'])}")
                 lines.append("")
 
         content = "\n".join(lines) + "\n"
+        try:
+            tomllib.loads(content)
+        except TOMLDecodeError as e:
+            QMessageBox.warning(self, "Error", f"Generated edgemap.toml is invalid:\n{e}")
+            return
         try:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             with open(self.path, "w") as f:
@@ -851,7 +941,7 @@ class EdgemapEditor(QMainWindow):
         self._build_ui()
         self._saved_config = copy.deepcopy(self.config)
 
-        default = os.path.expanduser("~/.config/edgemap/default.toml")
+        default = os.path.join(edgemap_config_dir(), "default.toml")
         if os.path.exists(default):
             self._open_config(default)
 
@@ -947,7 +1037,7 @@ class EdgemapEditor(QMainWindow):
             self.statusBar().addPermanentWidget(profile_btn)
 
         profile_menu = self.profile_btn.menu() or QMenu(self.profile_btn)
-        edir = os.path.expanduser("~/.config/edgemap")
+        edir = edgemap_config_dir()
         if os.path.isdir(edir):
             for fn in sorted(os.listdir(edir)):
                 if fn.endswith(".toml") and fn != "edgemap.toml":
@@ -1091,7 +1181,7 @@ class EdgemapEditor(QMainWindow):
         valid_set = set(TARGETS) | {"split"} | set(self.config.get("macros", {}).keys())
         last_valid_text = cb.currentText()
 
-        def on_remap_changed(text):
+        def on_remap_changed(text, writeback=True):
             nonlocal last_valid_text
             try: edit_btn.clicked.disconnect()
             except TypeError: pass
@@ -1114,7 +1204,8 @@ class EdgemapEditor(QMainWindow):
                 edit_btn.hide()
             else:
                 edit_btn.hide()
-            self.config.setdefault(name, {})["remap"] = text
+            if writeback:
+                self.config.setdefault(name, {})["remap"] = text
             last_valid_text = text
 
         def on_edit_finished():
@@ -1131,11 +1222,11 @@ class EdgemapEditor(QMainWindow):
         cb.lineEdit().editingFinished.connect(on_edit_finished)
         # initialize — use current combo text for proper state
         init_text = cb.currentText()
-        on_remap_changed(init_text)
+        on_remap_changed(init_text, writeback=False)
 
         if name == "touchpad":
-            def _orig_cb(text):
-                on_remap_changed(text)
+            def _orig_cb(text, writeback=True):
+                on_remap_changed(text, writeback)
                 enabled = (text == "split")
                 for wname in ("touchpad_left", "touchpad_right"):
                     for w in self._split_rows.get(wname, ()):
@@ -1144,7 +1235,7 @@ class EdgemapEditor(QMainWindow):
             try: cb.currentTextChanged.disconnect()
             except TypeError: pass
             cb.currentTextChanged.connect(_orig_cb)
-            _orig_cb(init_text)
+            _orig_cb(init_text, writeback=False)
 
         # Col 2: turbo
         tw = QWidget()
@@ -1217,15 +1308,13 @@ class EdgemapEditor(QMainWindow):
             btn["remap"] = "combo"
 
     def _pick_macro(self, name):
-        macros = self.config.setdefault("macros", {})
-        dlg = MacroPicker(self, macros, for_button=name)
+        dlg = MacroPicker(self, self.config, for_button=name)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected:
             btn = self.config.setdefault(name, {})
             btn["remap"] = dlg.selected
 
     def _open_macros(self):
-        macros = self.config.setdefault("macros", {})
-        MacroPicker(self, macros, for_button=None).exec()
+        MacroPicker(self, self.config, for_button=None).exec()
 
     def _open_edgemap_config(self):
         EdgemapConfigDialog(self).exec()
@@ -1272,7 +1361,7 @@ class EdgemapEditor(QMainWindow):
         if path is None:
             path, _ = QFileDialog.getOpenFileName(
                 self, "Open config",
-                os.path.expanduser("~/.config/edgemap"),
+                edgemap_config_dir(),
                 "TOML files (*.toml);;All files (*)"
             )
             if not path:
@@ -1309,7 +1398,7 @@ class EdgemapEditor(QMainWindow):
 
         self.current_file = path
         self.profile_btn.setText(os.path.basename(path))
-        conf_dir = os.path.realpath(os.path.expanduser("~/.config/edgemap"))
+        conf_dir = os.path.realpath(edgemap_config_dir())
         if os.path.realpath(path).startswith(conf_dir + os.sep):
             self.statusBar().showMessage("")
         else:
@@ -1320,15 +1409,11 @@ class EdgemapEditor(QMainWindow):
 
     # ── serialization ──
 
-    @staticmethod
-    def _escape(val):
-        return str(val).replace('\\', '\\\\').replace('"', '\\"')
-
     def _build_toml(self):
         lines = ["# Generated by edgemap config editor", "version = 2"]
         dev = self.config.get("output_device", "auto")
         if dev != "auto":
-            lines.append(f'output_device = "{dev}"')
+            lines.append(f"output_device = {toml_quote(dev)}")
         lines.append("")
         all_btns = [n for _, btns in LEFT + RIGHT for n in btns]
         for name in all_btns:
@@ -1341,7 +1426,7 @@ class EdgemapEditor(QMainWindow):
             remap = btn.get("remap", default_remap) or default_remap
             lines.append(f"[{name}]")
             if remap:
-                lines.append(f'remap = "{self._escape(remap)}"')
+                lines.append(f"remap = {toml_quote(remap)}")
             if btn.get("turbo"):
                 lines.append("turbo = true")
                 iv = btn.get("turbo_interval_ms", 100)
@@ -1352,18 +1437,18 @@ class EdgemapEditor(QMainWindow):
                     lines.append(f"turbo_delay_ms = {dv}")
             for c in btn.get("combos", []):
                 lines.append(f"[[{name}.combos]]")
-                lines.append(f'key = "{self._escape(c.get("key",""))}"')
-                lines.append(f'output = "{self._escape(c.get("output",""))}"')
+                lines.append(f"key = {toml_quote(c.get('key', ''))}")
+                lines.append(f"output = {toml_quote(c.get('output', ''))}")
             lines.append("")
 
         macros = self.config.get("macros", {})
         if macros:
             for mname, md in macros.items():
-                lines.append(f"[macros.{mname}]")
-                lines.append(f'mode = "{self._escape(md.get("mode","hold"))}"')
+                lines.append(f"[macros.{toml_quote(mname)}]")
+                lines.append(f"mode = {toml_quote(md.get('mode', 'hold'))}")
                 for s in md.get("sequence", []):
-                    lines.append(f"[[macros.{mname}.sequence]]")
-                    lines.append(f'key = "{self._escape(s.get("key",""))}"')
+                    lines.append(f"[[macros.{toml_quote(mname)}.sequence]]")
+                    lines.append(f"key = {toml_quote(s.get('key', ''))}")
                     lines.append(f"press_ms = {s.get('press_ms', 0)}")
                     lines.append(f"release_ms = {s.get('release_ms', 0)}")
                 lines.append("")
@@ -1406,8 +1491,7 @@ class EdgemapEditor(QMainWindow):
 
     def _save_config(self):
         if not self.current_file:
-            self._save_as_config()
-            return True
+            return self._save_as_config()
         content = self._build_toml()
         if not self._validate_and_write(content, self.current_file):
             return False
@@ -1418,30 +1502,31 @@ class EdgemapEditor(QMainWindow):
     def _save_as_config(self):
         content = self._build_toml()
         if not self._validate_content(content):
-            return
+            return False
 
         path, _ = QFileDialog.getSaveFileName(
             self, "Save config as",
-            os.path.expanduser("~/.config/edgemap"),
+            edgemap_config_dir(),
             "TOML files (*.toml);;All files (*)"
         )
         if not path:
-            return
+            return False
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 f.write(content)
         except OSError as e:
             QMessageBox.warning(self, "Error", f"Cannot save: {e}")
-            return
+            return False
         self.current_file = path
         self._saved_config = copy.deepcopy(self.config)
         self.profile_btn.setText(os.path.basename(path))
-        conf_dir = os.path.realpath(os.path.expanduser("~/.config/edgemap"))
+        conf_dir = os.path.realpath(edgemap_config_dir())
         if os.path.realpath(path).startswith(conf_dir + os.sep):
             self.statusBar().showMessage("")
         else:
             self.statusBar().showMessage(path)
+        return True
 
     def _reset_defaults(self):
         reply = QMessageBox.question(self, "Reset", "Reset all buttons to defaults?",
@@ -1481,7 +1566,11 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setApplicationName("edgemap")
     app.setDesktopFileName("edgemap")
-    w = EdgemapEditor()
+    try:
+        w = EdgemapEditor()
+    except RuntimeError as e:
+        QMessageBox.critical(None, "edgemap", str(e))
+        sys.exit(1)
     w.show()
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     app.exec()

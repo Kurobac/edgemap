@@ -7,3 +7,16 @@ jobs:
       - uses: actions/checkout@main
       - run: cargo build
       - run: cargo test
+
+  gui:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install PyQt6
+      - run: cargo build --bin edgemap
+      - run: python -m unittest discover -s tests -p 'test_gui.py' -v

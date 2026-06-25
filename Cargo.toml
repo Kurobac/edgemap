@@ -1,6 +1,6 @@
 [package]
 name = "dseuhid"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 default-run = "dseuhid"
 license = "GPL-3.0-or-later"

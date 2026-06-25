@@ -202,11 +202,29 @@ class WidgetTests(unittest.TestCase):
         ]
         self.assertEqual(len(ds4_actions), 1)
 
-        ds4_actions[0].trigger()
+        with patch.object(gui.QMessageBox, "information") as info:
+            ds4_actions[0].trigger()
         self.assertEqual(editor.config["output_device"], "dualshock4")
         self.assertEqual(editor.device_btn.text(), "DualShock 4 (Beta)")
+        info.assert_called_once()
         parsed = tomllib.loads(editor._build_toml())
         self.assertEqual(parsed["output_device"], "dualshock4")
+
+    def test_output_device_dualshock4_existing_config_does_not_warn_on_build(self):
+        editor = gui.EdgemapEditor.__new__(gui.EdgemapEditor)
+        gui.QMainWindow.__init__(editor)
+        editor.setStatusBar(gui.QStatusBar())
+        editor.config = {
+            "version": 2,
+            "output_device": "dualshock4",
+            "cross": {"remap": "passthrough"},
+        }
+        editor._split_rows = {}
+
+        with patch.object(gui.QMessageBox, "information") as info:
+            editor._build_ui()
+        self.assertEqual(editor.device_btn.text(), "DualShock 4 (Beta)")
+        info.assert_not_called()
 
     def test_sparse_and_split_configs_serialize_to_valid_rust_config(self):
         editor = gui.EdgemapEditor.__new__(gui.EdgemapEditor)

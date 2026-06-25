@@ -42,7 +42,12 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.9.0 | `53323f8` | **Code review cleanup**: strict config fields; analog write deferred to Phase 2; SIGHUP reload removed; UHID/uinput write error checking; 149 tests (+6) |
 | v1.0.0 | `4bef496` | **Stable release**: `output_device` enum, USB-only detection, UHID state tracking, hardened reload/install/keyboard/ACL failure paths; 153 tests |
 | v1.0.1 | `35894d3` | **Path and GUI hardening**: strict XDG/HOME handling, stable passthrough/keyboard/macro editor state, safe TOML/profile serialization, macro reference integrity, GUI CI; 158 Rust + 19 GUI tests |
-| v1.0.2 | current | **DualShock 4 target Beta**: GUI entry and docs for `output_device = "dualshock4"`; native DS4 Proton compatibility notes point to the DS4 UHID MI_03 identity patch in `proton-eg-patch`; 158 Rust + 20 GUI tests |
+| v1.0.2 | `4006227` | **DualShock 4 target Beta**: GUI entry and docs for `output_device = "dualshock4"`; native DS4 Proton compatibility notes point to the DS4 UHID MI_03 identity patch in `proton-eg-patch`; 158 Rust + 20 GUI tests |
+
+## Unreleased
+
+- DS4 target GUI warning: selecting `DualShock 4 (Beta)` now shows a reminder that some native DS4 games under Proton may require the patched Proton build.
+- GUI test coverage: 21 tests with DS4 selection warning and existing-config no-warning coverage.
 
 ## Implemented Features
 
@@ -198,9 +203,9 @@ Layer 3 (output): apply_state_to_report → UHID_INPUT2
 | `keyboard.rs` | 2 | successful press tracking, failed press/release state preservation |
 | `edgemap.rs` | 5 | XDG absolute/fallback handling, missing HOME, absolute and tilde config paths |
 
-### GUI Tests (20 total, PyQt6 offscreen)
+### GUI Tests (21 total, PyQt6 offscreen)
 
-Coverage includes save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device serialization, keyboard picker state, action-button styling, and Rust validator compatibility.
+Coverage includes save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device serialization, DS4 selection warning behavior, keyboard picker state, action-button styling, and Rust validator compatibility.
 
 ### Tools
 | Tool | Binary | Description |

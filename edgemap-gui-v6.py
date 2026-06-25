@@ -1084,6 +1084,12 @@ class EdgemapEditor(QMainWindow):
         self.config["output_device"] = val
         label = OUTPUT_DEVICE_LABELS.get(val, "Auto")
         self.device_btn.setText(label)
+        if val == "dualshock4":
+            QMessageBox.information(
+                self,
+                "DualShock 4 target",
+                "DualShock 4 target is beta. Some native DS4 games under Proton may require the patched Proton build linked in the README.",
+            )
     # ── table builder ──
 
     def _make_table(self, groups):

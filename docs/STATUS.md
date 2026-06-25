@@ -1,4 +1,4 @@
-# edgemap — Project Status (2026-06-21)
+# edgemap — Project Status (2026-06-26)
 
 ## Overview
 
@@ -41,7 +41,12 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v0.8.0 | `f56968c` | **Keyboard target**: uinput keyboard device for `key:xxx` targets; remap/combo/macro step → keyboard; GUI KeyboardPicker with 106 keycodes; split touchpad→keyboard; turbo+keyboard pipeline fix; six bugfixes (#72-#76); 143 tests (+8) |
 | v0.9.0 | `53323f8` | **Code review cleanup**: strict config fields; analog write deferred to Phase 2; SIGHUP reload removed; UHID/uinput write error checking; 149 tests (+6) |
 | v1.0.0 | `4bef496` | **Stable release**: `output_device` enum, USB-only detection, UHID state tracking, hardened reload/install/keyboard/ACL failure paths; 153 tests |
-| v1.0.1 | current | **Path and GUI hardening**: strict XDG/HOME handling, stable passthrough/keyboard/macro editor state, safe TOML/profile serialization, macro reference integrity, GUI CI; 158 Rust + 19 GUI tests |
+| v1.0.1 | `35894d3` | **Path and GUI hardening**: strict XDG/HOME handling, stable passthrough/keyboard/macro editor state, safe TOML/profile serialization, macro reference integrity, GUI CI; 158 Rust + 19 GUI tests |
+
+## Unreleased
+
+- **DualShock 4 target Beta**: GUI entry and docs for `output_device = "dualshock4"`; native DS4 Proton compatibility notes now point to the DS4 UHID MI_03 identity patch in `proton-eg-patch`.
+- GUI test coverage: 20 tests with DS4 output device menu/serialization coverage.
 
 ## Implemented Features
 
@@ -182,6 +187,7 @@ Layer 3 (output): apply_state_to_report → UHID_INPUT2
 - Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported
 - HID report descriptor read from physical device via HIDIOCGRDESC, `DS_EDGE_USB_DESCRIPTOR` fallback
 - `output_device = "dualsense"` overrides the virtual device to regular DS (PID 0x0CE6 + `DS_USB_DESCRIPTOR`); changing it on reload recreates UHID
+- `output_device = "dualshock4"` exposes a DualShock 4 target (PID 0x09CC + `DS4_USB_DESCRIPTOR`, Beta); native DS4 games under Proton should use the DS4 UHID MI_03 identity patch from `proton-eg-patch` for best compatibility
 - State validation: read first input report on open()
 - Multi-device: warn if more than one DualSense detected
 - EIO cooldown: 2-second sleep after disconnect
@@ -196,9 +202,9 @@ Layer 3 (output): apply_state_to_report → UHID_INPUT2
 | `keyboard.rs` | 2 | successful press tracking, failed press/release state preservation |
 | `edgemap.rs` | 5 | XDG absolute/fallback handling, missing HOME, absolute and tilde config paths |
 
-### GUI Tests (19 total, PyQt6 offscreen)
+### GUI Tests (20 total, PyQt6 offscreen)
 
-Coverage includes save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, keyboard picker state, action-button styling, and Rust validator compatibility.
+Coverage includes save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device serialization, keyboard picker state, action-button styling, and Rust validator compatibility.
 
 ### Tools
 | Tool | Binary | Description |

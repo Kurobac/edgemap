@@ -73,9 +73,9 @@ Multiple DualSense pads would share the same ContainerId (dseuhid only virtualiz
 #    Check GE-Proton's wine submodule commit:
 #    git -C proton-ge-custom submodule status wine
 
-# 2. Apply patch
+# 2. Apply patch from the proton-eg-patch repository
 cd <wine-src>
-patch -p1 < docs/proton-dualsense-containerid.patch
+curl -L https://raw.githubusercontent.com/Kurobac/proton-eg-patch/main/patches/proton-dualsense-containerid.patch | patch -p1
 
 # 3. Build
 ./autogen.sh
@@ -117,5 +117,6 @@ grep "0000054C" ~/steam-1091500.log
 
 ## Related Files
 
-- `docs/proton-dualsense-containerid.patch` — patch file for ValveSoftware/wine
+- [proton-dualsense-containerid.patch](https://github.com/Kurobac/proton-eg-patch/blob/main/patches/proton-dualsense-containerid.patch) — patch file for ValveSoftware/wine
+- [proton-eg-patch](https://github.com/Kurobac/proton-eg-patch) — maintained Proton patch repository
 - This issue cannot be fixed on the dseuhid side (kernel UHID interface does not support setting sysfs USB parent)

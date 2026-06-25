@@ -59,6 +59,18 @@ TARGETS = [
 
 COLUMNS = 3  # Button, Remap, Turbo
 
+OUTPUT_DEVICE_LABELS = {
+    "auto": "Auto",
+    "dualsense": "DualSense",
+    "dualshock4": "DualShock 4 (Beta)",
+}
+
+OUTPUT_DEVICE_MENU = [
+    ("Auto (match physical)", "auto"),
+    ("DualSense", "dualsense"),
+    ("DualShock 4 (Beta)", "dualshock4"),
+]
+
 
 def toml_quote(value):
     return json.dumps(str(value), ensure_ascii=False)
@@ -1055,23 +1067,22 @@ class EdgemapEditor(QMainWindow):
             device_btn.setFlat(True)
             device_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             device_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            device_btn.setMaximumWidth(130)
+            device_btn.setMaximumWidth(180)
             self.device_btn = device_btn
             self.statusBar().insertPermanentWidget(0, device_btn)
 
         dev = self.config.get("output_device", "auto")
-        label = {"auto": "Auto", "dualsense": "DualSense"}.get(dev, "Auto")
+        label = OUTPUT_DEVICE_LABELS.get(dev, "Auto")
         self.device_btn.setText(label)
 
         dev_menu = self.device_btn.menu() or QMenu(self.device_btn)
         dev_menu.clear()
-        for text, val in [("Auto (match physical)", "auto"),
-                           ("DualSense", "dualsense")]:
+        for text, val in OUTPUT_DEVICE_MENU:
             dev_menu.addAction(text, lambda _checked=False, v=val: self._set_output_device(v))
         self.device_btn.setMenu(dev_menu)
     def _set_output_device(self, val):
         self.config["output_device"] = val
-        label = {"auto": "Auto", "dualsense": "DualSense"}.get(val, "Auto")
+        label = OUTPUT_DEVICE_LABELS.get(val, "Auto")
         self.device_btn.setText(label)
     # ── table builder ──
 

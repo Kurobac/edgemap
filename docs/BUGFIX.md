@@ -190,7 +190,7 @@
 **Fix:** Swap loops — profiles outer (declaration order guarantees priority), PIDs inner. (`1c4f8ec`)
 
 ### #45 — Auto-generated `edgemap.toml` used absolute path for `config` key
-**Root cause:** `config = "/home/kurobac/.config/edgemap/default.toml"` — verbose, not portable, not user-friendly.
+**Root cause:** `config = "/home/user/.config/edgemap/default.toml"` — verbose, not portable, not user-friendly.
 
 **Fix:** Write `config = "default.toml"` (relative). Add `resolve_config_path()` to handle relative paths (join to `~/.config/edgemap/`), `~`-prefixed, and absolute paths uniformly. (`87ebd24`)
 

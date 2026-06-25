@@ -14,15 +14,10 @@ Steam Input is slightly different — games supporting [Native mode](https://par
 This project is provided AS IS. The author has tested it to the best of their ability,
 but makes no warranty regarding functionality or stability.
 
-## Note on HD haptics
+## Note on Proton patches
 
-dseuhid does not touch the USB audio channel that carries DualSense HD haptics
-data. Some games work fine out of the box (e.g. Genshin Impact). However,
-certain games (e.g. Cyberpunk 2077) use Windows ContainerId or device-tree
-traversal to locate the audio endpoint associated with the controller — the
-UHID virtual device cannot satisfy this. These games require a [patched Protonbuild](https://github.com/Kurobac/proton-eg-patch) 
-to restore HD haptics. If HD haptics don't work with a physical
-DualSense on vanilla Proton, dseuhid will not help either.
+Some games may require a [patched Proton build](https://github.com/Kurobac/proton-eg-patch)
+for DualSense HD haptics or the DualShock 4 target (`output_device = "dualshock4"`).
 
 See [docs/HD-HAPTICS-FIX.md](docs/HD-HAPTICS-FIX.md) for the technical details.
 
@@ -79,6 +74,7 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Passthrough | All DualSense HID data — gyro, touchpad, LED, rumble, adaptive triggers, HD haptics — forwarded untouched |
 | Regular DualSense | Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported |
 | DSE→DS virtualization | `output_device = "dualsense"` makes Edge appear as regular DS for game compatibility |
+| DualShock 4 target (Beta) | `output_device = "dualshock4"` exposes a DS4-compatible UHID target for native DS4 games |
 | GET_REPORT cache | IMU calibration data read from physical device on startup (accurate gyro) |
 | GUI config editor | PyQt6 native editor — remap, turbo, combo, macro, macro manager, save/load |
 
@@ -93,7 +89,7 @@ the physical input untouched.
 
 ```toml
 version = 2
-output_device = "auto" # "auto" or "dualsense"
+output_device = "auto" # "auto", "dualsense", or "dualshock4"
 
 [cross]
 remap = "circle"
@@ -121,6 +117,20 @@ match_process = "game.exe"
 
 Profiles are checked in declaration order. `match_process` is an exact process-name match;
 `match_cmdline` is a substring match. When both are set, both must match.
+
+### DualShock 4 target (Beta)
+
+`output_device = "dualshock4"` makes the virtual controller identify as a
+DualShock 4 (`054C:09CC`, `Wireless Controller`). This is intended for games
+with native DS4 support while keeping dseuhid's remap/combo/macro pipeline.
+
+For best Proton compatibility, use the DS4 UHID MI_03 identity patch from
+[proton-eg-patch](https://github.com/Kurobac/proton-eg-patch). Tests show that
+some native DS4 games require the Windows device path to look like
+`VID_054C&PID_09CC&MI_03` with version `0100` before they perform the complete
+Sony feature init sequence (`0x12 -> 0xA3 -> 0x14 -> 0x02`). Without the patch,
+some games still accept buttons and show Sony icons, while others may only do a
+partial init or ignore the controller.
 
 ## Not supported (by design)
 

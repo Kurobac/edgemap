@@ -1,180 +1,115 @@
-# DS4 Target — Final Status Report
+# DS4 Target — Beta Status
 
-## ✅ Verified Working
+## Current conclusion
 
-| Component | Verification |
-|-----------|-------------|
-| Raw input report format | Byte-for-byte match with Windows reWASD capture |
-| Buttons / sticks / triggers | Steam + evtest + Genshin Impact hidraw path |
-| Touchpad (click + coordinates) | evtest + Steam controller test (Y-axis 1080→942 scaling) |
-| LED output | Verified in Steam and Genshin Impact |
-| Rumble | Steam vibration test passed (DS4→DS5 compatible vibration) |
-| SDL/evdev path | sdl2-jstest works |
-| Kernel driver probe | UHID start/open succeeds, device nodes created |
-| DS Edge passthrough mode | Works |
-| DS5 forced mode | Works |
+`output_device = "dualshock4"` is no longer considered architecturally blocked.
+The old conclusion that UHID DS4 is fundamentally unusable under Proton was
+based on incomplete device-identity evidence and is obsolete.
 
-## ❌ Game Compatibility — Final Conclusion
+The DS4 HID/report side in dseuhid is good enough for Beta use: buttons, sticks,
+triggers, touchpad coordinates, LED output, rumble conversion, SDL/evdev, and
+Steam controller tests all work. Several native DS4 games can use the UHID DS4
+target with Steam Input disabled and hidraw enabled.
 
-### Category A — HIDRAW-path games completely ignore the controller (CP2077 / TLOU / Death Stranding)
+The remaining Proton compatibility issue is Windows device identity. Some games
+expect a real USB DS4 HID interface path like:
 
-**Symptom:** All native DS4 games ignore the controller entirely — no button response.
-Genshin Impact recognizes the controller but gyro and vibration don't work.
-
-**Root cause:** The game stops after `GetFeature(0x12)` — it never queries `GetFeature(0xA3)`, never sends `SetFeature(0x14)`. **Even with all HID data and Proton layers aligned, the game refuses to proceed with the full init sequence.**
-
-### Complete debug matrix
-
-| Attempt | Result |
-|---------|--------|
-| HID raw report aligned to reWASD | ✅ Data correct, game still unresponsive |
-| Feature report data fix | ✅ Garbage-data bug fixed |
-| HID Descriptor Report Count fix | ✅ Caps parsed correctly |
-| Device name = "Wireless Controller" | ✅ Matching real DS4 |
-| MAC / uniq / fw_version non-zero | ✅ Matching real DS4 |
-| PID 0x05C4 / 0x09CC | ✅ Both show same behavior |
-| **DS4→DS4 pure passthrough demo** (real DS4 data via UHID) | ❌ Still broken → **Not a data generation problem** |
-| **Proton ContainerID patch** (bus_udev.c) | ❌ GUID_NULL fixed, no effect |
-| **Proton SetupAPI recursive enum patch** (devinst.c) | ✅ Device count 4→21, no effect |
-
-**Conclusion:** UHID virtual DS4 faces a fundamental architectural barrier under Proton. The game's refusal to initialize is NOT caused by HID data or descriptor issues. dseuhid has done everything possible from its side.
-
-## 🔍 Investigation Timeline
-
-### Windows API Monitor — CP2077 init sequence (working)
-
-| # | Thread | API | Report | Size | Result |
-|---|--------|-----|--------|------|--------|
-| 1 | 73 | HidD_GetFeature | 0x12 (MAC) | 16B | TRUE |
-| 2 | 77 | HidD_GetFeature | 0xA3 (firmware) | 49B | TRUE |
-| 3 | 77 | **HidD_SetFeature** | **0x14** | **17B** | **TRUE** |
-| 4 | 77 | HidD_GetFeature | 0x02 (calibration) | 37B | TRUE |
-
-### Real DS4 (0x09CC) Proton log — full init sequence
-
-```
-read feature report id 18  length 64:   ← winedevic enumeration of 0x12
-write output report id 5   length 32:   ← LED init
-read feature report id 18  length 16:   ← Game's 2nd query of 0x12 (correct size!)
-read feature report id 163 length 49:   ← 0xA3 firmware
-write feature report id 20 length 17:   ← SetFeature 0x14 init!
-read feature report id 2   length 37:   ← 0x02 calibration
+```text
+USB\VID_054C&PID_09CC&MI_03\...
 ```
 
-### Our DS4 Proton log — stuck at step 1
+For dseuhid's UHID DS4, unpatched Proton previously exposed the hidraw device
+without `MI_03`, with version `0000` and `input = -1`. Games such as CP2077 then
+stopped after the first `GetFeature(0x12)` and never entered the full Sony
+feature init path.
 
-```
-read feature report id 18  length 64:   ← Just this one
-write output report id 5   length 32:   ← LED
-[STOP — no further feature report operations]
-```
+With the Proton DS4 UHID MI_03 identity patch, the hidraw device is exposed as
+`VID_054C&PID_09CC&MI_03`, version `0100`, `input = 3`. CP2077 then proceeds
+through the same full init sequence as a physical DS4.
 
-### Linux strace: real DS4 vs our DS4
+## Verified behavior
 
-| ioctl | Real DS4 | DS4 UHID |
-|-------|----------|----------|
-| HIDIOCGFEATURE(64) winedevic | ✅ | ✅ |
-| HIDIOCGFEATURE(64) game | ✅ | ✅ |
-| **HIDIOCGFEATURE(16)** game | ✅ | ❌ |
-| HIDIOCGFEATURE(49) | ✅ | ❌ |
-| **HIDIOCSFEATURE(17)** | ✅ | ❌ |
-| HIDIOCGFEATURE(37) | ✅ | ❌ |
+| Area | Status |
+|------|--------|
+| DS4 input report format | Working |
+| Buttons / sticks / triggers | Working |
+| Touchpad click + coordinates | Working |
+| LED output | Working |
+| Rumble | Working via DS4 output to DS5 output conversion |
+| SDL/evdev path | Working |
+| Native DS4 hidraw games | Beta; varies by Proton identity path |
+| Proton with DS4 MI_03 patch | CP2077 recognizes input and performs full DS4 feature init |
 
-### DS4→DS4 Pure Passthrough Demo
+## Real DS4 vs UHID DS4 logs
 
-A standalone binary (`src/bin/ds4-passthru.rs`) was written for this investigation: real DS4 physical device → UHID virtual DS4 pure passthrough. **Real data + UHID → game still doesn't work.** Confirms the issue is not in data generation. The diagnostic binary was removed after verification.
+Physical DS4 in CP2077:
 
-### Proton source patches attempted
-
-| Patch | File | Effect |
-|-------|------|--------|
-| DS5 ContainerID extension | `winebus.sys/main.c` | ❌ UHID doesn't use this path |
-| ContainerID fallback | `winebus.sys/bus_udev.c` | ✅ GUID_NULL fixed, but no help |
-| **SetupAPI ROOT recursive enum** | `setupapi/devinst.c` | ✅ Device count 4→21, still no effect |
-
-All three patches under `/home/kurobac/Projects/proton-eg-patch/patches/`.
-
-## 🐛 Bugs Found and Fixed
-
-### 1. Feature Report data filled with report ID byte (🔴 P0)
-```rust
-// ❌ vec![0x12u8; 16] fills all 16 bytes with 0x12; resize(16, 0) is a no-op
-// ✅ vec![0u8; 16]; buf[0] = 0x12;
-```
-Affected three reports: 0x02, 0x12, 0xA3. All bytes not explicitly assigned were garbage.
-
-### 2. HID Descriptor Report Count off-by-one (🔴 P0)
-| Report | Before (wrong) | After (correct) |
-|--------|---------------|-----------------|
-| 0x02 cal | 0x25(37) | 0x24(36) |
-| 0x12 MAC | 0x10(16) | 0x0F(15) |
-| 0xA3 fw | 0x31(49) | 0x30(48) |
-HID spec: Report Count excludes the report ID byte. PSDevWiki totals include it.
-After fix: MAC no longer re-queried infinitely by Proton (20+ → 1).
-
-### 3. Device name
-```rust
-let name = if output_device == "dualshock4" {
-    "Wireless Controller"  // Matches ViGEmBus / real DS4
-};
+```text
+read feature report id 18  length 64
+write output report id 5   length 32
+read feature report id 18  length 16
+read feature report id 163 length 49
+write feature report id 20 length 17
+read feature report id 2   length 37
 ```
 
-### 4. SET_REPORT forwarding
-DS4 mode: kernel-initiated SET_REPORT (rnum=0x13) not forwarded to physical device; reply success directly.
+Unpatched UHID DS4 in CP2077 and SOTTR:
 
-### 5. Other fixes
-- `uniq` → `"c0:13:37:00:00:01"`
-- firmware version → `0x0049` (real DS4 value)
-- sensor temperature → `0x06`
-- battery status → `0x1B` (Full + USB connected)
-- 0x12 report bytes 7-9 → copied from real DS4
-- 0xA3 report → full build date string + hw_version/fw_version
-
-### Proton `debug_print_preparsed` confirms correctness
-
-```
-feature 5: RId 18 (0x12), RCnt 15 ✅
-feature 7: RId 20 (0x14), RCnt 16 ✅
--- All 43 feature value caps parsed correctly
+```text
+read feature report id 18  length 64
+write output report id 5   length 32
 ```
 
-## 💡 Final Conclusion
+This partial sequence does **not** mean the DS4 target necessarily fails. SOTTR
+still accepts input and shows Sony-style prompts with only the short init path.
+It means the game did not enter the deeper Sony feature path, so gyro, firmware,
+or calibration behavior may differ by title.
 
-**DS4 Target's UHID simulation is completely correct at the HID level** — verified with Steam, evtest, and SDL. The game incompatibility is an architectural limitation of UHID virtual devices under Proton: the game abandons initialization after `GetFeature(0x12)`, and this behavior is unaffected by HID data, descriptors, ContainerID, or SetupAPI enumeration.
+Patched Proton UHID DS4 in CP2077:
 
-DS4 Target HID code is worth preserving. Once someone breaks through from the Proton side, it can be enabled immediately.
+```text
+USB\VID_054C&PID_09CC&MI_03\...
+read feature report id 18  length 64
+write output report id 5   length 32
+read feature report id 18  length 16
+read feature report id 163 length 49
+write feature report id 20 length 17
+read feature report id 2   length 37
+```
 
-## Changes Merged to Main
+## Proton patch
 
-| Change | Files | Notes |
-|--------|-------|-------|
-| `force_dualsense` → `output_device` enum | `config.rs`, `main.rs`, `proxy.rs`, `edgemap-gui-v6.py` | Three modes (auto/dualsense/dualshock4) |
-| Feature Report data bug fix | `main.rs` | `vec![0u8; SIZE]` + `buf[0] = report_id` |
-| HID Descriptor Report Count fix | `descriptor.rs` | Three reports RCnt -1 |
-| Non-zero feature report data | `main.rs` | MAC, fw_version, calibration, battery, sensor temp |
-| GUI Output Device dropdown | `edgemap-gui-v6.py` | Exposes auto/dualsense; dualshock4 remains config-only |
+The patch lives in the
+[proton-eg-patch repository](https://github.com/Kurobac/proton-eg-patch/blob/main/patches/proton-ds4-uhid-mi03.patch).
 
-## 📊 Implemented Feature Checklist
+dseuhid does not ship or install Proton. The README points users to the patch
+repository because Proton-side identity is outside dseuhid's HID report path.
+
+Patch behavior:
+
+- Applies only to UHID-backed DS4 hidraw devices.
+- Matches Sony DS4 PIDs `054C:05C4` and `054C:09CC`.
+- Leaves evdev input subnodes alone.
+- Sets `input = 3`, `version = 0x0100` when missing, and a stable container id.
+
+## Implemented in dseuhid
 
 | Feature | Status | File |
 |---------|--------|------|
-| DS4 HID descriptor (467 bytes) | ✅ | `src/descriptor.rs` |
-| Input report writer (DS4 64-byte layout) | ✅ | `src/report.rs` |
-| Output report converter (DS4→DS5 rumble+LED) | ✅ | `src/report.rs` |
-| Touchpad coordinate forwarding (Y 1080→942) | ✅ | `src/report.rs` |
-| Gyro/accelerometer forwarding (1:1 calibration) | ✅ | `src/report.rs` + `src/main.rs` |
-| Feature report cache (0x02/0x12/0xA3) | ✅ | `src/main.rs` |
-| Output device enum (auto/dualsense/dualshock4) | ✅ | `src/config.rs` |
-| GUI Output Device dropdown | ✅ auto/dualsense; DS4 hidden | `edgemap-gui-v6.py` |
-| UHID reload detection for output_device changes | ✅ | `src/proxy.rs` |
-| Sensor temp + battery status + touch INACTIVE | ✅ | `src/report.rs` |
-| DS4 pure passthrough verification demo | ✅ Completed; diagnostic binary removed | — |
+| DS4 HID descriptor | Implemented | `src/descriptor.rs` |
+| DS4 input report writer | Implemented | `src/report.rs` |
+| DS4 output report conversion | Implemented | `src/report.rs` |
+| Feature report cache (`0x02`, `0x12`, `0xA3`) | Implemented | `src/main.rs` |
+| DS4 virtual identity (`Wireless Controller`, PID `0x09CC`) | Implemented | `src/main.rs` |
+| `output_device = "dualshock4"` config | Beta | `src/config.rs` |
+| GUI Output Device selector | Beta | `edgemap-gui-v6.py` |
+| UHID recreation on output device change | Implemented | `src/proxy.rs` |
 
-## 📝 Artifacts
+## Compatibility notes
 
-- Proton source patches (`/home/kurobac/Projects/proton-eg-patch/patches/`)
-  - `proton-ds4-uhid-containerid.patch` — bus_udev.c UHID ContainerID fallback
-  - `proton-ds4-setupapi-root-enum.patch` — setupapi/devinst.c ROOT recursive enumeration
-- Windows API Monitor capture (CP2077 init sequence)
-- reWASD raw HID report byte-for-byte comparison data
-- Real DS4 (0x09CC) hardware comparison testing
+- DS4 target is Beta, not a promise that every native DS4 game works.
+- Games that only need input and Sony prompts may work without the Proton patch.
+- Games that require the complete Sony feature init are expected to need the
+  Proton DS4 UHID MI_03 identity patch.
+- The DS4 target does not emulate an entire USB device tree in Linux; the
+  compatibility fix belongs on the Proton device-enumeration side.

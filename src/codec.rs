@@ -60,40 +60,56 @@ impl SourceCodec {
             Self::Ds5Usb => input_ds5_usb::decode(raw),
         }
     }
+
+    pub fn physical_codec(self) -> PhysicalCodec {
+        match self {
+            Self::Ds5Usb => PhysicalCodec::Ds5Usb,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VirtualTarget {
+pub enum PhysicalCodec {
+    Ds5Usb,
+}
+
+impl PhysicalCodec {
+    pub fn encode_output(self, target: VirtualTarget, data: &[u8]) -> CodecResult<Vec<u8>> {
+        match (self, target) {
+            (Self::Ds5Usb, VirtualTarget::Ds5UsbAuto | VirtualTarget::Ds5UsbForced) => {
+                physical_ds5_usb::encode_output_from_ds5_usb(data)
+            }
+            (Self::Ds5Usb, VirtualTarget::Ds4Usb) => {
+                physical_ds5_usb::encode_output_from_ds4_usb(data)
+            }
+        }
+    }
+
+    pub fn encode_set_report(self, target: VirtualTarget, report_id: u8, data: &[u8]) -> Option<Vec<u8>> {
+        match (self, target) {
+            (Self::Ds5Usb, VirtualTarget::Ds5UsbAuto | VirtualTarget::Ds5UsbForced) => {
+                let mut full_data = vec![report_id];
+                full_data.extend_from_slice(data);
+                Some(full_data)
+            }
+            (Self::Ds5Usb, VirtualTarget::Ds4Usb) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetCodec {
     Ds5UsbAuto,
     Ds5UsbForced,
     Ds4Usb,
 }
 
-impl VirtualTarget {
-    pub fn from_output_device(output_device: &str) -> Self {
-        match output_device {
-            "dualshock4" => Self::Ds4Usb,
-            "dualsense" => Self::Ds5UsbForced,
-            _ => Self::Ds5UsbAuto,
-        }
-    }
-
-    pub fn encode_input(&self, frame: &ControllerFrame, seq: u8) -> CodecResult<[u8; report::USB_INPUT_REPORT_SIZE]> {
+impl TargetCodec {
+    pub fn encode_input(self, frame: &ControllerFrame, seq: u8) -> CodecResult<[u8; report::USB_INPUT_REPORT_SIZE]> {
         match self {
             Self::Ds5UsbAuto | Self::Ds5UsbForced => target_ds5_usb::encode_input(frame, seq),
             Self::Ds4Usb => target_ds4_usb::encode_input(frame, seq),
         }
-    }
-
-    pub fn encode_physical_ds5_usb_output(&self, data: &[u8]) -> CodecResult<Vec<u8>> {
-        match self {
-            Self::Ds5UsbAuto | Self::Ds5UsbForced => physical_ds5_usb::encode_output_from_ds5_usb(data),
-            Self::Ds4Usb => physical_ds5_usb::encode_output_from_ds4_usb(data),
-        }
-    }
-
-    pub fn forwards_physical_ds5_usb_set_report(self) -> bool {
-        matches!(self, Self::Ds5UsbAuto | Self::Ds5UsbForced)
     }
 
     pub fn seed_feature_reports(self, cache: &mut FeatureReportCache) {
@@ -156,6 +172,32 @@ impl VirtualTarget {
             },
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtualTarget {
+    Ds5UsbAuto,
+    Ds5UsbForced,
+    Ds4Usb,
+}
+
+impl VirtualTarget {
+    pub fn from_output_device(output_device: &str) -> Self {
+        match output_device {
+            "dualshock4" => Self::Ds4Usb,
+            "dualsense" => Self::Ds5UsbForced,
+            _ => Self::Ds5UsbAuto,
+        }
+    }
+
+    pub fn target_codec(self) -> TargetCodec {
+        match self {
+            Self::Ds5UsbAuto => TargetCodec::Ds5UsbAuto,
+            Self::Ds5UsbForced => TargetCodec::Ds5UsbForced,
+            Self::Ds4Usb => TargetCodec::Ds4Usb,
+        }
+    }
+
 }
 
 pub struct UsbTargetIdentity<'a> {
@@ -404,7 +446,9 @@ mod tests {
         ds4[1] = 0x01;
         ds4[4] = 64;
         ds4[5] = 128;
-        let ds5 = physical_ds5_usb::encode_output_from_ds4_usb(&ds4).unwrap();
+        let ds5 = PhysicalCodec::Ds5Usb
+            .encode_output(VirtualTarget::Ds4Usb, &ds4)
+            .unwrap();
 
         assert_eq!(ds5[0], 0x02);
         assert_eq!(ds5[1] & 0x03, 0x03);
@@ -413,16 +457,16 @@ mod tests {
     }
 
     #[test]
-    fn virtual_target_selects_expected_input_codec() {
+    fn target_codec_selects_expected_input_codec() {
         let mut raw = ds5_usb_raw();
         raw[33] = 0x80;
         let mut frame = input_ds5_usb::decode(&raw).unwrap();
         frame.state.set_button(Button::Cross, true);
 
-        let ds5 = VirtualTarget::Ds5UsbAuto.encode_input(&frame, 0x10).unwrap();
+        let ds5 = TargetCodec::Ds5UsbAuto.encode_input(&frame, 0x10).unwrap();
         assert_eq!(ds5[8] & 0x20, 0x20);
 
-        let ds4 = VirtualTarget::Ds4Usb.encode_input(&frame, 0x10).unwrap();
+        let ds4 = TargetCodec::Ds4Usb.encode_input(&frame, 0x10).unwrap();
         assert_eq!(ds4[5] & 0x20, 0x20);
     }
 
@@ -431,12 +475,13 @@ mod tests {
         for kind in [SonyDeviceKind::DualSense, SonyDeviceKind::DualSenseEdge] {
             let source = SourceCodec::from_device(kind, SourceTransport::Usb);
             assert_eq!(source, SourceCodec::Ds5Usb);
+            assert_eq!(source.physical_codec(), PhysicalCodec::Ds5Usb);
             assert_eq!(source.input_report_size(), report::USB_INPUT_REPORT_SIZE);
         }
     }
 
     #[test]
-    fn virtual_target_usb_identity_preserves_auto_and_forced_ds5_modes() {
+    fn target_codec_usb_identity_preserves_auto_and_forced_ds5_modes() {
         let source = DeviceInfo {
             path: std::path::PathBuf::from("/dev/hidraw0"),
             vid: device::SONY_VID,
@@ -446,12 +491,12 @@ mod tests {
         };
         let physical_desc = [0x01, 0x02, 0x03];
 
-        let auto = VirtualTarget::Ds5UsbAuto.usb_identity(&source, &physical_desc);
+        let auto = TargetCodec::Ds5UsbAuto.usb_identity(&source, &physical_desc);
         assert_eq!(auto.product_id, device::DS5_EDGE_PID as u32);
         assert_eq!(auto.report_descriptor, &physical_desc);
         assert_eq!(auto.label, "DualSense Edge (auto)");
 
-        let forced = VirtualTarget::Ds5UsbForced.usb_identity(&source, &physical_desc);
+        let forced = TargetCodec::Ds5UsbForced.usb_identity(&source, &physical_desc);
         assert_eq!(forced.product_id, device::DS5_PID as u32);
         assert_eq!(forced.report_descriptor, &descriptor::DS_USB_DESCRIPTOR);
         assert_eq!(forced.label, "DualSense (forced)");
@@ -460,7 +505,7 @@ mod tests {
     #[test]
     fn ds4_target_seeds_feature_reports() {
         let mut cache = FeatureReportCache::new();
-        VirtualTarget::Ds4Usb.seed_feature_reports(&mut cache);
+        TargetCodec::Ds4Usb.seed_feature_reports(&mut cache);
         let cache = cache.into_inner();
 
         assert_eq!(cache.get(&0x02).unwrap().len(), 37);
@@ -470,7 +515,7 @@ mod tests {
 
     #[test]
     fn ds5_target_fallback_uses_fake_pairing_mac() {
-        let data = VirtualTarget::Ds5UsbAuto.fallback_feature_report(0x09).unwrap();
+        let data = TargetCodec::Ds5UsbAuto.fallback_feature_report(0x09).unwrap();
 
         assert_eq!(data.len(), 20);
         assert_eq!(data[0], 0x09);
@@ -479,25 +524,43 @@ mod tests {
 
     #[test]
     fn ds4_target_has_no_fallback_feature_reports() {
-        assert!(VirtualTarget::Ds4Usb.fallback_feature_report(0x09).is_none());
+        assert!(TargetCodec::Ds4Usb.fallback_feature_report(0x09).is_none());
     }
 
     #[test]
-    fn only_ds5_targets_forward_physical_set_report() {
-        assert!(VirtualTarget::Ds5UsbAuto.forwards_physical_ds5_usb_set_report());
-        assert!(VirtualTarget::Ds5UsbForced.forwards_physical_ds5_usb_set_report());
-        assert!(!VirtualTarget::Ds4Usb.forwards_physical_ds5_usb_set_report());
+    fn physical_codec_set_report_policy_respects_virtual_target() {
+        let data = [0x11, 0x22, 0x33];
+
+        assert_eq!(
+            PhysicalCodec::Ds5Usb.encode_set_report(VirtualTarget::Ds5UsbAuto, 0x31, &data),
+            Some(vec![0x31, 0x11, 0x22, 0x33])
+        );
+        assert_eq!(
+            PhysicalCodec::Ds5Usb.encode_set_report(VirtualTarget::Ds5UsbForced, 0x31, &data),
+            Some(vec![0x31, 0x11, 0x22, 0x33])
+        );
+        assert_eq!(
+            PhysicalCodec::Ds5Usb.encode_set_report(VirtualTarget::Ds4Usb, 0x31, &data),
+            None
+        );
     }
 
     #[test]
     fn ds5_targets_request_only_safe_physical_feature_reports() {
-        let requests = VirtualTarget::Ds5UsbAuto.physical_feature_reports_to_cache();
+        let requests = TargetCodec::Ds5UsbAuto.physical_feature_reports_to_cache();
 
         assert_eq!(requests, [
             PhysicalFeatureReportRequest { report_id: 0x05, size: 41 },
             PhysicalFeatureReportRequest { report_id: 0x20, size: 64 },
         ]);
         assert!(!requests.iter().any(|r| r.report_id == 0x09));
-        assert!(VirtualTarget::Ds4Usb.physical_feature_reports_to_cache().is_empty());
+        assert!(TargetCodec::Ds4Usb.physical_feature_reports_to_cache().is_empty());
+    }
+
+    #[test]
+    fn virtual_target_selects_matching_target_codec() {
+        assert_eq!(VirtualTarget::Ds5UsbAuto.target_codec(), TargetCodec::Ds5UsbAuto);
+        assert_eq!(VirtualTarget::Ds5UsbForced.target_codec(), TargetCodec::Ds5UsbForced);
+        assert_eq!(VirtualTarget::Ds4Usb.target_codec(), TargetCodec::Ds4Usb);
     }
 }

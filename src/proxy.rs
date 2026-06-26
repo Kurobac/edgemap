@@ -8,7 +8,7 @@ use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::os::fd::BorrowedFd;
 
-use crate::codec::{SourceCodec, VirtualTarget};
+use crate::codec::{PhysicalCodec, SourceCodec, TargetCodec, VirtualTarget};
 use crate::device::HidrawDevice;
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::{self, Button};
@@ -246,6 +246,8 @@ pub struct Proxy {
     config_path: String,
     report_cache: HashMap<u8, Vec<u8>>,
     source_codec: SourceCodec,
+    physical_codec: PhysicalCodec,
+    target_codec: TargetCodec,
     virtual_target: VirtualTarget,
     output_device_config: String,
     recreate_uhid: bool,
@@ -264,10 +266,10 @@ impl Proxy {
         if let Some(data) = self.report_cache.get(&report_id) {
             return Some(data.clone());
         }
-        self.virtual_target.fallback_feature_report(report_id)
+        self.target_codec.fallback_feature_report(report_id)
     }
 
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, source_codec: SourceCodec, virtual_target: VirtualTarget, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, source_codec: SourceCodec, physical_codec: PhysicalCodec, target_codec: TargetCodec, virtual_target: VirtualTarget, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
         let fifo_fd = OwnedFd::from(fifo_file);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
@@ -282,7 +284,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, source_codec, virtual_target, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, source_codec, physical_codec, target_codec, virtual_target, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn skip_restore(&mut self) {
@@ -709,7 +711,7 @@ impl Proxy {
 
                         // ========== L3: Output ==========
                         frame.state = state.clone();
-                        let out = self.virtual_target
+                        let out = self.target_codec
                             .encode_input(&frame, *seq)
                             .expect("DS5 USB source should encode to selected USB target");
                         if self.virtual_target == crate::codec::VirtualTarget::Ds4Usb {
@@ -775,7 +777,7 @@ impl Proxy {
                         UhidEvent::Output { rtype, ref data } => {
                             if rtype == 1 {
                                 trace!("UHID OUTPUT: size={}", data.len());
-                                let encoded = self.virtual_target.encode_physical_ds5_usb_output(data);
+                                let encoded = self.physical_codec.encode_output(self.virtual_target, data);
                                 let result = if let Ok(encoded) = encoded {
                                     self.hidraw.write_output(&encoded)
                                 } else {
@@ -810,10 +812,8 @@ impl Proxy {
                         }
                         UhidEvent::SetReport { id, rnum, rtype, ref data } => {
                             trace!("UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}", data.len());
-                            if self.virtual_target.forwards_physical_ds5_usb_set_report() {
-                                if rtype == 0 {
-                                    let mut full_data = vec![rnum];
-                                    full_data.extend_from_slice(data);
+                            if rtype == 0 {
+                                if let Some(full_data) = self.physical_codec.encode_set_report(self.virtual_target, rnum, data) {
                                     if let Err(e) = self.hidraw.send_feature_report(&full_data) {
                                         warn!("Failed to forward set_report rnum={rnum}: {e}");
                                     }

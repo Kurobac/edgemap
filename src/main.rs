@@ -220,9 +220,10 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             .unwrap_or_else(|| "auto".to_string());
 
         let virtual_target = codec::VirtualTarget::from_output_device(&output_device);
+        let target_codec = virtual_target.target_codec();
 
         let mut report_cache = codec::FeatureReportCache::new();
-        for request in virtual_target.physical_feature_reports_to_cache() {
+        for request in target_codec.physical_feature_reports_to_cache() {
             let mut buf = vec![request.report_id];
             buf.resize(request.size, 0);
             if device::ioctl_get_feature_report(hidraw.as_raw_fd(), &mut buf).is_ok() {
@@ -232,9 +233,9 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 debug!("GET_REPORT cache: failed to read 0x{:02x}, using built-in fallback", request.report_id);
             }
         }
-        virtual_target.seed_feature_reports(&mut report_cache);
+        target_codec.seed_feature_reports(&mut report_cache);
 
-        let target_identity = virtual_target.usb_identity(&dev_info, hidraw.report_descriptor());
+        let target_identity = target_codec.usb_identity(&dev_info, hidraw.report_descriptor());
         if let Err(e) = uhid.create(
             &target_identity.name,
             "",
@@ -313,7 +314,8 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         };
 
         let source_codec = codec::SourceCodec::from_device(dev_info.kind, dev_info.transport);
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache.into_inner(), source_codec, virtual_target, output_device, keyboard, dup_fifo_fd(&fifo_fd));
+        let physical_codec = source_codec.physical_codec();
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache.into_inner(), source_codec, physical_codec, target_codec, virtual_target, output_device, keyboard, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
             proxy::ExitReason::ConfigChanged => {
                 config_path = Some(proxy.config_path().to_string());

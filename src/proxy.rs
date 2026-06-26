@@ -549,25 +549,16 @@ impl Proxy {
                 Ok(n) if n >= report::USB_INPUT_REPORT_SIZE => {
                     *seq = seq.wrapping_add(1);
 
-                    if let Some(mut state) = report::parse_input_report(&buf) {
+                    let out_report = if let Some(mut frame) = crate::codec::ControllerFrame::from_ds5_usb(&buf) {
+                        let mut state = frame.state.clone();
                         let physical_snapshot = state.clone();
 
                         // touchpad split mode under read lock
                         let m = self.mapping.read().unwrap();
                         if m.split_touchpad {
-                            let pressed = buf[10] & 0x02 != 0;
-                            if pressed {
-                                let f0_contact = buf[33] & 0x80 == 0;
-                                if f0_contact {
-                                    let x = ((buf[35] as u16 & 0x0F) << 8) | buf[34] as u16;
-                                    let side = if x < 960 { Button::TouchpadLeft } else { Button::TouchpadRight };
-                                    state.set_button(Button::Touchpad, false);
-                                    state.set_button(side, true);
-                                } else {
-                                    state.set_button(Button::Touchpad, false);
-                                }
-                            } else {
-                                state.set_button(Button::Touchpad, false);
+                            state.set_button(Button::Touchpad, false);
+                            if let Some(side) = frame.touchpad_split_button() {
+                                state.set_button(side, true);
                             }
                         }
                         drop(m);
@@ -747,12 +738,14 @@ impl Proxy {
                         }
 
                         // ========== L3: Output ==========
-                        if self.output_device == "dualshock4" {
-                            report::apply_state_to_ds4_report(&mut buf, &state, *seq);
-                            trace!("ds4 raw[..32]: {:02x?}", &buf[..32]);
+                        frame.state = state.clone();
+                        let out = if self.output_device == "dualshock4" {
+                            let out = frame.encode_ds4_usb_input(*seq);
+                            trace!("ds4 raw[..32]: {:02x?}", &out[..32]);
+                            out
                         } else {
-                            report::apply_state_to_report(&mut buf, &state, *seq);
-                        }
+                            frame.encode_ds5_usb_input(*seq)
+                        };
                         // per-frame output at trace level
                         {
                             let mut btn_names: Vec<&str> = Vec::new();
@@ -764,12 +757,14 @@ impl Proxy {
                             trace!("out: [{}]", btn_names.join(" "));
                         }
                         self.log_button_diff(&physical_snapshot, &state);
+                        out
                     } else {
                         warn!("parse_input_report failed, raw forwarding (mapping lost for this frame)");
                         buf[7] = *seq;
-                    }
+                        buf
+                    };
 
-                    if let Err(e) = self.uhid.send_input(&buf) {
+                    if let Err(e) = self.uhid.send_input(&out_report) {
                         error!("Failed to send UHID input: {e}");
                     }
                 }
@@ -812,7 +807,7 @@ impl Proxy {
                             if rtype == 1 {
                                 trace!("UHID OUTPUT: size={}", data.len());
                                 let result = if self.output_device == "dualshock4" {
-                                    let ds5 = crate::report::convert_ds4_output_to_ds5(data);
+                                    let ds5 = crate::codec::convert_ds4_usb_output_to_ds5_usb(data);
                                     self.hidraw.write_output(&ds5)
                                 } else {
                                     self.hidraw.write_output(data)

@@ -1,4 +1,5 @@
 mod config;
+mod codec;
 mod descriptor;
 mod device;
 mod keyboard;

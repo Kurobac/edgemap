@@ -709,11 +709,10 @@ impl Proxy {
 
                         // ========== L3: Output ==========
                         frame.state = state.clone();
-                        let target = crate::codec::VirtualTarget::from_output_device(&self.output_device);
-                        let out = target
+                        let out = self.virtual_target
                             .encode_input(&frame, *seq)
                             .expect("DS5 USB source should encode to selected USB target");
-                        if target == crate::codec::VirtualTarget::Ds4Usb {
+                        if self.virtual_target == crate::codec::VirtualTarget::Ds4Usb {
                             trace!("ds4 raw[..32]: {:02x?}", &out[..32]);
                         }
                         // per-frame output at trace level
@@ -811,7 +810,7 @@ impl Proxy {
                         }
                         UhidEvent::SetReport { id, rnum, rtype, ref data } => {
                             trace!("UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}", data.len());
-                            if self.output_device != "dualshock4" {
+                            if self.virtual_target.forwards_physical_ds5_usb_set_report() {
                                 if rtype == 0 {
                                     let mut full_data = vec![rnum];
                                     full_data.extend_from_slice(data);

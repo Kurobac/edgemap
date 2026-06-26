@@ -86,6 +86,10 @@ impl VirtualTarget {
         }
     }
 
+    pub fn forwards_physical_ds5_usb_set_report(self) -> bool {
+        matches!(self, Self::Ds5UsbAuto | Self::Ds5UsbForced)
+    }
+
     pub fn seed_feature_reports(self, cache: &mut FeatureReportCache) {
         match self {
             Self::Ds4Usb => target_ds4_usb::seed_feature_reports(cache),
@@ -458,5 +462,12 @@ mod tests {
     #[test]
     fn ds4_target_has_no_fallback_feature_reports() {
         assert!(VirtualTarget::Ds4Usb.fallback_feature_report(0x09).is_none());
+    }
+
+    #[test]
+    fn only_ds5_targets_forward_physical_set_report() {
+        assert!(VirtualTarget::Ds5UsbAuto.forwards_physical_ds5_usb_set_report());
+        assert!(VirtualTarget::Ds5UsbForced.forwards_physical_ds5_usb_set_report());
+        assert!(!VirtualTarget::Ds4Usb.forwards_physical_ds5_usb_set_report());
     }
 }

@@ -215,6 +215,20 @@ pub enum SourceReport {
     Ds5Usb([u8; report::USB_INPUT_REPORT_SIZE]),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TouchpadContact {
+    pub active: bool,
+    pub id: u8,
+    pub x: u16,
+    pub y: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TouchpadFrame {
+    pub button: bool,
+    pub contacts: [TouchpadContact; 2],
+}
+
 #[derive(Debug, Clone)]
 pub struct ControllerFrame {
     pub state: GamepadState,
@@ -222,25 +236,41 @@ pub struct ControllerFrame {
 }
 
 impl ControllerFrame {
-    pub fn touchpad_split_button(&self) -> Option<Button> {
+    pub fn touchpad(&self) -> Option<TouchpadFrame> {
         match &self.source_report {
-            SourceReport::Ds5Usb(raw) => {
-                let pressed = raw[10] & 0x02 != 0;
-                if !pressed {
-                    return None;
-                }
-                let f0_contact = raw[33] & 0x80 == 0;
-                if !f0_contact {
-                    return None;
-                }
-                let x = ((raw[35] as u16 & 0x0F) << 8) | raw[34] as u16;
-                Some(if x < 960 {
-                    Button::TouchpadLeft
-                } else {
-                    Button::TouchpadRight
-                })
-            }
+            SourceReport::Ds5Usb(raw) => Some(TouchpadFrame {
+                button: raw[10] & 0x02 != 0,
+                contacts: [
+                    parse_ds5_usb_touchpad_contact(raw, 33),
+                    parse_ds5_usb_touchpad_contact(raw, 37),
+                ],
+            }),
         }
+    }
+
+    pub fn touchpad_split_button(&self) -> Option<Button> {
+        let touchpad = self.touchpad()?;
+        if !touchpad.button {
+            return None;
+        }
+        let contact = touchpad.contacts.iter().find(|contact| contact.active)?;
+        Some(if contact.x < 960 {
+            Button::TouchpadLeft
+        } else {
+            Button::TouchpadRight
+        })
+    }
+}
+
+fn parse_ds5_usb_touchpad_contact(raw: &[u8; report::USB_INPUT_REPORT_SIZE], base: usize) -> TouchpadContact {
+    let contact = raw[base];
+    let x = ((raw[base + 2] as u16 & 0x0F) << 8) | raw[base + 1] as u16;
+    let y = ((raw[base + 3] as u16) << 4) | ((raw[base + 2] as u16 >> 4) & 0x0F);
+    TouchpadContact {
+        active: contact & 0x80 == 0,
+        id: contact & 0x7F,
+        x,
+        y,
     }
 }
 
@@ -450,6 +480,50 @@ mod tests {
 
         raw[34] = 0xC0;
         raw[35] = 0x03;
+        let frame = input_ds5_usb::decode(&raw).unwrap();
+        assert_eq!(frame.touchpad_split_button(), Some(Button::TouchpadRight));
+    }
+
+    #[test]
+    fn touchpad_frame_decodes_two_contacts() {
+        let mut raw = ds5_usb_raw();
+        raw[10] = 0x02;
+        raw[33] = 0x05;
+        raw[34] = 0x34;
+        raw[35] = 0x12;
+        raw[36] = 0x56;
+        raw[37] = 0x86;
+        raw[38] = 0x78;
+        raw[39] = 0x9A;
+        raw[40] = 0xBC;
+
+        let frame = input_ds5_usb::decode(&raw).unwrap();
+        let touchpad = frame.touchpad().unwrap();
+
+        assert!(touchpad.button);
+        assert_eq!(touchpad.contacts[0], TouchpadContact {
+            active: true,
+            id: 0x05,
+            x: 0x234,
+            y: 0x561,
+        });
+        assert_eq!(touchpad.contacts[1], TouchpadContact {
+            active: false,
+            id: 0x06,
+            x: 0xA78,
+            y: 0xBC9,
+        });
+    }
+
+    #[test]
+    fn touchpad_split_uses_first_active_contact() {
+        let mut raw = ds5_usb_raw();
+        raw[10] = 0x02;
+        raw[33] = 0x80;
+        raw[37] = 0x01;
+        raw[38] = 0xC0;
+        raw[39] = 0x03;
+
         let frame = input_ds5_usb::decode(&raw).unwrap();
         assert_eq!(frame.touchpad_split_button(), Some(Button::TouchpadRight));
     }

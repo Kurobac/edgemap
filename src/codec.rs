@@ -379,8 +379,21 @@ pub mod target_ds4_usb {
         cache.insert(0x12, mac);
     }
 
-    pub fn fallback_feature_report(_report_id: u8) -> Option<Vec<u8>> {
-        None
+    pub fn fallback_feature_report(report_id: u8) -> Option<Vec<u8>> {
+        match report_id {
+            // DS4 USB descriptors advertise vendor feature reports 0x80/0x81
+            // with 6-byte payloads. A real DS4 was observed to reject GET
+            // 0x80 with EPIPE but return 7 bytes for GET 0x81. ViGEmBus also
+            // advertises these reports without documenting a useful 0x81
+            // meaning. Before the codec split, Proxy's shared fallback table
+            // answered 0x81 for every target, including DS4, so this request
+            // failed silently. Moving fallbacks into target codecs changed that
+            // behavior by making DS4 return None; Linux/desktop probe behavior
+            // still expects 0x81 to be readable, so provide a zeroed
+            // compatibility response here.
+            0x81 => Some(vec![0x81, 0, 0, 0, 0, 0, 0]),
+            _ => None,
+        }
     }
 }
 
@@ -523,7 +536,12 @@ mod tests {
     }
 
     #[test]
-    fn ds4_target_has_no_fallback_feature_reports() {
+    fn ds4_target_fallback_serves_vendor_probe_reports() {
+        assert!(TargetCodec::Ds4Usb.fallback_feature_report(0x80).is_none());
+        assert_eq!(
+            TargetCodec::Ds4Usb.fallback_feature_report(0x81),
+            Some(vec![0x81, 0, 0, 0, 0, 0, 0])
+        );
         assert!(TargetCodec::Ds4Usb.fallback_feature_report(0x09).is_none());
     }
 

@@ -94,13 +94,13 @@ pub enum PhysicalCodec {
 }
 
 impl PhysicalCodec {
-    pub fn encode_output(self, target: TargetCodec, data: &[u8]) -> CodecResult<Vec<u8>> {
-        match (self, target) {
-            (Self::Ds5Usb, TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced) => {
-                physical_ds5_usb::encode_output_from_ds5_usb(data)
+    pub fn encode_output(self, command: &OutputCommand) -> CodecResult<Vec<u8>> {
+        match (self, command) {
+            (Self::Ds5Usb, OutputCommand::Ds5Usb(output)) => {
+                physical_ds5_usb::encode_output_from_ds5_usb(output)
             }
-            (Self::Ds5Usb, TargetCodec::Ds4Usb) => {
-                physical_ds5_usb::encode_output_from_ds4_usb(data)
+            (Self::Ds5Usb, OutputCommand::Ds4Usb(output)) => {
+                physical_ds5_usb::encode_output_from_ds4_usb(output)
             }
         }
     }
@@ -115,6 +115,40 @@ impl PhysicalCodec {
             (Self::Ds5Usb, TargetCodec::Ds4Usb) => None,
         }
     }
+}
+
+// TODO(bt-output): Ds5UsbOutput is only a raw target-format wrapper for now.
+// Rumble, LED/player indicators, mic LED, and adaptive trigger effects all live
+// in DS5 output reports, but do not normalize them until USB vs Bluetooth
+// output semantics are validated on real devices/games. Some first-party games
+// reportedly do not enable adaptive trigger effects over Bluetooth, so the BT
+// path may not be a pure transport wrapper around the USB payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ds5UsbOutput {
+    raw: Vec<u8>,
+}
+
+impl Ds5UsbOutput {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.raw
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ds4UsbOutput {
+    raw: Vec<u8>,
+}
+
+impl Ds4UsbOutput {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.raw
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputCommand {
+    Ds5Usb(Ds5UsbOutput),
+    Ds4Usb(Ds4UsbOutput),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +171,15 @@ impl TargetCodec {
         match self {
             Self::Ds5UsbAuto | Self::Ds5UsbForced => target_ds5_usb::encode_input(frame, seq),
             Self::Ds4Usb => target_ds4_usb::encode_input(frame, seq),
+        }
+    }
+
+    pub fn decode_output(self, data: &[u8]) -> CodecResult<OutputCommand> {
+        match self {
+            Self::Ds5UsbAuto | Self::Ds5UsbForced => {
+                Ok(OutputCommand::Ds5Usb(target_ds5_usb::decode_output(data)))
+            }
+            Self::Ds4Usb => Ok(OutputCommand::Ds4Usb(target_ds4_usb::decode_output(data))),
         }
     }
 
@@ -343,6 +386,10 @@ pub mod target_ds5_usb {
         }
     }
 
+    pub fn decode_output(data: &[u8]) -> Ds5UsbOutput {
+        Ds5UsbOutput { raw: data.to_vec() }
+    }
+
     pub fn fallback_feature_report(report_id: u8) -> Option<Vec<u8>> {
         match report_id {
             0x05 => Some(vec![
@@ -399,6 +446,10 @@ pub mod target_ds4_usb {
                 Ok(out)
             }
         }
+    }
+
+    pub fn decode_output(data: &[u8]) -> Ds4UsbOutput {
+        Ds4UsbOutput { raw: data.to_vec() }
     }
 
     pub fn seed_feature_reports(cache: &mut FeatureReportCache) {
@@ -469,12 +520,12 @@ pub mod target_ds4_usb {
 pub mod physical_ds5_usb {
     use super::*;
 
-    pub fn encode_output_from_ds5_usb(data: &[u8]) -> CodecResult<Vec<u8>> {
-        Ok(data.to_vec())
+    pub fn encode_output_from_ds5_usb(output: &Ds5UsbOutput) -> CodecResult<Vec<u8>> {
+        Ok(output.as_bytes().to_vec())
     }
 
-    pub fn encode_output_from_ds4_usb(data: &[u8]) -> CodecResult<Vec<u8>> {
-        Ok(report::convert_ds4_output_to_ds5(data).to_vec())
+    pub fn encode_output_from_ds4_usb(output: &Ds4UsbOutput) -> CodecResult<Vec<u8>> {
+        Ok(report::convert_ds4_output_to_ds5(output.as_bytes()).to_vec())
     }
 }
 
@@ -587,14 +638,22 @@ mod tests {
         ds4[1] = 0x01;
         ds4[4] = 64;
         ds4[5] = 128;
-        let ds5 = PhysicalCodec::Ds5Usb
-            .encode_output(TargetCodec::Ds4Usb, &ds4)
-            .unwrap();
+        let command = TargetCodec::Ds4Usb.decode_output(&ds4).unwrap();
+        let ds5 = PhysicalCodec::Ds5Usb.encode_output(&command).unwrap();
 
         assert_eq!(ds5[0], 0x02);
         assert_eq!(ds5[1] & 0x03, 0x03);
         assert_eq!(ds5[3], 64);
         assert_eq!(ds5[4], 128);
+    }
+
+    #[test]
+    fn ds5_output_passthrough_is_exposed_through_codec_boundary() {
+        let ds5 = [0x02, 0x01, 0x02, 0x03];
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&ds5).unwrap();
+        let encoded = PhysicalCodec::Ds5Usb.encode_output(&command).unwrap();
+
+        assert_eq!(encoded, ds5);
     }
 
     #[test]

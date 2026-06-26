@@ -774,7 +774,9 @@ impl Proxy {
                         UhidEvent::Output { rtype, ref data } => {
                             if rtype == 1 {
                                 trace!("UHID OUTPUT: size={}", data.len());
-                                let encoded = self.codec.physical.encode_output(self.codec.target, data);
+                                let encoded = self.codec.target
+                                    .decode_output(data)
+                                    .and_then(|command| self.codec.physical.encode_output(&command));
                                 let result = if let Ok(encoded) = encoded {
                                     self.hidraw.write_output(&encoded)
                                 } else {

@@ -9,7 +9,6 @@ mod report;
 mod uhid;
 
 use log::{debug, error, info, warn};
-use std::collections::HashMap;
 use std::env;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::OpenOptionsExt;
@@ -215,7 +214,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         };
 
-        let mut report_cache = HashMap::new();
+        let mut report_cache = codec::FeatureReportCache::new();
         for (report_id, size) in [(0x05u8, 41usize), (0x20u8, 64usize)] {
             let mut buf = vec![report_id];
             buf.resize(size, 0);
@@ -234,54 +233,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
         let virtual_target = codec::VirtualTarget::from_output_device(&output_device);
 
-        if virtual_target.is_ds4() {
-            // DS4 calibration data (report 0x02, 37 bytes)
-            // Produces 1:1 scale + zero bias so raw gyro/accel passes through unchanged.
-            let mut cal = vec![0u8; 37];
-            cal[0] = 0x02;
-            let w16 = |buf: &mut [u8], off, v: u16| buf[off..off+2].copy_from_slice(&v.to_le_bytes());
-            w16(&mut cal,  7, 1024);        // gyro_pitch_plus
-            w16(&mut cal,  9, (-1024i16) as u16); // gyro_pitch_minus
-            w16(&mut cal, 11, 1024);        // gyro_yaw_plus
-            w16(&mut cal, 13, (-1024i16) as u16); // gyro_yaw_minus
-            w16(&mut cal, 15, 1024);        // gyro_roll_plus
-            w16(&mut cal, 17, (-1024i16) as u16); // gyro_roll_minus
-            w16(&mut cal, 19, 1);           // gyro_speed_plus
-            w16(&mut cal, 21, 1);           // gyro_speed_minus
-            w16(&mut cal, 23, 8192);        // acc_x_plus
-            w16(&mut cal, 25, (-8192i16) as u16); // acc_x_minus
-            w16(&mut cal, 27, 8192);        // acc_y_plus
-            w16(&mut cal, 29, (-8192i16) as u16); // acc_y_minus
-            w16(&mut cal, 31, 8192);        // acc_z_plus
-            w16(&mut cal, 33, (-8192i16) as u16); // acc_z_minus
-            report_cache.insert(0x02, cal);
-
-            // DS4 firmware info (report 0xA3, 49 bytes)
-            // Layout matches real DS4 dump (ViGEmBus/eccelerator reference).
-            let mut fw = vec![0u8; 49];
-            fw[0] = 0xA3;
-            fw[1..12].copy_from_slice(b"Aug  3 2013");
-            fw[17..25].copy_from_slice(b"07:01:12");
-            w16(&mut fw, 34, 0x0001);   // hw_version
-            w16(&mut fw, 36, 0x0331);   // sub-version
-            w16(&mut fw, 41, 0x0049);   // fw_version (real DS4 value)
-            fw[43] = 0x05;
-            w16(&mut fw, 46, 0x0380);   // build number
-            report_cache.insert(0xA3, fw);
-
-            {
-                let mut buf = vec![0u8; 16];
-                buf[0] = 0x12;
-                // MAC addresses in DS4 reversed byte order (matching ViGEmBus convention).
-                // Bytes 7-9: USB connection status (0x08 0x25 0x00 from real DS4 dump).
-                buf[1..7].copy_from_slice(&[0x01, 0x00, 0x00, 0x37, 0x13, 0xC0]); // target MAC (reversed C0:13:37:00:00:01)
-                buf[7] = 0x08;
-                buf[8] = 0x25;
-                buf[9] = 0x00;
-                // bytes 10-15: host MAC — USB connection: all zero (matching reWASD)
-                report_cache.insert(0x12, buf);
-            }
-        }
+        virtual_target.seed_feature_reports(&mut report_cache);
 
         let target_identity = virtual_target.usb_identity(&dev_info, hidraw.report_descriptor());
         if let Err(e) = uhid.create(
@@ -362,7 +314,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         };
 
         let source_codec = codec::SourceCodec::from_device(dev_info.kind, dev_info.transport);
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, source_codec, output_device, keyboard, dup_fifo_fd(&fifo_fd));
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache.into_inner(), source_codec, output_device, keyboard, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
             proxy::ExitReason::ConfigChanged => {
                 config_path = Some(proxy.config_path().to_string());

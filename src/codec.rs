@@ -1,6 +1,7 @@
 use crate::descriptor;
 use crate::device::{self, DeviceInfo, SourceTransport, SonyDeviceKind};
 use crate::report::{self, Button, GamepadState};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodecError {
@@ -8,6 +9,25 @@ pub enum CodecError {
 }
 
 pub type CodecResult<T> = Result<T, CodecError>;
+
+#[derive(Debug, Default)]
+pub struct FeatureReportCache {
+    reports: HashMap<u8, Vec<u8>>,
+}
+
+impl FeatureReportCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, report_id: u8, data: Vec<u8>) {
+        self.reports.insert(report_id, data);
+    }
+
+    pub fn into_inner(self) -> HashMap<u8, Vec<u8>> {
+        self.reports
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceCodec {
@@ -66,8 +86,11 @@ impl VirtualTarget {
         }
     }
 
-    pub fn is_ds4(self) -> bool {
-        matches!(self, Self::Ds4Usb)
+    pub fn seed_feature_reports(self, cache: &mut FeatureReportCache) {
+        match self {
+            Self::Ds4Usb => target_ds4_usb::seed_feature_reports(cache),
+            Self::Ds5UsbAuto | Self::Ds5UsbForced => {}
+        }
     }
 
     pub fn usb_identity<'a>(
@@ -196,6 +219,53 @@ pub mod target_ds4_usb {
             }
         }
     }
+
+    pub fn seed_feature_reports(cache: &mut FeatureReportCache) {
+        // DS4 calibration data (report 0x02, 37 bytes). Produces 1:1 scale +
+        // zero bias so raw gyro/accel passes through unchanged.
+        let mut cal = vec![0u8; 37];
+        cal[0] = 0x02;
+        let w16 = |buf: &mut [u8], off, v: u16| buf[off..off+2].copy_from_slice(&v.to_le_bytes());
+        w16(&mut cal,  7, 1024);        // gyro_pitch_plus
+        w16(&mut cal,  9, (-1024i16) as u16); // gyro_pitch_minus
+        w16(&mut cal, 11, 1024);        // gyro_yaw_plus
+        w16(&mut cal, 13, (-1024i16) as u16); // gyro_yaw_minus
+        w16(&mut cal, 15, 1024);        // gyro_roll_plus
+        w16(&mut cal, 17, (-1024i16) as u16); // gyro_roll_minus
+        w16(&mut cal, 19, 1);           // gyro_speed_plus
+        w16(&mut cal, 21, 1);           // gyro_speed_minus
+        w16(&mut cal, 23, 8192);        // acc_x_plus
+        w16(&mut cal, 25, (-8192i16) as u16); // acc_x_minus
+        w16(&mut cal, 27, 8192);        // acc_y_plus
+        w16(&mut cal, 29, (-8192i16) as u16); // acc_y_minus
+        w16(&mut cal, 31, 8192);        // acc_z_plus
+        w16(&mut cal, 33, (-8192i16) as u16); // acc_z_minus
+        cache.insert(0x02, cal);
+
+        // DS4 firmware info (report 0xA3, 49 bytes). Layout matches real DS4
+        // dump (ViGEmBus/eccelerator reference).
+        let mut fw = vec![0u8; 49];
+        fw[0] = 0xA3;
+        fw[1..12].copy_from_slice(b"Aug  3 2013");
+        fw[17..25].copy_from_slice(b"07:01:12");
+        w16(&mut fw, 34, 0x0001);   // hw_version
+        w16(&mut fw, 36, 0x0331);   // sub-version
+        w16(&mut fw, 41, 0x0049);   // fw_version (real DS4 value)
+        fw[43] = 0x05;
+        w16(&mut fw, 46, 0x0380);   // build number
+        cache.insert(0xA3, fw);
+
+        let mut mac = vec![0u8; 16];
+        mac[0] = 0x12;
+        // MAC addresses in DS4 reversed byte order (matching ViGEmBus convention).
+        // Bytes 7-9: USB connection status (0x08 0x25 0x00 from real DS4 dump).
+        mac[1..7].copy_from_slice(&[0x01, 0x00, 0x00, 0x37, 0x13, 0xC0]); // target MAC (reversed C0:13:37:00:00:01)
+        mac[7] = 0x08;
+        mac[8] = 0x25;
+        mac[9] = 0x00;
+        // bytes 10-15: host MAC — USB connection: all zero (matching reWASD)
+        cache.insert(0x12, mac);
+    }
 }
 
 pub mod physical_ds5_usb {
@@ -311,5 +381,16 @@ mod tests {
         assert_eq!(forced.product_id, device::DS5_PID as u32);
         assert_eq!(forced.report_descriptor, &descriptor::DS_USB_DESCRIPTOR);
         assert_eq!(forced.label, "DualSense (forced)");
+    }
+
+    #[test]
+    fn ds4_target_seeds_feature_reports() {
+        let mut cache = FeatureReportCache::new();
+        VirtualTarget::Ds4Usb.seed_feature_reports(&mut cache);
+        let cache = cache.into_inner();
+
+        assert_eq!(cache.get(&0x02).unwrap().len(), 37);
+        assert_eq!(cache.get(&0x12).unwrap()[1..7], [0x01, 0x00, 0x00, 0x37, 0x13, 0xC0]);
+        assert_eq!(cache.get(&0xA3).unwrap().len(), 49);
     }
 }

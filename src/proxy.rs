@@ -8,7 +8,7 @@ use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::os::fd::BorrowedFd;
 
-use crate::codec::SourceCodec;
+use crate::codec::{SourceCodec, VirtualTarget};
 use crate::device::HidrawDevice;
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::{self, Button};
@@ -246,6 +246,7 @@ pub struct Proxy {
     config_path: String,
     report_cache: HashMap<u8, Vec<u8>>,
     source_codec: SourceCodec,
+    virtual_target: VirtualTarget,
     output_device: String,
     recreate_uhid: bool,
     keyboard: crate::keyboard::KeyboardDevice,
@@ -263,44 +264,10 @@ impl Proxy {
         if let Some(data) = self.report_cache.get(&report_id) {
             return Some(data.clone());
         }
-        match report_id {
-            0x05 => Some(vec![
-                0x05, 0xff, 0xfc, 0xff, 0xfe, 0xff, 0x83, 0x22, 0x78, 0xdd,
-                0x92, 0x22, 0x5f, 0xdd, 0x95, 0x22, 0x6d, 0xdd, 0x1c, 0x02,
-                0x1c, 0x02, 0xf2, 0x1f, 0xed, 0xdf, 0xe3, 0x20, 0xda, 0xe0,
-                0xee, 0x1f, 0xdf, 0xdf, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00,
-            ]),
-            0x08 => Some(vec![0u8; 48]),
-            0x09 => Some(vec![
-                0x09, 0xd4, 0x2f, 0x4b, 0x26, 0x18, 0xc2, 0x08, 0x25,
-                0x00, 0x1e, 0x00, 0xee, 0x74, 0xd0, 0xbc, 0x00, 0x00, 0x00, 0x00,
-            ]),
-            0x0A => Some(vec![0u8; 27]),
-            0x20 => Some(vec![
-                0x20, 0x4a, 0x75, 0x6e, 0x20, 0x31, 0x39, 0x20, 0x32,
-                0x30, 0x32, 0x33, 0x31, 0x34, 0x3a, 0x34, 0x37, 0x3a, 0x33, 0x34,
-                0x03, 0x00, 0x44, 0x00, 0x08, 0x02, 0x00, 0x01, 0x36, 0x00,
-                0x00, 0x01, 0xc1, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x54, 0x01, 0x00, 0x00, 0x14, 0x00,
-                0x00, 0x00, 0x0b, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ]),
-            0x21 => Some(vec![0u8; 5]),
-            0x22 => Some(vec![0u8; 64]),
-            0x70..=0x7B => Some(vec![0u8; 64]),
-            0x80 | 0x81 | 0x83 | 0x84 | 0xE0 | 0xF0 | 0xF1 | 0xF4 | 0x60..=0x65 | 0x68 => {
-                Some(vec![0u8; 64])
-            }
-            0x82 => Some(vec![0u8; 10]),
-            0x85 | 0xF5 => Some(vec![0u8; 4]),
-            0xA0 => Some(vec![0u8; 2]),
-            0xF2 => Some(vec![0u8; 53]),
-            _ => None,
-        }
+        self.virtual_target.fallback_feature_report(report_id)
     }
 
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, source_codec: SourceCodec, output_device: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, source_codec: SourceCodec, virtual_target: VirtualTarget, output_device: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
         let fifo_fd = OwnedFd::from(fifo_file);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
@@ -315,7 +282,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, source_codec, output_device, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, source_codec, virtual_target, output_device, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn skip_restore(&mut self) {
@@ -809,8 +776,7 @@ impl Proxy {
                         UhidEvent::Output { rtype, ref data } => {
                             if rtype == 1 {
                                 trace!("UHID OUTPUT: size={}", data.len());
-                                let target = crate::codec::VirtualTarget::from_output_device(&self.output_device);
-                                let encoded = target.encode_physical_ds5_usb_output(data);
+                                let encoded = self.virtual_target.encode_physical_ds5_usb_output(data);
                                 let result = if let Ok(encoded) = encoded {
                                     self.hidraw.write_output(&encoded)
                                 } else {

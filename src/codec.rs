@@ -93,6 +93,13 @@ impl VirtualTarget {
         }
     }
 
+    pub fn fallback_feature_report(self, report_id: u8) -> Option<Vec<u8>> {
+        match self {
+            Self::Ds5UsbAuto | Self::Ds5UsbForced => target_ds5_usb::fallback_feature_report(report_id),
+            Self::Ds4Usb => target_ds4_usb::fallback_feature_report(report_id),
+        }
+    }
+
     pub fn usb_identity<'a>(
         self,
         source: &DeviceInfo,
@@ -205,6 +212,47 @@ pub mod target_ds5_usb {
             }
         }
     }
+
+    pub fn fallback_feature_report(report_id: u8) -> Option<Vec<u8>> {
+        match report_id {
+            0x05 => Some(vec![
+                0x05, 0xff, 0xfc, 0xff, 0xfe, 0xff, 0x83, 0x22, 0x78, 0xdd,
+                0x92, 0x22, 0x5f, 0xdd, 0x95, 0x22, 0x6d, 0xdd, 0x1c, 0x02,
+                0x1c, 0x02, 0xf2, 0x1f, 0xed, 0xdf, 0xe3, 0x20, 0xda, 0xe0,
+                0xee, 0x1f, 0xdf, 0xdf, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00,
+            ]),
+            0x08 => Some(vec![0u8; 48]),
+            // Do not read or cache physical report 0x09. It contains the DS5
+            // pairing MAC, and copying the physical MAC makes hid-playstation
+            // create duplicate power_supply names. Use this fake fallback.
+            0x09 => Some(vec![
+                0x09, 0xd4, 0x2f, 0x4b, 0x26, 0x18, 0xc2, 0x08, 0x25,
+                0x00, 0x1e, 0x00, 0xee, 0x74, 0xd0, 0xbc, 0x00, 0x00, 0x00, 0x00,
+            ]),
+            0x0A => Some(vec![0u8; 27]),
+            0x20 => Some(vec![
+                0x20, 0x4a, 0x75, 0x6e, 0x20, 0x31, 0x39, 0x20, 0x32,
+                0x30, 0x32, 0x33, 0x31, 0x34, 0x3a, 0x34, 0x37, 0x3a, 0x33, 0x34,
+                0x03, 0x00, 0x44, 0x00, 0x08, 0x02, 0x00, 0x01, 0x36, 0x00,
+                0x00, 0x01, 0xc1, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x54, 0x01, 0x00, 0x00, 0x14, 0x00,
+                0x00, 0x00, 0x0b, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ]),
+            0x21 => Some(vec![0u8; 5]),
+            0x22 => Some(vec![0u8; 64]),
+            0x70..=0x7B => Some(vec![0u8; 64]),
+            0x80 | 0x81 | 0x83 | 0x84 | 0xE0 | 0xF0 | 0xF1 | 0xF4 | 0x60..=0x65 | 0x68 => {
+                Some(vec![0u8; 64])
+            }
+            0x82 => Some(vec![0u8; 10]),
+            0x85 | 0xF5 => Some(vec![0u8; 4]),
+            0xA0 => Some(vec![0u8; 2]),
+            0xF2 => Some(vec![0u8; 53]),
+            _ => None,
+        }
+    }
 }
 
 pub mod target_ds4_usb {
@@ -265,6 +313,10 @@ pub mod target_ds4_usb {
         mac[9] = 0x00;
         // bytes 10-15: host MAC — USB connection: all zero (matching reWASD)
         cache.insert(0x12, mac);
+    }
+
+    pub fn fallback_feature_report(_report_id: u8) -> Option<Vec<u8>> {
+        None
     }
 }
 
@@ -392,5 +444,19 @@ mod tests {
         assert_eq!(cache.get(&0x02).unwrap().len(), 37);
         assert_eq!(cache.get(&0x12).unwrap()[1..7], [0x01, 0x00, 0x00, 0x37, 0x13, 0xC0]);
         assert_eq!(cache.get(&0xA3).unwrap().len(), 49);
+    }
+
+    #[test]
+    fn ds5_target_fallback_uses_fake_pairing_mac() {
+        let data = VirtualTarget::Ds5UsbAuto.fallback_feature_report(0x09).unwrap();
+
+        assert_eq!(data.len(), 20);
+        assert_eq!(data[0], 0x09);
+        assert_eq!(&data[1..7], &[0xd4, 0x2f, 0x4b, 0x26, 0x18, 0xc2]);
+    }
+
+    #[test]
+    fn ds4_target_has_no_fallback_feature_reports() {
+        assert!(VirtualTarget::Ds4Usb.fallback_feature_report(0x09).is_none());
     }
 }

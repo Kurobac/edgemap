@@ -11,6 +11,26 @@ pub enum CodecError {
 pub type CodecResult<T> = Result<T, CodecError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodecPipeline {
+    pub source: SourceCodec,
+    pub physical: PhysicalCodec,
+    pub target: TargetCodec,
+}
+
+impl CodecPipeline {
+    pub fn from_device_and_output(
+        kind: SonyDeviceKind,
+        transport: SourceTransport,
+        output_device: &str,
+    ) -> Self {
+        let source = SourceCodec::from_device(kind, transport);
+        let physical = source.physical_codec();
+        let target = TargetCodec::from_output_device(output_device);
+        Self { source, physical, target }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicalFeatureReportRequest {
     pub report_id: u8,
     pub size: usize,
@@ -473,6 +493,19 @@ mod tests {
             assert_eq!(source.physical_codec(), PhysicalCodec::Ds5Usb);
             assert_eq!(source.input_report_size(), report::USB_INPUT_REPORT_SIZE);
         }
+    }
+
+    #[test]
+    fn codec_pipeline_selects_current_usb_codecs() {
+        let pipeline = CodecPipeline::from_device_and_output(
+            SonyDeviceKind::DualSenseEdge,
+            SourceTransport::Usb,
+            "dualshock4",
+        );
+
+        assert_eq!(pipeline.source, SourceCodec::Ds5Usb);
+        assert_eq!(pipeline.physical, PhysicalCodec::Ds5Usb);
+        assert_eq!(pipeline.target, TargetCodec::Ds4Usb);
     }
 
     #[test]

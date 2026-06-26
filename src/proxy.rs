@@ -8,7 +8,7 @@ use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::os::fd::BorrowedFd;
 
-use crate::codec::{PhysicalCodec, SourceCodec, TargetCodec};
+use crate::codec::{CodecPipeline, TargetCodec};
 use crate::device::HidrawDevice;
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::{self, Button};
@@ -245,9 +245,7 @@ pub struct Proxy {
     mapping: Arc<RwLock<MappingConfig>>,
     config_path: String,
     report_cache: HashMap<u8, Vec<u8>>,
-    source_codec: SourceCodec,
-    physical_codec: PhysicalCodec,
-    target_codec: TargetCodec,
+    codec: CodecPipeline,
     output_device_config: String,
     recreate_uhid: bool,
     keyboard: crate::keyboard::KeyboardDevice,
@@ -265,10 +263,10 @@ impl Proxy {
         if let Some(data) = self.report_cache.get(&report_id) {
             return Some(data.clone());
         }
-        self.target_codec.fallback_feature_report(report_id)
+        self.codec.target.fallback_feature_report(report_id)
     }
 
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, source_codec: SourceCodec, physical_codec: PhysicalCodec, target_codec: TargetCodec, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, codec: CodecPipeline, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
         let fifo_fd = OwnedFd::from(fifo_file);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
@@ -283,7 +281,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, source_codec, physical_codec, target_codec, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn skip_restore(&mut self) {
@@ -513,14 +511,14 @@ impl Proxy {
     fn handle_hidraw_input(&mut self, seq: &mut u8) -> io::Result<()> {
         self.hidraw.re_restrict_self();
         let mut buf = [0u8; report::USB_INPUT_REPORT_SIZE];
-        let input_report_size = self.source_codec.input_report_size();
+        let input_report_size = self.codec.source.input_report_size();
 
         loop {
             match self.hidraw.read_input(&mut buf) {
                 Ok(n) if n >= input_report_size => {
                     *seq = seq.wrapping_add(1);
 
-                    let out_report = if let Ok(mut frame) = self.source_codec.decode_input(&buf[..n]) {
+                    let out_report = if let Ok(mut frame) = self.codec.source.decode_input(&buf[..n]) {
                         let mut state = frame.state.clone();
                         let physical_snapshot = state.clone();
 
@@ -710,10 +708,10 @@ impl Proxy {
 
                         // ========== L3: Output ==========
                         frame.state = state.clone();
-                        let out = self.target_codec
+                        let out = self.codec.target
                             .encode_input(&frame, *seq)
                             .expect("DS5 USB source should encode to selected USB target");
-                        if self.target_codec == crate::codec::TargetCodec::Ds4Usb {
+                        if self.codec.target == TargetCodec::Ds4Usb {
                             trace!("ds4 raw[..32]: {:02x?}", &out[..32]);
                         }
                         // per-frame output at trace level
@@ -776,7 +774,7 @@ impl Proxy {
                         UhidEvent::Output { rtype, ref data } => {
                             if rtype == 1 {
                                 trace!("UHID OUTPUT: size={}", data.len());
-                                let encoded = self.physical_codec.encode_output(self.target_codec, data);
+                                let encoded = self.codec.physical.encode_output(self.codec.target, data);
                                 let result = if let Ok(encoded) = encoded {
                                     self.hidraw.write_output(&encoded)
                                 } else {
@@ -812,7 +810,7 @@ impl Proxy {
                         UhidEvent::SetReport { id, rnum, rtype, ref data } => {
                             trace!("UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}", data.len());
                             if rtype == 0 {
-                                if let Some(full_data) = self.physical_codec.encode_set_report(self.target_codec, rnum, data) {
+                                if let Some(full_data) = self.codec.physical.encode_set_report(self.codec.target, rnum, data) {
                                     if let Err(e) = self.hidraw.send_feature_report(&full_data) {
                                         warn!("Failed to forward set_report rnum={rnum}: {e}");
                                     }

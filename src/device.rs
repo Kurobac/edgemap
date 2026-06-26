@@ -18,21 +18,61 @@ pub const DS4_PID: u16 = 0x09CC;
 
 const BUS_USB: u32 = 0x0003;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SonyDeviceKind {
+    DualSense,
+    DualSenseEdge,
+}
+
+impl SonyDeviceKind {
+    pub fn from_pid(pid: u16) -> Option<Self> {
+        match pid {
+            DS5_PID => Some(Self::DualSense),
+            DS5_EDGE_PID => Some(Self::DualSenseEdge),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DualSense => "DualSense",
+            Self::DualSenseEdge => "DualSense Edge",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceTransport {
+    Usb,
+}
+
+impl SourceTransport {
+    fn from_bustype(bustype: u32) -> Option<Self> {
+        match bustype {
+            BUS_USB => Some(Self::Usb),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Usb => "USB",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     pub path: PathBuf,
     pub vid: u16,
     pub pid: u16,
-    pub is_edge: bool,
+    pub kind: SonyDeviceKind,
+    pub transport: SourceTransport,
 }
 
 impl DeviceInfo {
     pub fn device_name(&self) -> &str {
-        if self.is_edge {
-            "DualSense Edge"
-        } else {
-            "DualSense"
-        }
+        self.kind.name()
     }
 }
 
@@ -455,14 +495,18 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
         if devinfo.vendor != SONY_VID {
             continue;
         }
-        if devinfo.product != DS5_EDGE_PID && devinfo.product != DS5_PID {
-            continue;
-        }
+        let kind = match SonyDeviceKind::from_pid(devinfo.product) {
+            Some(k) => k,
+            None => continue,
+        };
 
-        if devinfo.bustype != BUS_USB {
-            debug!("skipping non-USB DualSense {} (bustype={})", name_str, devinfo.bustype);
-            continue;
-        }
+        let transport = match SourceTransport::from_bustype(devinfo.bustype) {
+            Some(t) => t,
+            None => {
+                debug!("skipping non-USB DualSense {} (bustype={})", name_str, devinfo.bustype);
+                continue;
+            }
+        };
 
         if !is_physical_device(&name_str) {
             continue;
@@ -481,7 +525,8 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
             path: raw_path.clone(),
             vid: devinfo.vendor,
             pid: devinfo.product,
-            is_edge: devinfo.product == DS5_EDGE_PID,
+            kind,
+            transport,
         });
     }
 

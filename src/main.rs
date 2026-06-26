@@ -175,7 +175,14 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
             match find_dualsense() {
                 Some(d) => {
-                    let info_msg = format!("found {} ({:04x}:{:04x}) at {}", d.device_name(), d.vid, d.pid, d.path.display());
+                    let info_msg = format!(
+                        "found {} via {} ({:04x}:{:04x}) at {}",
+                        d.device_name(),
+                        d.transport.name(),
+                        d.vid,
+                        d.pid,
+                        d.path.display()
+                    );
                     info!("{info_msg}");
                     break d;
                 }

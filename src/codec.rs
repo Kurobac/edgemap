@@ -1,3 +1,4 @@
+use crate::device::{SourceTransport, SonyDeviceKind};
 use crate::report::{self, Button, GamepadState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6,6 +7,33 @@ pub enum CodecError {
 }
 
 pub type CodecResult<T> = Result<T, CodecError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceCodec {
+    Ds5Usb,
+}
+
+impl SourceCodec {
+    pub fn from_device(kind: SonyDeviceKind, transport: SourceTransport) -> Self {
+        match (kind, transport) {
+            (SonyDeviceKind::DualSense | SonyDeviceKind::DualSenseEdge, SourceTransport::Usb) => {
+                Self::Ds5Usb
+            }
+        }
+    }
+
+    pub fn input_report_size(self) -> usize {
+        match self {
+            Self::Ds5Usb => report::USB_INPUT_REPORT_SIZE,
+        }
+    }
+
+    pub fn decode_input(self, raw: &[u8]) -> CodecResult<ControllerFrame> {
+        match self {
+            Self::Ds5Usb => input_ds5_usb::decode(raw),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VirtualTarget {
@@ -198,5 +226,14 @@ mod tests {
 
         let ds4 = VirtualTarget::Ds4Usb.encode_input(&frame, 0x10).unwrap();
         assert_eq!(ds4[5] & 0x20, 0x20);
+    }
+
+    #[test]
+    fn source_codec_selects_ds5_usb_for_current_sony_devices() {
+        for kind in [SonyDeviceKind::DualSense, SonyDeviceKind::DualSenseEdge] {
+            let source = SourceCodec::from_device(kind, SourceTransport::Usb);
+            assert_eq!(source, SourceCodec::Ds5Usb);
+            assert_eq!(source.input_report_size(), report::USB_INPUT_REPORT_SIZE);
+        }
     }
 }

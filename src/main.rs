@@ -385,7 +385,8 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         };
 
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, output_device, keyboard, dup_fifo_fd(&fifo_fd));
+        let source_codec = codec::SourceCodec::from_device(dev_info.kind, dev_info.transport);
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache, source_codec, output_device, keyboard, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
             proxy::ExitReason::ConfigChanged => {
                 config_path = Some(proxy.config_path().to_string());

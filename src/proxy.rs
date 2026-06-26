@@ -8,6 +8,7 @@ use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::os::fd::BorrowedFd;
 
+use crate::codec::SourceCodec;
 use crate::device::HidrawDevice;
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::{self, Button};
@@ -244,6 +245,7 @@ pub struct Proxy {
     mapping: Arc<RwLock<MappingConfig>>,
     config_path: String,
     report_cache: HashMap<u8, Vec<u8>>,
+    source_codec: SourceCodec,
     output_device: String,
     recreate_uhid: bool,
     keyboard: crate::keyboard::KeyboardDevice,
@@ -298,7 +300,7 @@ impl Proxy {
         }
     }
 
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, output_device: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, source_codec: SourceCodec, output_device: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
         let fifo_fd = OwnedFd::from(fifo_file);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
@@ -313,7 +315,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, output_device, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, source_codec, output_device, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn skip_restore(&mut self) {
@@ -543,13 +545,14 @@ impl Proxy {
     fn handle_hidraw_input(&mut self, seq: &mut u8) -> io::Result<()> {
         self.hidraw.re_restrict_self();
         let mut buf = [0u8; report::USB_INPUT_REPORT_SIZE];
+        let input_report_size = self.source_codec.input_report_size();
 
         loop {
             match self.hidraw.read_input(&mut buf) {
-                Ok(n) if n >= report::USB_INPUT_REPORT_SIZE => {
+                Ok(n) if n >= input_report_size => {
                     *seq = seq.wrapping_add(1);
 
-                    let out_report = if let Ok(mut frame) = crate::codec::input_ds5_usb::decode(&buf) {
+                    let out_report = if let Ok(mut frame) = self.source_codec.decode_input(&buf[..n]) {
                         let mut state = frame.state.clone();
                         let physical_snapshot = state.clone();
 

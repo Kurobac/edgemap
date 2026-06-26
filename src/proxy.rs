@@ -739,15 +739,13 @@ impl Proxy {
 
                         // ========== L3: Output ==========
                         frame.state = state.clone();
-                        let out = if self.output_device == "dualshock4" {
-                            let out = crate::codec::target_ds4_usb::encode_input(&frame, *seq)
-                                .expect("DS5 USB source should encode to DS4 USB target");
+                        let target = crate::codec::VirtualTarget::from_output_device(&self.output_device);
+                        let out = target
+                            .encode_input(&frame, *seq)
+                            .expect("DS5 USB source should encode to selected USB target");
+                        if target == crate::codec::VirtualTarget::Ds4Usb {
                             trace!("ds4 raw[..32]: {:02x?}", &out[..32]);
-                            out
-                        } else {
-                            crate::codec::target_ds5_usb::encode_input(&frame, *seq)
-                                .expect("DS5 USB source should encode to DS5 USB target")
-                        };
+                        }
                         // per-frame output at trace level
                         {
                             let mut btn_names: Vec<&str> = Vec::new();
@@ -808,11 +806,8 @@ impl Proxy {
                         UhidEvent::Output { rtype, ref data } => {
                             if rtype == 1 {
                                 trace!("UHID OUTPUT: size={}", data.len());
-                                let encoded = if self.output_device == "dualshock4" {
-                                    crate::codec::physical_ds5_usb::encode_output_from_ds4_usb(data)
-                                } else {
-                                    crate::codec::physical_ds5_usb::encode_output_from_ds5_usb(data)
-                                };
+                                let target = crate::codec::VirtualTarget::from_output_device(&self.output_device);
+                                let encoded = target.encode_physical_ds5_usb_output(data);
                                 let result = if let Ok(encoded) = encoded {
                                     self.hidraw.write_output(&encoded)
                                 } else {

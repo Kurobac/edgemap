@@ -7,6 +7,36 @@ pub enum CodecError {
 
 pub type CodecResult<T> = Result<T, CodecError>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtualTarget {
+    Ds5Usb,
+    Ds4Usb,
+}
+
+impl VirtualTarget {
+    pub fn from_output_device(output_device: &str) -> Self {
+        if output_device == "dualshock4" {
+            Self::Ds4Usb
+        } else {
+            Self::Ds5Usb
+        }
+    }
+
+    pub fn encode_input(&self, frame: &ControllerFrame, seq: u8) -> CodecResult<[u8; report::USB_INPUT_REPORT_SIZE]> {
+        match self {
+            Self::Ds5Usb => target_ds5_usb::encode_input(frame, seq),
+            Self::Ds4Usb => target_ds4_usb::encode_input(frame, seq),
+        }
+    }
+
+    pub fn encode_physical_ds5_usb_output(&self, data: &[u8]) -> CodecResult<Vec<u8>> {
+        match self {
+            Self::Ds5Usb => physical_ds5_usb::encode_output_from_ds5_usb(data),
+            Self::Ds4Usb => physical_ds5_usb::encode_output_from_ds4_usb(data),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SourceReport {
     Ds5Usb([u8; report::USB_INPUT_REPORT_SIZE]),
@@ -154,5 +184,19 @@ mod tests {
         assert_eq!(ds5[1] & 0x03, 0x03);
         assert_eq!(ds5[3], 64);
         assert_eq!(ds5[4], 128);
+    }
+
+    #[test]
+    fn virtual_target_selects_expected_input_codec() {
+        let mut raw = ds5_usb_raw();
+        raw[33] = 0x80;
+        let mut frame = input_ds5_usb::decode(&raw).unwrap();
+        frame.state.set_button(Button::Cross, true);
+
+        let ds5 = VirtualTarget::Ds5Usb.encode_input(&frame, 0x10).unwrap();
+        assert_eq!(ds5[8] & 0x20, 0x20);
+
+        let ds4 = VirtualTarget::Ds4Usb.encode_input(&frame, 0x10).unwrap();
+        assert_eq!(ds4[5] & 0x20, 0x20);
     }
 }

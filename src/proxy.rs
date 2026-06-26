@@ -549,7 +549,7 @@ impl Proxy {
                 Ok(n) if n >= report::USB_INPUT_REPORT_SIZE => {
                     *seq = seq.wrapping_add(1);
 
-                    let out_report = if let Some(mut frame) = crate::codec::ControllerFrame::from_ds5_usb(&buf) {
+                    let out_report = if let Ok(mut frame) = crate::codec::input_ds5_usb::decode(&buf) {
                         let mut state = frame.state.clone();
                         let physical_snapshot = state.clone();
 
@@ -740,11 +740,13 @@ impl Proxy {
                         // ========== L3: Output ==========
                         frame.state = state.clone();
                         let out = if self.output_device == "dualshock4" {
-                            let out = frame.encode_ds4_usb_input(*seq);
+                            let out = crate::codec::target_ds4_usb::encode_input(&frame, *seq)
+                                .expect("DS5 USB source should encode to DS4 USB target");
                             trace!("ds4 raw[..32]: {:02x?}", &out[..32]);
                             out
                         } else {
-                            frame.encode_ds5_usb_input(*seq)
+                            crate::codec::target_ds5_usb::encode_input(&frame, *seq)
+                                .expect("DS5 USB source should encode to DS5 USB target")
                         };
                         // per-frame output at trace level
                         {
@@ -806,11 +808,15 @@ impl Proxy {
                         UhidEvent::Output { rtype, ref data } => {
                             if rtype == 1 {
                                 trace!("UHID OUTPUT: size={}", data.len());
-                                let result = if self.output_device == "dualshock4" {
-                                    let ds5 = crate::codec::convert_ds4_usb_output_to_ds5_usb(data);
-                                    self.hidraw.write_output(&ds5)
+                                let encoded = if self.output_device == "dualshock4" {
+                                    crate::codec::physical_ds5_usb::encode_output_from_ds4_usb(data)
                                 } else {
-                                    self.hidraw.write_output(data)
+                                    crate::codec::physical_ds5_usb::encode_output_from_ds5_usb(data)
+                                };
+                                let result = if let Ok(encoded) = encoded {
+                                    self.hidraw.write_output(&encoded)
+                                } else {
+                                    Err(io::Error::other("unsupported physical output conversion"))
                                 };
                                 if let Err(e) = result {
                                     error!("Failed to forward output report: {e}");

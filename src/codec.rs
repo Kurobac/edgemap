@@ -1,5 +1,12 @@
 use crate::report::{self, Button, GamepadState};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodecError {
+    InvalidReport,
+}
+
+pub type CodecResult<T> = Result<T, CodecError>;
+
 #[derive(Debug, Clone)]
 pub enum SourceReport {
     Ds5Usb([u8; report::USB_INPUT_REPORT_SIZE]),
@@ -12,19 +19,6 @@ pub struct ControllerFrame {
 }
 
 impl ControllerFrame {
-    pub fn from_ds5_usb(raw: &[u8]) -> Option<Self> {
-        if raw.len() < report::USB_INPUT_REPORT_SIZE {
-            return None;
-        }
-        let mut source = [0u8; report::USB_INPUT_REPORT_SIZE];
-        source.copy_from_slice(&raw[..report::USB_INPUT_REPORT_SIZE]);
-        let state = report::parse_input_report(&source)?;
-        Some(Self {
-            state,
-            source_report: SourceReport::Ds5Usb(source),
-        })
-    }
-
     pub fn touchpad_split_button(&self) -> Option<Button> {
         match &self.source_report {
             SourceReport::Ds5Usb(raw) => {
@@ -45,30 +39,63 @@ impl ControllerFrame {
             }
         }
     }
+}
 
-    pub fn encode_ds5_usb_input(&self, seq: u8) -> [u8; report::USB_INPUT_REPORT_SIZE] {
-        match &self.source_report {
-            SourceReport::Ds5Usb(raw) => {
-                let mut out = *raw;
-                report::apply_state_to_report(&mut out, &self.state, seq);
-                out
-            }
+pub mod input_ds5_usb {
+    use super::*;
+
+    pub fn decode(raw: &[u8]) -> CodecResult<ControllerFrame> {
+        if raw.len() < report::USB_INPUT_REPORT_SIZE {
+            return Err(CodecError::InvalidReport);
         }
+        let mut source = [0u8; report::USB_INPUT_REPORT_SIZE];
+        source.copy_from_slice(&raw[..report::USB_INPUT_REPORT_SIZE]);
+        let state = report::parse_input_report(&source).ok_or(CodecError::InvalidReport)?;
+        Ok(ControllerFrame {
+            state,
+            source_report: SourceReport::Ds5Usb(source),
+        })
     }
+}
 
-    pub fn encode_ds4_usb_input(&self, seq: u8) -> [u8; report::USB_INPUT_REPORT_SIZE] {
-        match &self.source_report {
+pub mod target_ds5_usb {
+    use super::*;
+
+    pub fn encode_input(frame: &ControllerFrame, seq: u8) -> CodecResult<[u8; report::USB_INPUT_REPORT_SIZE]> {
+        match &frame.source_report {
             SourceReport::Ds5Usb(raw) => {
                 let mut out = *raw;
-                report::apply_state_to_ds4_report(&mut out, &self.state, seq);
-                out
+                report::apply_state_to_report(&mut out, &frame.state, seq);
+                Ok(out)
             }
         }
     }
 }
 
-pub fn convert_ds4_usb_output_to_ds5_usb(ds4: &[u8]) -> [u8; 63] {
-    report::convert_ds4_output_to_ds5(ds4)
+pub mod target_ds4_usb {
+    use super::*;
+
+    pub fn encode_input(frame: &ControllerFrame, seq: u8) -> CodecResult<[u8; report::USB_INPUT_REPORT_SIZE]> {
+        match &frame.source_report {
+            SourceReport::Ds5Usb(raw) => {
+                let mut out = *raw;
+                report::apply_state_to_ds4_report(&mut out, &frame.state, seq);
+                Ok(out)
+            }
+        }
+    }
+}
+
+pub mod physical_ds5_usb {
+    use super::*;
+
+    pub fn encode_output_from_ds5_usb(data: &[u8]) -> CodecResult<Vec<u8>> {
+        Ok(data.to_vec())
+    }
+
+    pub fn encode_output_from_ds4_usb(data: &[u8]) -> CodecResult<Vec<u8>> {
+        Ok(report::convert_ds4_output_to_ds5(data).to_vec())
+    }
 }
 
 #[cfg(test)]
@@ -87,10 +114,10 @@ mod tests {
         raw[11] = 0x07;
         raw[33] = 0x80;
 
-        let mut frame = ControllerFrame::from_ds5_usb(&raw).unwrap();
+        let mut frame = input_ds5_usb::decode(&raw).unwrap();
         frame.state.set_button(Button::Cross, true);
 
-        let out = frame.encode_ds5_usb_input(0x42);
+        let out = target_ds5_usb::encode_input(&frame, 0x42).unwrap();
         assert_eq!(out[7], 0x42);
         assert_eq!(out[8] & 0x20, 0x20);
         assert_eq!(out[11] & 0x0F, 0x07);
@@ -105,12 +132,12 @@ mod tests {
         raw[34] = 0xBF;
         raw[35] = 0x03;
 
-        let frame = ControllerFrame::from_ds5_usb(&raw).unwrap();
+        let frame = input_ds5_usb::decode(&raw).unwrap();
         assert_eq!(frame.touchpad_split_button(), Some(Button::TouchpadLeft));
 
         raw[34] = 0xC0;
         raw[35] = 0x03;
-        let frame = ControllerFrame::from_ds5_usb(&raw).unwrap();
+        let frame = input_ds5_usb::decode(&raw).unwrap();
         assert_eq!(frame.touchpad_split_button(), Some(Button::TouchpadRight));
     }
 
@@ -121,7 +148,7 @@ mod tests {
         ds4[1] = 0x01;
         ds4[4] = 64;
         ds4[5] = 128;
-        let ds5 = convert_ds4_usb_output_to_ds5_usb(&ds4);
+        let ds5 = physical_ds5_usb::encode_output_from_ds4_usb(&ds4).unwrap();
 
         assert_eq!(ds5[0], 0x02);
         assert_eq!(ds5[1] & 0x03, 0x03);

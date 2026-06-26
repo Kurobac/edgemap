@@ -229,9 +229,16 @@ pub struct TouchpadFrame {
     pub contacts: [TouchpadContact; 2],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MotionFrame {
+    pub gyro: [i16; 3],
+    pub accel: [i16; 3],
+}
+
 #[derive(Debug, Clone)]
 pub struct ControllerFrame {
     pub state: GamepadState,
+    pub motion: Option<MotionFrame>,
     source_report: SourceReport,
 }
 
@@ -262,6 +269,31 @@ impl ControllerFrame {
     }
 }
 
+fn read_i16_le(raw: &[u8; report::USB_INPUT_REPORT_SIZE], offset: usize) -> i16 {
+    i16::from_le_bytes([raw[offset], raw[offset + 1]])
+}
+
+fn parse_ds5_usb_motion(raw: &[u8; report::USB_INPUT_REPORT_SIZE]) -> MotionFrame {
+    MotionFrame {
+        gyro: [
+            read_i16_le(raw, 16),
+            read_i16_le(raw, 18),
+            read_i16_le(raw, 20),
+        ],
+        accel: [
+            read_i16_le(raw, 22),
+            read_i16_le(raw, 24),
+            read_i16_le(raw, 26),
+        ],
+    }
+}
+
+fn write_ds5_usb_motion(raw: &mut [u8; report::USB_INPUT_REPORT_SIZE], motion: MotionFrame) {
+    for (i, value) in motion.gyro.iter().chain(motion.accel.iter()).enumerate() {
+        raw[16 + i * 2..18 + i * 2].copy_from_slice(&value.to_le_bytes());
+    }
+}
+
 fn parse_ds5_usb_touchpad_contact(raw: &[u8; report::USB_INPUT_REPORT_SIZE], base: usize) -> TouchpadContact {
     let contact = raw[base];
     let x = ((raw[base + 2] as u16 & 0x0F) << 8) | raw[base + 1] as u16;
@@ -284,8 +316,10 @@ pub mod input_ds5_usb {
         let mut source = [0u8; report::USB_INPUT_REPORT_SIZE];
         source.copy_from_slice(&raw[..report::USB_INPUT_REPORT_SIZE]);
         let state = report::parse_input_report(&source).ok_or(CodecError::InvalidReport)?;
+        let motion = Some(parse_ds5_usb_motion(&source));
         Ok(ControllerFrame {
             state,
+            motion,
             source_report: SourceReport::Ds5Usb(source),
         })
     }
@@ -358,6 +392,9 @@ pub mod target_ds4_usb {
         match &frame.source_report {
             SourceReport::Ds5Usb(raw) => {
                 let mut out = *raw;
+                if let Some(motion) = frame.motion {
+                    write_ds5_usb_motion(&mut out, motion);
+                }
                 report::apply_state_to_ds4_report(&mut out, &frame.state, seq);
                 Ok(out)
             }
@@ -526,6 +563,21 @@ mod tests {
 
         let frame = input_ds5_usb::decode(&raw).unwrap();
         assert_eq!(frame.touchpad_split_button(), Some(Button::TouchpadRight));
+    }
+
+    #[test]
+    fn motion_frame_decodes_ds5_usb_raw_axes() {
+        let mut raw = ds5_usb_raw();
+        let values = [-1000i16, 2000, -3000, 4000, -5000, 6000];
+        for (i, value) in values.iter().enumerate() {
+            raw[16 + i * 2..18 + i * 2].copy_from_slice(&value.to_le_bytes());
+        }
+
+        let frame = input_ds5_usb::decode(&raw).unwrap();
+        assert_eq!(frame.motion, Some(MotionFrame {
+            gyro: [-1000, 2000, -3000],
+            accel: [4000, -5000, 6000],
+        }));
     }
 
     #[test]

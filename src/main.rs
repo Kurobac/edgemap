@@ -219,8 +219,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             .map(|c| c.output_device)
             .unwrap_or_else(|| "auto".to_string());
 
-        let virtual_target = codec::VirtualTarget::from_output_device(&output_device);
-        let target_codec = virtual_target.target_codec();
+        let target_codec = codec::TargetCodec::from_output_device(&output_device);
 
         let mut report_cache = codec::FeatureReportCache::new();
         for request in target_codec.physical_feature_reports_to_cache() {
@@ -315,7 +314,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
         let source_codec = codec::SourceCodec::from_device(dev_info.kind, dev_info.transport);
         let physical_codec = source_codec.physical_codec();
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache.into_inner(), source_codec, physical_codec, target_codec, virtual_target, output_device, keyboard, dup_fifo_fd(&fifo_fd));
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache.into_inner(), source_codec, physical_codec, target_codec, output_device, keyboard, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
             proxy::ExitReason::ConfigChanged => {
                 config_path = Some(proxy.config_path().to_string());

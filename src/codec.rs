@@ -74,25 +74,25 @@ pub enum PhysicalCodec {
 }
 
 impl PhysicalCodec {
-    pub fn encode_output(self, target: VirtualTarget, data: &[u8]) -> CodecResult<Vec<u8>> {
+    pub fn encode_output(self, target: TargetCodec, data: &[u8]) -> CodecResult<Vec<u8>> {
         match (self, target) {
-            (Self::Ds5Usb, VirtualTarget::Ds5UsbAuto | VirtualTarget::Ds5UsbForced) => {
+            (Self::Ds5Usb, TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced) => {
                 physical_ds5_usb::encode_output_from_ds5_usb(data)
             }
-            (Self::Ds5Usb, VirtualTarget::Ds4Usb) => {
+            (Self::Ds5Usb, TargetCodec::Ds4Usb) => {
                 physical_ds5_usb::encode_output_from_ds4_usb(data)
             }
         }
     }
 
-    pub fn encode_set_report(self, target: VirtualTarget, report_id: u8, data: &[u8]) -> Option<Vec<u8>> {
+    pub fn encode_set_report(self, target: TargetCodec, report_id: u8, data: &[u8]) -> Option<Vec<u8>> {
         match (self, target) {
-            (Self::Ds5Usb, VirtualTarget::Ds5UsbAuto | VirtualTarget::Ds5UsbForced) => {
+            (Self::Ds5Usb, TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced) => {
                 let mut full_data = vec![report_id];
                 full_data.extend_from_slice(data);
                 Some(full_data)
             }
-            (Self::Ds5Usb, VirtualTarget::Ds4Usb) => None,
+            (Self::Ds5Usb, TargetCodec::Ds4Usb) => None,
         }
     }
 }
@@ -105,6 +105,14 @@ pub enum TargetCodec {
 }
 
 impl TargetCodec {
+    pub fn from_output_device(output_device: &str) -> Self {
+        match output_device {
+            "dualshock4" => Self::Ds4Usb,
+            "dualsense" => Self::Ds5UsbForced,
+            _ => Self::Ds5UsbAuto,
+        }
+    }
+
     pub fn encode_input(self, frame: &ControllerFrame, seq: u8) -> CodecResult<[u8; report::USB_INPUT_REPORT_SIZE]> {
         match self {
             Self::Ds5UsbAuto | Self::Ds5UsbForced => target_ds5_usb::encode_input(frame, seq),
@@ -172,32 +180,6 @@ impl TargetCodec {
             },
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VirtualTarget {
-    Ds5UsbAuto,
-    Ds5UsbForced,
-    Ds4Usb,
-}
-
-impl VirtualTarget {
-    pub fn from_output_device(output_device: &str) -> Self {
-        match output_device {
-            "dualshock4" => Self::Ds4Usb,
-            "dualsense" => Self::Ds5UsbForced,
-            _ => Self::Ds5UsbAuto,
-        }
-    }
-
-    pub fn target_codec(self) -> TargetCodec {
-        match self {
-            Self::Ds5UsbAuto => TargetCodec::Ds5UsbAuto,
-            Self::Ds5UsbForced => TargetCodec::Ds5UsbForced,
-            Self::Ds4Usb => TargetCodec::Ds4Usb,
-        }
-    }
-
 }
 
 pub struct UsbTargetIdentity<'a> {
@@ -460,7 +442,7 @@ mod tests {
         ds4[4] = 64;
         ds4[5] = 128;
         let ds5 = PhysicalCodec::Ds5Usb
-            .encode_output(VirtualTarget::Ds4Usb, &ds4)
+            .encode_output(TargetCodec::Ds4Usb, &ds4)
             .unwrap();
 
         assert_eq!(ds5[0], 0x02);
@@ -546,19 +528,19 @@ mod tests {
     }
 
     #[test]
-    fn physical_codec_set_report_policy_respects_virtual_target() {
+    fn physical_codec_set_report_policy_respects_target_codec() {
         let data = [0x11, 0x22, 0x33];
 
         assert_eq!(
-            PhysicalCodec::Ds5Usb.encode_set_report(VirtualTarget::Ds5UsbAuto, 0x31, &data),
+            PhysicalCodec::Ds5Usb.encode_set_report(TargetCodec::Ds5UsbAuto, 0x31, &data),
             Some(vec![0x31, 0x11, 0x22, 0x33])
         );
         assert_eq!(
-            PhysicalCodec::Ds5Usb.encode_set_report(VirtualTarget::Ds5UsbForced, 0x31, &data),
+            PhysicalCodec::Ds5Usb.encode_set_report(TargetCodec::Ds5UsbForced, 0x31, &data),
             Some(vec![0x31, 0x11, 0x22, 0x33])
         );
         assert_eq!(
-            PhysicalCodec::Ds5Usb.encode_set_report(VirtualTarget::Ds4Usb, 0x31, &data),
+            PhysicalCodec::Ds5Usb.encode_set_report(TargetCodec::Ds4Usb, 0x31, &data),
             None
         );
     }
@@ -576,9 +558,10 @@ mod tests {
     }
 
     #[test]
-    fn virtual_target_selects_matching_target_codec() {
-        assert_eq!(VirtualTarget::Ds5UsbAuto.target_codec(), TargetCodec::Ds5UsbAuto);
-        assert_eq!(VirtualTarget::Ds5UsbForced.target_codec(), TargetCodec::Ds5UsbForced);
-        assert_eq!(VirtualTarget::Ds4Usb.target_codec(), TargetCodec::Ds4Usb);
+    fn target_codec_selects_from_output_device_config() {
+        assert_eq!(TargetCodec::from_output_device("auto"), TargetCodec::Ds5UsbAuto);
+        assert_eq!(TargetCodec::from_output_device("dualsense"), TargetCodec::Ds5UsbForced);
+        assert_eq!(TargetCodec::from_output_device("dualshock4"), TargetCodec::Ds4Usb);
+        assert_eq!(TargetCodec::from_output_device("unknown"), TargetCodec::Ds5UsbAuto);
     }
 }

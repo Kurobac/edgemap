@@ -214,18 +214,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         };
 
-        let mut report_cache = codec::FeatureReportCache::new();
-        for (report_id, size) in [(0x05u8, 41usize), (0x20u8, 64usize)] {
-            let mut buf = vec![report_id];
-            buf.resize(size, 0);
-            if device::ioctl_get_feature_report(hidraw.as_raw_fd(), &mut buf).is_ok() {
-                debug!("GET_REPORT cache: read report 0x{report_id:02x} from physical device");
-                report_cache.insert(report_id, buf);
-            } else {
-                debug!("GET_REPORT cache: failed to read 0x{report_id:02x}, using built-in fallback");
-            }
-        }
-
         let output_device = config_path.as_ref()
             .and_then(|p| config::Config::load(p).ok())
             .map(|c| c.output_device)
@@ -233,6 +221,17 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
         let virtual_target = codec::VirtualTarget::from_output_device(&output_device);
 
+        let mut report_cache = codec::FeatureReportCache::new();
+        for request in virtual_target.physical_feature_reports_to_cache() {
+            let mut buf = vec![request.report_id];
+            buf.resize(request.size, 0);
+            if device::ioctl_get_feature_report(hidraw.as_raw_fd(), &mut buf).is_ok() {
+                debug!("GET_REPORT cache: read report 0x{:02x} from physical device", request.report_id);
+                report_cache.insert(request.report_id, buf);
+            } else {
+                debug!("GET_REPORT cache: failed to read 0x{:02x}, using built-in fallback", request.report_id);
+            }
+        }
         virtual_target.seed_feature_reports(&mut report_cache);
 
         let target_identity = virtual_target.usb_identity(&dev_info, hidraw.report_descriptor());

@@ -10,6 +10,12 @@ pub enum CodecError {
 
 pub type CodecResult<T> = Result<T, CodecError>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalFeatureReportRequest {
+    pub report_id: u8,
+    pub size: usize,
+}
+
 #[derive(Debug, Default)]
 pub struct FeatureReportCache {
     reports: HashMap<u8, Vec<u8>>,
@@ -94,6 +100,13 @@ impl VirtualTarget {
         match self {
             Self::Ds4Usb => target_ds4_usb::seed_feature_reports(cache),
             Self::Ds5UsbAuto | Self::Ds5UsbForced => {}
+        }
+    }
+
+    pub fn physical_feature_reports_to_cache(self) -> &'static [PhysicalFeatureReportRequest] {
+        match self {
+            Self::Ds5UsbAuto | Self::Ds5UsbForced => target_ds5_usb::PHYSICAL_FEATURE_REPORTS_TO_CACHE,
+            Self::Ds4Usb => &[],
         }
     }
 
@@ -206,6 +219,11 @@ pub mod input_ds5_usb {
 
 pub mod target_ds5_usb {
     use super::*;
+
+    pub const PHYSICAL_FEATURE_REPORTS_TO_CACHE: &[PhysicalFeatureReportRequest] = &[
+        PhysicalFeatureReportRequest { report_id: 0x05, size: 41 },
+        PhysicalFeatureReportRequest { report_id: 0x20, size: 64 },
+    ];
 
     pub fn encode_input(frame: &ControllerFrame, seq: u8) -> CodecResult<[u8; report::USB_INPUT_REPORT_SIZE]> {
         match &frame.source_report {
@@ -469,5 +487,17 @@ mod tests {
         assert!(VirtualTarget::Ds5UsbAuto.forwards_physical_ds5_usb_set_report());
         assert!(VirtualTarget::Ds5UsbForced.forwards_physical_ds5_usb_set_report());
         assert!(!VirtualTarget::Ds4Usb.forwards_physical_ds5_usb_set_report());
+    }
+
+    #[test]
+    fn ds5_targets_request_only_safe_physical_feature_reports() {
+        let requests = VirtualTarget::Ds5UsbAuto.physical_feature_reports_to_cache();
+
+        assert_eq!(requests, [
+            PhysicalFeatureReportRequest { report_id: 0x05, size: 41 },
+            PhysicalFeatureReportRequest { report_id: 0x20, size: 64 },
+        ]);
+        assert!(!requests.iter().any(|r| r.report_id == 0x09));
+        assert!(VirtualTarget::Ds4Usb.physical_feature_reports_to_cache().is_empty());
     }
 }

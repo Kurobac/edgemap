@@ -247,7 +247,7 @@ pub struct Proxy {
     report_cache: HashMap<u8, Vec<u8>>,
     source_codec: SourceCodec,
     virtual_target: VirtualTarget,
-    output_device: String,
+    output_device_config: String,
     recreate_uhid: bool,
     keyboard: crate::keyboard::KeyboardDevice,
     last_keyboard: HashMap<u16, bool>,
@@ -267,7 +267,7 @@ impl Proxy {
         self.virtual_target.fallback_feature_report(report_id)
     }
 
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, source_codec: SourceCodec, virtual_target: VirtualTarget, output_device: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, source_codec: SourceCodec, virtual_target: VirtualTarget, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
         let fifo_fd = OwnedFd::from(fifo_file);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
@@ -282,7 +282,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, source_codec, virtual_target, output_device, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, source_codec, virtual_target, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn skip_restore(&mut self) {
@@ -300,7 +300,7 @@ impl Proxy {
         }
         let mut new_mapping = MappingConfig::default();
         let mut cfg_ok = false;
-        let mut new_output_device = self.output_device.clone();
+        let mut new_output_device = self.output_device_config.clone();
         match crate::config::Config::load(&self.config_path) {
             Ok(cfg) => {
                 if let Err(e) = crate::config::validate(&cfg) {
@@ -334,8 +334,8 @@ impl Proxy {
         if cfg_ok {
             info!("Config reloaded from {}", self.config_path);
         }
-        if new_output_device != self.output_device {
-            info!("output_device changed ({} → {}), will recreate virtual device", self.output_device, new_output_device);
+        if new_output_device != self.output_device_config {
+            info!("output_device changed ({} → {}), will recreate virtual device", self.output_device_config, new_output_device);
             self.recreate_uhid = true;
         }
         // rebuild turbo runtimes from the new mapping

@@ -232,13 +232,9 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             .map(|c| c.output_device)
             .unwrap_or_else(|| "auto".to_string());
 
-        let name = if output_device == "dualshock4" {
-            "Wireless Controller".to_string()
-        } else {
-            format!("{} Remapper", dev_info.device_name())
-        };
+        let virtual_target = codec::VirtualTarget::from_output_device(&output_device);
 
-        if output_device == "dualshock4" {
+        if virtual_target.is_ds4() {
             // DS4 calibration data (report 0x02, 37 bytes)
             // Produces 1:1 scale + zero bias so raw gyro/accel passes through unchanged.
             let mut cal = vec![0u8; 37];
@@ -287,43 +283,23 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         }
 
-        let (uhid_pid, uhid_desc): (u32, &[u8]) = if output_device == "dualshock4" {
-            (device::DS4_PID as u32, &descriptor::DS4_USB_DESCRIPTOR)
-        } else if output_device == "dualsense" {
-            (device::DS5_PID as u32, &descriptor::DS_USB_DESCRIPTOR)
-        } else {
-            (dev_info.pid as u32, hidraw.report_descriptor())
-        };
-        let uniq = if output_device == "dualshock4" {
-            "c0:13:37:00:00:01"
-        } else {
-            ""
-        };
+        let target_identity = virtual_target.usb_identity(&dev_info, hidraw.report_descriptor());
         if let Err(e) = uhid.create(
-            &name,
+            &target_identity.name,
             "",
-            uniq,
+            target_identity.uniq,
             0x0003, // BUS_USB
             dev_info.vid as u32,
-            uhid_pid,
+            target_identity.product_id,
             0x0100,
             0,
-            uhid_desc,
+            target_identity.report_descriptor,
         ) {
             error!("Failed to create UHID device: {e}");
             continue;
         }
 
-        let device_label = if output_device == "dualshock4" {
-            "DualShock 4"
-        } else if output_device == "dualsense" {
-            "DualSense (forced)"
-        } else if uhid_pid == device::DS5_EDGE_PID as u32 {
-            "DualSense Edge (auto)"
-        } else {
-            "DualSense (auto)"
-        };
-        info!("Created virtual HID device: {name} (output: {device_label})");
+        info!("Created virtual HID device: {} (output: {})", target_identity.name, target_identity.label);
 
         if let Err(e) = std::fs::write("/run/dseuhid/connected", b"connected") {
             log::warn!("failed to write connected file: {e}");

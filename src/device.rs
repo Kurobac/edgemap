@@ -190,6 +190,7 @@ impl HidrawDevice {
 
         if devinfo.bustype == BUS_USB {
             // validate USB device state: read first input report
+            // limit to USB for now, BT not tested yet.
             let mut buf = [0u8; 64];
             match device.read_input(&mut buf) {
                 Ok(64) if buf[0] == 0x01 => {

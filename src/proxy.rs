@@ -8,7 +8,7 @@ use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::os::fd::BorrowedFd;
 
-use crate::codec::{CodecError, CodecPipeline, PhysicalCodec, TargetCodec};
+use crate::codec::{CodecError, CodecPipeline, PhysicalCodec, PhysicalOutputState, TargetCodec};
 use crate::device::{HidrawDevice, SonyDeviceKind};
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::Button;
@@ -253,7 +253,7 @@ pub struct Proxy {
     last_keyboard: HashMap<u16, bool>,
     last_snapshot: Option<crate::report::GamepadState>,
     last_output: Option<crate::report::GamepadState>,
-    physical_output_unsupported_warned: bool,
+    physical_output_state: PhysicalOutputState,
     physical_set_report_unsupported_warned: bool,
     turbo_runtimes: Vec<TurboRuntime>,
     combo_runtimes: Vec<ComboRuntime>,
@@ -284,7 +284,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, physical_output_unsupported_warned: false, physical_set_report_unsupported_warned: false, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, physical_output_state: PhysicalOutputState::default(), physical_set_report_unsupported_warned: false, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn forget_restore_on_physical_disconnect(&mut self) {
@@ -778,13 +778,17 @@ impl Proxy {
                         }
                         UhidEvent::Output { rtype, ref data } => {
                             if rtype == 1 {
-                                trace!("UHID OUTPUT: size={}", data.len());
+                                trace!(
+                                    "UHID OUTPUT: size={}, report_id={}",
+                                    data.len(),
+                                    report_id_label(data)
+                                );
                                 // TargetCodec identifies the virtual output
                                 // format; PhysicalCodec converts it for the
                                 // real hidraw transport before the final write.
                                 let encoded = self.codec.target
                                     .decode_output(data)
-                                    .and_then(|command| self.codec.physical.encode_output(&command));
+                                    .and_then(|command| self.codec.physical.encode_output(&command, &mut self.physical_output_state));
                                 match encoded {
                                     Ok(encoded) => {
                                         if let Err(e) = self.hidraw.write_output(&encoded) {
@@ -796,18 +800,22 @@ impl Proxy {
                                             error!("Failed to forward output report: {e}");
                                         }
                                     }
-                                    Err(CodecError::UnsupportedPhysicalOutput) => {
-                                        if !self.physical_output_unsupported_warned {
-                                            warn!("physical Bluetooth output forwarding is not supported yet; dropping output reports");
-                                            self.physical_output_unsupported_warned = true;
-                                        }
-                                    }
                                     Err(CodecError::InvalidReport) => {
-                                        error!("Failed to forward output report: invalid target output report");
+                                        warn!(
+                                            "Dropping invalid target output report: target={:?}, physical={:?}, rtype={rtype}, size={}, report_id={}",
+                                            self.codec.target,
+                                            self.codec.physical,
+                                            data.len(),
+                                            report_id_label(data)
+                                        );
                                     }
                                 }
                             } else {
-                                warn!("UHID Output with unexpected rtype={rtype}, ignoring");
+                                warn!(
+                                    "UHID Output with unexpected rtype={rtype}, size={}, report_id={}, ignoring",
+                                    data.len(),
+                                    report_id_label(data)
+                                );
                             }
                         }
                         UhidEvent::GetReport { id, rnum, rtype } => {
@@ -831,7 +839,11 @@ impl Proxy {
                             warn!("Unknown UHID event type: {t}");
                         }
                         UhidEvent::SetReport { id, rnum, rtype, ref data } => {
-                            trace!("UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}", data.len());
+                            trace!(
+                                "UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}, report_id={}",
+                                data.len(),
+                                report_id_label(data)
+                            );
                             let mut reply_err = 0;
                             if rtype == 0 {
                                 // PhysicalCodec decides whether this target
@@ -846,7 +858,11 @@ impl Proxy {
                                         }
                                     }
                                 } else if self.codec.physical == PhysicalCodec::Ds5Bt && !self.physical_set_report_unsupported_warned {
-                                    warn!("physical Bluetooth SET_REPORT forwarding is not supported yet; dropping feature report 0x{rnum:02x}");
+                                    warn!(
+                                        "physical Bluetooth SET_REPORT forwarding is not supported yet; dropping rnum=0x{rnum:02x}, size={}, report_id={}",
+                                        data.len(),
+                                        report_id_label(data)
+                                    );
                                     self.physical_set_report_unsupported_warned = true;
                                 }
                             }
@@ -893,4 +909,11 @@ fn is_disconnect_io_error(error: &io::Error) -> bool {
         error.raw_os_error(),
         Some(libc::EIO | libc::ENODEV | libc::ENXIO)
     )
+}
+
+fn report_id_label(data: &[u8]) -> String {
+    match data.first() {
+        Some(report_id) => format!("0x{report_id:02x}"),
+        None => "none".to_string(),
+    }
 }

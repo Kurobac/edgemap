@@ -488,8 +488,8 @@ pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: 
     raw[30] = 0x1B;
 }
 
-/// Convert DS4 output report (32 bytes, report ID 0x05) to
-/// DS5 output report (63 bytes, report ID 0x02) for compatible vibration.
+/// Convert DS4 output report (32 bytes, report ID 0x05) to the DS5 USB
+/// main-output backing used internally for compatible vibration.
 pub fn convert_ds4_output_to_ds5(ds4: &[u8]) -> [u8; 63] {
     let mut ds5 = [0u8; 63];
     ds5[0] = 0x02;

@@ -6,7 +6,6 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodecError {
     InvalidReport,
-    UnsupportedPhysicalOutput,
 }
 
 pub type CodecResult<T> = Result<T, CodecError>;
@@ -102,6 +101,11 @@ pub enum PhysicalCodec {
     Ds5Bt,
 }
 
+#[derive(Debug, Default)]
+pub struct PhysicalOutputState {
+    ds5_bt_seq: u8,
+}
+
 impl PhysicalCodec {
     pub fn feature_reports_to_cache(self, target: TargetCodec) -> &'static [PhysicalFeatureReportRequest] {
         match (self, target) {
@@ -113,7 +117,7 @@ impl PhysicalCodec {
         }
     }
 
-    pub fn encode_output(self, command: &OutputCommand) -> CodecResult<Vec<u8>> {
+    pub fn encode_output(self, command: &OutputCommand, state: &mut PhysicalOutputState) -> CodecResult<Vec<u8>> {
         match (self, command) {
             (Self::Ds5Usb, OutputCommand::Ds5Usb(output)) => {
                 physical_ds5_usb::encode_output_from_ds5_usb(output)
@@ -121,7 +125,13 @@ impl PhysicalCodec {
             (Self::Ds5Usb, OutputCommand::Ds4Usb(output)) => {
                 physical_ds5_usb::encode_output_from_ds4_usb(output)
             }
-            (Self::Ds5Bt, _) => Err(CodecError::UnsupportedPhysicalOutput),
+            (Self::Ds5Bt, OutputCommand::Ds5Usb(output)) => {
+                physical_ds5_bt::encode_output_from_ds5_usb(output, state)
+            }
+            (Self::Ds5Bt, OutputCommand::Ds4Usb(output)) => {
+                let ds5 = report::convert_ds4_output_to_ds5(output.as_bytes());
+                physical_ds5_bt::encode_output_from_ds5_usb_bytes(&ds5, state)
+            }
         }
     }
 
@@ -138,12 +148,9 @@ impl PhysicalCodec {
     }
 }
 
-// TODO(bt-output): Ds5UsbOutput is only a raw target-format wrapper for now.
-// Rumble, LED/player indicators, mic LED, and adaptive trigger effects all live
-// in DS5 output reports, but do not normalize them until USB vs Bluetooth
-// output semantics are validated on real devices/games. Some first-party games
-// reportedly do not enable adaptive trigger effects over Bluetooth, so the BT
-// path may not be a pure transport wrapper around the USB payload.
+// TODO(bt-output): Ds5UsbOutput is still a raw target-format wrapper. BT
+// physical output wraps the USB payload in the known Bluetooth envelope, but
+// adaptive trigger and other reserved bytes still need real-game validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ds5UsbOutput {
     raw: Vec<u8>,
@@ -277,7 +284,16 @@ pub const DS5_BT_INPUT_REPORT_ID: u8 = 0x31;
 pub const DS5_BT_INPUT_REPORT_SIZE: usize = 78;
 const DS5_BT_INPUT_COMMON_OFFSET: usize = 2;
 const DS5_BT_CRC_SIZE: usize = 4;
+const DS5_USB_OUTPUT_REPORT_ID: u8 = 0x02;
+const DS5_USB_OUTPUT_REPORT_MIN_SIZE: usize = 48;
+const DS5_USB_OUTPUT_REPORT_MAX_SIZE: usize = 64;
+const DS5_BT_OUTPUT_REPORT_ID: u8 = 0x31;
+const DS5_BT_OUTPUT_REPORT_SIZE: usize = 78;
+const DS5_BT_OUTPUT_TAG: u8 = 0x10;
+const DS5_BT_OUTPUT_PAYLOAD_OFFSET: usize = 3;
+const DS5_BT_OUTPUT_CRC_OFFSET: usize = 74;
 const PS_INPUT_CRC32_SEED: u8 = 0xA1;
+const PS_OUTPUT_CRC32_SEED: u8 = 0xA2;
 
 #[derive(Debug, Clone)]
 pub enum SourceReport {
@@ -650,6 +666,44 @@ pub mod physical_ds5_usb {
     }
 }
 
+pub mod physical_ds5_bt {
+    use super::*;
+
+    pub fn encode_output_from_ds5_usb(
+        output: &Ds5UsbOutput,
+        state: &mut PhysicalOutputState,
+    ) -> CodecResult<Vec<u8>> {
+        encode_output_from_ds5_usb_bytes(output.as_bytes(), state)
+    }
+
+    pub fn encode_output_from_ds5_usb_bytes(
+        usb: &[u8],
+        state: &mut PhysicalOutputState,
+    ) -> CodecResult<Vec<u8>> {
+        if usb.len() < DS5_USB_OUTPUT_REPORT_MIN_SIZE
+            || usb.len() > DS5_USB_OUTPUT_REPORT_MAX_SIZE
+            || usb[0] != DS5_USB_OUTPUT_REPORT_ID
+        {
+            return Err(CodecError::InvalidReport);
+        }
+
+        let mut bt = vec![0u8; DS5_BT_OUTPUT_REPORT_SIZE];
+        bt[0] = DS5_BT_OUTPUT_REPORT_ID;
+        bt[1] = (state.ds5_bt_seq & 0x0F) << 4;
+        bt[2] = DS5_BT_OUTPUT_TAG;
+        let payload_len = usb.len() - 1;
+        bt[DS5_BT_OUTPUT_PAYLOAD_OFFSET..DS5_BT_OUTPUT_PAYLOAD_OFFSET + payload_len]
+            .copy_from_slice(&usb[1..]);
+
+        state.ds5_bt_seq = (state.ds5_bt_seq + 1) & 0x0F;
+
+        let crc = ps_crc32(PS_OUTPUT_CRC32_SEED, &bt[..DS5_BT_OUTPUT_CRC_OFFSET]);
+        bt[DS5_BT_OUTPUT_CRC_OFFSET..DS5_BT_OUTPUT_CRC_OFFSET + 4]
+            .copy_from_slice(&crc.to_le_bytes());
+        Ok(bt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -828,7 +882,8 @@ mod tests {
         ds4[4] = 64;
         ds4[5] = 128;
         let command = TargetCodec::Ds4Usb.decode_output(&ds4).unwrap();
-        let ds5 = PhysicalCodec::Ds5Usb.encode_output(&command).unwrap();
+        let mut state = PhysicalOutputState::default();
+        let ds5 = PhysicalCodec::Ds5Usb.encode_output(&command, &mut state).unwrap();
 
         assert_eq!(ds5[0], 0x02);
         assert_eq!(ds5[1] & 0x03, 0x03);
@@ -840,7 +895,8 @@ mod tests {
     fn ds5_output_passthrough_is_exposed_through_codec_boundary() {
         let ds5 = [0x02, 0x01, 0x02, 0x03];
         let command = TargetCodec::Ds5UsbAuto.decode_output(&ds5).unwrap();
-        let encoded = PhysicalCodec::Ds5Usb.encode_output(&command).unwrap();
+        let mut state = PhysicalOutputState::default();
+        let encoded = PhysicalCodec::Ds5Usb.encode_output(&command, &mut state).unwrap();
 
         assert_eq!(encoded, ds5);
     }
@@ -1037,11 +1093,150 @@ mod tests {
     }
 
     #[test]
-    fn physical_ds5_bt_rejects_output_forwarding_for_now() {
-        let command = TargetCodec::Ds5UsbAuto.decode_output(&[0x02, 0x01]).unwrap();
+    fn physical_ds5_bt_wraps_ds5_usb_output_with_sequence_and_crc() {
+        let mut usb = [0u8; DS5_USB_OUTPUT_REPORT_MAX_SIZE];
+        usb[0] = DS5_USB_OUTPUT_REPORT_ID;
+        for (i, byte) in usb[1..].iter_mut().enumerate() {
+            *byte = (i as u8).wrapping_add(1);
+        }
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        let mut state = PhysicalOutputState::default();
+
+        let bt = PhysicalCodec::Ds5Bt.encode_output(&command, &mut state).unwrap();
+
+        assert_eq!(bt.len(), DS5_BT_OUTPUT_REPORT_SIZE);
+        assert_eq!(bt[0], DS5_BT_OUTPUT_REPORT_ID);
+        assert_eq!(bt[1], 0x00);
+        assert_eq!(bt[2], DS5_BT_OUTPUT_TAG);
         assert_eq!(
-            PhysicalCodec::Ds5Bt.encode_output(&command),
-            Err(CodecError::UnsupportedPhysicalOutput)
+            &bt[DS5_BT_OUTPUT_PAYLOAD_OFFSET..DS5_BT_OUTPUT_PAYLOAD_OFFSET + usb.len() - 1],
+            &usb[1..]
+        );
+        assert!(
+            bt[DS5_BT_OUTPUT_PAYLOAD_OFFSET + usb.len() - 1..DS5_BT_OUTPUT_CRC_OFFSET]
+                .iter()
+                .all(|b| *b == 0)
+        );
+        let crc = u32::from_le_bytes([bt[74], bt[75], bt[76], bt[77]]);
+        assert_eq!(crc, ps_crc32(PS_OUTPUT_CRC32_SEED, &bt[..DS5_BT_OUTPUT_CRC_OFFSET]));
+    }
+
+    #[test]
+    fn physical_ds5_bt_wraps_regular_ds5_usb_output_and_zero_pads_tail() {
+        let mut usb = [0u8; DS5_USB_OUTPUT_REPORT_MIN_SIZE];
+        usb[0] = DS5_USB_OUTPUT_REPORT_ID;
+        for (i, byte) in usb[1..].iter_mut().enumerate() {
+            *byte = (i as u8).wrapping_add(1);
+        }
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        let mut state = PhysicalOutputState::default();
+
+        let bt = PhysicalCodec::Ds5Bt.encode_output(&command, &mut state).unwrap();
+
+        assert_eq!(bt[0], DS5_BT_OUTPUT_REPORT_ID);
+        assert_eq!(bt[1], 0x00);
+        assert_eq!(bt[2], DS5_BT_OUTPUT_TAG);
+        assert_eq!(
+            &bt[DS5_BT_OUTPUT_PAYLOAD_OFFSET..DS5_BT_OUTPUT_PAYLOAD_OFFSET + usb.len() - 1],
+            &usb[1..]
+        );
+        assert!(
+            bt[DS5_BT_OUTPUT_PAYLOAD_OFFSET + usb.len() - 1..DS5_BT_OUTPUT_CRC_OFFSET]
+                .iter()
+                .all(|b| *b == 0)
+        );
+        let crc = u32::from_le_bytes([bt[74], bt[75], bt[76], bt[77]]);
+        assert_eq!(crc, ps_crc32(PS_OUTPUT_CRC32_SEED, &bt[..DS5_BT_OUTPUT_CRC_OFFSET]));
+    }
+
+    #[test]
+    fn physical_ds5_bt_wraps_edge_ds5_usb_output() {
+        let mut usb = [0u8; DS5_USB_OUTPUT_REPORT_MAX_SIZE];
+        usb[0] = DS5_USB_OUTPUT_REPORT_ID;
+        for (i, byte) in usb[1..].iter_mut().enumerate() {
+            *byte = (i as u8).wrapping_add(1);
+        }
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        let mut state = PhysicalOutputState::default();
+
+        let bt = PhysicalCodec::Ds5Bt.encode_output(&command, &mut state).unwrap();
+
+        assert_eq!(bt[0], DS5_BT_OUTPUT_REPORT_ID);
+        assert_eq!(
+            &bt[DS5_BT_OUTPUT_PAYLOAD_OFFSET..DS5_BT_OUTPUT_PAYLOAD_OFFSET + usb.len() - 1],
+            &usb[1..]
+        );
+        assert!(
+            bt[DS5_BT_OUTPUT_PAYLOAD_OFFSET + usb.len() - 1..DS5_BT_OUTPUT_CRC_OFFSET]
+                .iter()
+                .all(|b| *b == 0)
+        );
+        let crc = u32::from_le_bytes([bt[74], bt[75], bt[76], bt[77]]);
+        assert_eq!(crc, ps_crc32(PS_OUTPUT_CRC32_SEED, &bt[..DS5_BT_OUTPUT_CRC_OFFSET]));
+    }
+
+    #[test]
+    fn physical_ds5_bt_output_sequence_increments_and_wraps() {
+        let mut usb = [0u8; DS5_USB_OUTPUT_REPORT_MIN_SIZE];
+        usb[0] = DS5_USB_OUTPUT_REPORT_ID;
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        let mut state = PhysicalOutputState::default();
+
+        for expected in 0..16u8 {
+            let bt = PhysicalCodec::Ds5Bt.encode_output(&command, &mut state).unwrap();
+            assert_eq!(bt[1], expected << 4);
+        }
+        let bt = PhysicalCodec::Ds5Bt.encode_output(&command, &mut state).unwrap();
+        assert_eq!(bt[1], 0x00);
+    }
+
+    #[test]
+    fn physical_ds5_bt_wraps_converted_ds4_output() {
+        let mut ds4 = [0u8; 32];
+        ds4[0] = 0x05;
+        ds4[1] = 0x03;
+        ds4[4] = 64;
+        ds4[5] = 128;
+        ds4[6] = 1;
+        ds4[7] = 2;
+        ds4[8] = 3;
+        let command = TargetCodec::Ds4Usb.decode_output(&ds4).unwrap();
+        let mut state = PhysicalOutputState::default();
+
+        let bt = PhysicalCodec::Ds5Bt.encode_output(&command, &mut state).unwrap();
+
+        assert_eq!(bt[0], DS5_BT_OUTPUT_REPORT_ID);
+        assert_eq!(bt[3], 0x03);
+        assert_eq!(bt[5], 64);
+        assert_eq!(bt[6], 128);
+        assert_eq!(bt[47], 1);
+        assert_eq!(bt[48], 2);
+        assert_eq!(bt[49], 3);
+    }
+
+    #[test]
+    fn physical_ds5_bt_rejects_invalid_ds5_usb_output() {
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&[0x02, 0x01]).unwrap();
+        let mut state = PhysicalOutputState::default();
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.encode_output(&command, &mut state),
+            Err(CodecError::InvalidReport)
+        );
+
+        let mut usb = [0u8; DS5_USB_OUTPUT_REPORT_MAX_SIZE];
+        usb[0] = 0x31;
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.encode_output(&command, &mut state),
+            Err(CodecError::InvalidReport)
+        );
+
+        let mut usb = [0u8; DS5_USB_OUTPUT_REPORT_MAX_SIZE + 1];
+        usb[0] = DS5_USB_OUTPUT_REPORT_ID;
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.encode_output(&command, &mut state),
+            Err(CodecError::InvalidReport)
         );
     }
 

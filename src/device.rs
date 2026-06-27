@@ -179,10 +179,7 @@ impl HidrawDevice {
         let sysfs_path = find_sysfs_hidraw(path);
 
         let report_desc = hidraw_get_report_descriptor(raw_fd)
-            .unwrap_or_else(|e| {
-                warn!("Failed to read HID descriptor from device ({e}), using built-in fallback");
-                crate::descriptor::DS_EDGE_USB_DESCRIPTOR.to_vec()
-            });
+            .map_err(|e| io::Error::new(e.kind(), format!("failed to read HID descriptor: {e}")))?;
 
         let device = Self {
             fd,
@@ -191,26 +188,30 @@ impl HidrawDevice {
             report_desc,
         };
 
-        // validate device state: read first input report
-        let mut buf = [0u8; 64];
-        match device.read_input(&mut buf) {
-            Ok(64) if buf[0] == 0x01 => {
-                debug!("device state OK: first input report valid");
+        if devinfo.bustype == BUS_USB {
+            // validate USB device state: read first input report
+            let mut buf = [0u8; 64];
+            match device.read_input(&mut buf) {
+                Ok(64) if buf[0] == 0x01 => {
+                    debug!("device state OK: first USB input report valid");
+                }
+                Ok(n) => {
+                    return Err(io::Error::other(
+                        format!("unexpected first USB report: {n} bytes"),
+                    ));
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    debug!("device state OK: no USB data yet (non-blocking read)");
+                }
+                Err(e) => {
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!("USB device not responding: {e}"),
+                    ));
+                }
             }
-            Ok(n) => {
-                return Err(io::Error::other(
-                    format!("unexpected first report: {n} bytes"),
-                ));
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                debug!("device state OK: no data yet (non-blocking read)");
-            }
-            Err(e) => {
-                return Err(io::Error::new(
-                    e.kind(),
-                    format!("device not responding: {e}"),
-                ));
-            }
+        } else {
+            debug!("skipping first input report validation for non-USB device");
         }
 
         Ok(device)

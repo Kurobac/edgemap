@@ -11,7 +11,7 @@ use std::os::fd::BorrowedFd;
 use crate::codec::{CodecPipeline, TargetCodec};
 use crate::device::HidrawDevice;
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
-use crate::report::{self, Button};
+use crate::report::Button;
 use crate::uhid::UhidDevice;
 use std::time::Instant;
 
@@ -510,8 +510,8 @@ impl Proxy {
 
     fn handle_hidraw_input(&mut self, seq: &mut u8) -> io::Result<()> {
         self.hidraw.re_restrict_self();
-        let mut buf = [0u8; report::USB_INPUT_REPORT_SIZE];
         let input_report_size = self.codec.source.input_report_size();
+        let mut buf = vec![0u8; input_report_size];
 
         loop {
             match self.hidraw.read_input(&mut buf) {
@@ -725,11 +725,13 @@ impl Proxy {
                             trace!("out: [{}]", btn_names.join(" "));
                         }
                         self.log_button_diff(&physical_snapshot, &state);
-                        out
+                        out.to_vec()
                     } else {
                         warn!("parse_input_report failed, raw forwarding (mapping lost for this frame)");
-                        buf[7] = *seq;
-                        buf
+                        if buf.len() > 7 {
+                            buf[7] = *seq;
+                        }
+                        buf.clone()
                     };
 
                     if let Err(e) = self.uhid.send_input(&out_report) {

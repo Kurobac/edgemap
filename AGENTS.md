@@ -87,15 +87,15 @@ Input order inside `handle_hidraw_input()`:
 - Single output or feature-report failures: reply with an error or drop that request while keeping the input path running.
 - hidraw disconnect errors (`EIO`, `ENODEV`, `ENXIO`): stop the current proxy and wait for reconnect.
 - Malformed UHID events, UHID read errors, and UHID input write errors: stop the current proxy loop.
-- Startup config and required daemon setup failures are fatal. Hot reload failures currently fall back to passthrough.
+- Startup config and required daemon setup failures are fatal. Hot reload failures keep the previous live config.
 - Permission hiding/restoration failures are warning-level unless a direct node restriction call returns an error to the caller.
 
 ## Quirks
 
 - **Root required** for daemon — `cargo test`, `cargo build`, subcommands work without root.
 - **Config**: no default path. `-c`/`--config-path` optional — if omitted, starts in passthrough mode. edgemap is the intended way to manage config.
-- **Hot reload**: `edgemap reload` or `echo reload > /run/dseuhid/control` — re-reads config, rebuilds all runtimes.
-- **FIFO control**: `/run/dseuhid/control` (0666), PID at `/run/dseuhid/pid`. Commands: `reload`, `switch-config <path>`. Non-root users can write to it. FIFO fd is dup'd for safe reconnects.
+- **Hot reload**: `edgemap reload` or `echo reload > /run/dseuhid/control` — re-reads the current live config path and rebuilds all runtimes only after load/validate/build succeeds. Failed reload keeps the previous mapping, runtimes, and config path.
+- **FIFO control**: `/run/dseuhid/control` (0666), PID at `/run/dseuhid/pid`. Commands: `reload`, `switch-config <path>`. `switch-config` commits the new path only after the new config loads successfully; failure keeps the previous live config path. Non-root users can write to it. FIFO fd is dup'd for safe reconnects.
 - **edgemap daemon**: auto-creates `edgemap.toml` + `default.toml` under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`) on first run. Profiles in `[profiles.*]` sections with `match_process` (comm exact) and/or `match_cmdline` (substring), first match in declaration order wins. Mtime-based hot reload when edgemap.toml changes. Sends `notify-send` on config switch.
 - **Byte 10 high nibble** = DSE Edge buttons: FnLeft=0x10, FnRight=0x20, LeftPaddle=0x40, RightPaddle=0x80. Byte 11 low nibble must be preserved, high nibble zeroed.
 - **Two-phase apply** (`mapping.rs`): Phase 1 clears source + collects targets, Phase 2 sets all targets atomically. Prevents cross-map (A→B, B→A) collisions.
@@ -119,7 +119,7 @@ Input order inside `handle_hidraw_input()`:
 - `-c` config path resets to passthrough on device reconnect; edgemap is the recommended way to set config.
 - `output_device = "dualsense"` in config TOML: virtualize as regular DS (0x0CE6 PID + DS descriptor). Reload triggers UHID recreate.
 - `output_device = "dualshock4"` in config TOML: virtualize as DS4 (0x09CC PID + DS4 descriptor, Beta). Native DS4 games under Proton may need the DS4 UHID MI_03 identity patch.
-- Edge-only sources (paddles/Fn) are valid sources but not valid targets. If an Edge-only source is passthrough with a non-Edge target, warn in future work; users should remap it to a standard button or keyboard key.
+- Edge-only sources (paddles/Fn) are valid sources but not valid targets. If an Edge-only source is passthrough with a non-Edge target, warn that it may be ignored; users should remap it to a standard button or keyboard key.
 - Config `[button_name]` sections are case-sensitive lowercase. Unknown button names → validation error.
 - `remap="block"` disables a button entirely (L1 suppression).
 - Combo format: `[modifier] remap="combo"` + `[[modifier.combos]]` entries. Modifier+key held simultaneously → inject output.

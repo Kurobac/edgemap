@@ -298,43 +298,44 @@ impl Proxy {
             info!("No config path set, skipping reload (running passthrough)");
             return;
         }
-        let mut new_mapping = MappingConfig::default();
-        let mut cfg_ok = false;
-        let mut new_output_device = self.output_device_config.clone();
-        match crate::config::Config::load(&self.config_path) {
-            Ok(cfg) => {
-                if let Err(e) = crate::config::validate(&cfg) {
-                    error!("Config reload validation failed: {e}, reverting to passthrough");
-                } else {
-                    match cfg.to_mapping_config() {
-                        Ok(m) => {
-                            // warn for missing button sections
-                            for name in crate::config::ALL_BUTTON_NAMES {
-                                if !cfg.buttons.contains_key(*name) {
-                                    warn!("{name}: not configured, passthrough");
-                                }
-                            }
-                            warn_ignored_edge_passthroughs(&cfg, self.source_kind, self.codec.target);
-                            new_mapping = m;
-                            new_output_device = cfg.output_device.clone();
-                            cfg_ok = true;
-                        }
-                        Err(e) => {
-                            error!("Failed to build mapping on reload: {e}, reverting to passthrough");
-                        }
+        let path = self.config_path.clone();
+        self.reload_config_from(path);
+    }
+
+    fn reload_config_from(&mut self, path: String) {
+        let cfg = match crate::config::Config::load(&path) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                error!("Failed to load config on reload: {e}; keeping previous config");
+                return;
+            }
+        };
+        if let Err(e) = crate::config::validate(&cfg) {
+            error!("Config reload validation failed: {e}; keeping previous config");
+            return;
+        }
+        let new_mapping = match cfg.to_mapping_config() {
+            Ok(m) => {
+                // warn for missing button sections
+                for name in crate::config::ALL_BUTTON_NAMES {
+                    if !cfg.buttons.contains_key(*name) {
+                        warn!("{name}: not configured, passthrough");
                     }
                 }
+                warn_ignored_edge_passthroughs(&cfg, self.source_kind, self.codec.target);
+                m
             }
             Err(e) => {
-                error!("Failed to load config on reload: {e}, reverting to passthrough");
+                error!("Failed to build mapping on reload: {e}; keeping previous config");
+                return;
             }
-        }
+        };
+        let new_output_device = cfg.output_device.clone();
         *self.mapping.write().unwrap() = new_mapping;
+        self.config_path = path;
         self.last_snapshot = None;
         self.last_output = None;
-        if cfg_ok {
-            info!("Config reloaded from {}", self.config_path);
-        }
+        info!("Config reloaded from {}", self.config_path);
         if new_output_device != self.output_device_config {
             info!("output_device changed ({} → {}), will recreate virtual device", self.output_device_config, new_output_device);
             self.recreate_uhid = true;
@@ -501,8 +502,7 @@ impl Proxy {
                 } else if let Some(path) = line.strip_prefix(b"switch-config ") {
                     let path_str = String::from_utf8_lossy(path).trim().to_string();
                     info!("FIFO: switch-config to {}", path_str);
-                    self.config_path = path_str;
-                    self.reload_config();
+                    self.reload_config_from(path_str);
                 } else {
                     debug!("FIFO: unknown command: {}", String::from_utf8_lossy(line));
                 }

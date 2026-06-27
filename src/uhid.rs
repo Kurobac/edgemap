@@ -46,7 +46,7 @@ impl TryFrom<u32> for UhidEventType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum UhidEvent {
     Start,
     Stop,
@@ -73,6 +73,107 @@ pub enum UhidEvent {
 pub struct UhidDevice {
     fd: OwnedFd,
     created: bool,
+}
+
+fn write_all_fd(fd: RawFd, data: &[u8]) -> io::Result<()> {
+    let written = unsafe {
+        libc::write(fd, data.as_ptr() as *const libc::c_void, data.len())
+    };
+    if written < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if written as usize != data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            format!("short write: wrote {written} of {} bytes", data.len()),
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_event(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+fn parse_uhid_event(buf: &[u8]) -> io::Result<Option<UhidEvent>> {
+    if buf.len() < 4 {
+        return Ok(None);
+    }
+
+    let ev_type = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    let ev = match UhidEventType::try_from(ev_type) {
+        Ok(UhidEventType::Start) => UhidEvent::Start,
+        Ok(UhidEventType::Stop) => UhidEvent::Stop,
+        Ok(UhidEventType::Open) => UhidEvent::Open,
+        Ok(UhidEventType::Close) => UhidEvent::Close,
+        Ok(UhidEventType::Output) => {
+            if buf.len() < 4103 {
+                return Err(invalid_event(format!(
+                    "short UHID OUTPUT event: {} bytes",
+                    buf.len()
+                )));
+            }
+            let size = u16::from_le_bytes([buf[4100], buf[4101]]) as usize;
+            if size > 4096 {
+                return Err(invalid_event(format!("UHID OUTPUT too large: {size} bytes")));
+            }
+            let end = 4 + size;
+            if buf.len() < end {
+                return Err(invalid_event(format!(
+                    "short UHID OUTPUT payload: {} bytes, need {end}",
+                    buf.len()
+                )));
+            }
+            UhidEvent::Output {
+                rtype: buf[4102],
+                data: buf[4..end].to_vec(),
+            }
+        }
+        Ok(UhidEventType::GetReport) => {
+            if buf.len() < 10 {
+                return Err(invalid_event(format!(
+                    "short UHID GET_REPORT event: {} bytes",
+                    buf.len()
+                )));
+            }
+            let id = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+            let rnum = buf[8];
+            let rtype = buf[9];
+            UhidEvent::GetReport { id, rnum, rtype }
+        }
+        Ok(UhidEventType::SetReport) => {
+            if buf.len() < 12 {
+                return Err(invalid_event(format!(
+                    "short UHID SET_REPORT event: {} bytes",
+                    buf.len()
+                )));
+            }
+            let id = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+            let rnum = buf[8];
+            let rtype = buf[9];
+            let size = u16::from_le_bytes([buf[10], buf[11]]) as usize;
+            if size > 4096 {
+                return Err(invalid_event(format!("UHID SET_REPORT too large: {size} bytes")));
+            }
+            let end = 12 + size;
+            if buf.len() < end {
+                return Err(invalid_event(format!(
+                    "short UHID SET_REPORT payload: {} bytes, need {end}",
+                    buf.len()
+                )));
+            }
+            UhidEvent::SetReport {
+                id,
+                rnum,
+                rtype,
+                data: buf[12..end].to_vec(),
+            }
+        }
+        Ok(_) => UhidEvent::Unknown(ev_type),
+        Err(_) => UhidEvent::Unknown(ev_type),
+    };
+
+    Ok(Some(ev))
 }
 
 impl UhidDevice {
@@ -148,17 +249,11 @@ impl UhidDevice {
         buf[off_country..off_country + 4].copy_from_slice(&country.to_le_bytes());
         buf[off_rd_data..off_rd_data + rd_data.len()].copy_from_slice(rd_data);
 
-        let fd = self.fd.as_raw_fd();
         let total_size = off_rd_data + rd_data.len();
-        let written = unsafe {
-            libc::write(fd, buf.as_ptr() as *const libc::c_void, total_size)
-        };
-        if written < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        write_all_fd(self.fd.as_raw_fd(), &buf[..total_size])?;
 
         debug!(
-            "UHID create2: name={name}, rd_size={}, bus={bus}, vid={vendor:04x}, pid={product:04x}, written={written}",
+            "UHID create2: name={name}, rd_size={}, bus={bus}, vid={vendor:04x}, pid={product:04x}, written={total_size}",
             rd_data.len()
         );
         self.created = true;
@@ -173,13 +268,7 @@ impl UhidDevice {
         let mut buf = [0u8; 8];
         buf[0..4].copy_from_slice(&UhidEventType::Destroy.to_u32_le());
 
-        let fd = self.fd.as_raw_fd();
-        let written = unsafe {
-            libc::write(fd, buf.as_ptr() as *const libc::c_void, 8)
-        };
-        if written < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        write_all_fd(self.fd.as_raw_fd(), &buf)?;
 
         info!("UHID destroy sent");
         self.created = false;
@@ -199,14 +288,8 @@ impl UhidDevice {
         buf[4..6].copy_from_slice(&(data.len() as u16).to_le_bytes());
         buf[6..6 + data.len()].copy_from_slice(data);
 
-        let fd = self.fd.as_raw_fd();
         let total_size = 6 + data.len();
-        let written = unsafe {
-            libc::write(fd, buf.as_ptr() as *const libc::c_void, total_size)
-        };
-        if written < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        write_all_fd(self.fd.as_raw_fd(), &buf[..total_size])?;
         Ok(())
     }
 
@@ -225,15 +308,10 @@ impl UhidDevice {
         buf[10..12].copy_from_slice(&(data.len() as u16).to_le_bytes());
         buf[12..12 + data.len()].copy_from_slice(data);
 
-        let fd = self.fd.as_raw_fd();
         let total_size = 12 + data.len();
-        unsafe {
-            let ret = libc::write(fd, buf.as_ptr() as *const libc::c_void, total_size);
-            if ret < 0 {
-                let e = io::Error::last_os_error();
-                log::error!("uhid GET_REPORT reply write failed: {e}");
-                return Err(e);
-            }
+        if let Err(e) = write_all_fd(self.fd.as_raw_fd(), &buf[..total_size]) {
+            log::error!("uhid GET_REPORT reply write failed: {e}");
+            return Err(e);
         }
         Ok(())
     }
@@ -244,14 +322,9 @@ impl UhidDevice {
         buf[4..8].copy_from_slice(&id.to_le_bytes());
         buf[8..10].copy_from_slice(&err.to_le_bytes());
 
-        let fd = self.fd.as_raw_fd();
-        unsafe {
-            let ret = libc::write(fd, buf.as_ptr() as *const libc::c_void, 10);
-            if ret < 0 {
-                let e = io::Error::last_os_error();
-                log::error!("uhid SET_REPORT reply write failed: {e}");
-                return Err(e);
-            }
+        if let Err(e) = write_all_fd(self.fd.as_raw_fd(), &buf[..10]) {
+            log::error!("uhid SET_REPORT reply write failed: {e}");
+            return Err(e);
         }
         Ok(())
     }
@@ -271,46 +344,9 @@ impl UhidDevice {
             return Err(err);
         }
 
-        if n < 4 {
-            return Ok(None);
-        }
-
-        let ev_type = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        let ev = match UhidEventType::try_from(ev_type) {
-            Ok(UhidEventType::Start) => UhidEvent::Start,
-            Ok(UhidEventType::Stop) => UhidEvent::Stop,
-            Ok(UhidEventType::Open) => UhidEvent::Open,
-            Ok(UhidEventType::Close) => UhidEvent::Close,
-            Ok(UhidEventType::Output) => {
-                let rtype = buf[4102];
-                let size = u16::from_le_bytes([buf[4100], buf[4101]]) as usize;
-                let size = size.min(4096);
-                UhidEvent::Output {
-                    rtype,
-                    data: buf[4..4 + size].to_vec(),
-                }
-            }
-            Ok(UhidEventType::GetReport) => {
-                let id = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-                let rnum = buf[8];
-                let rtype = buf[9];
-                UhidEvent::GetReport { id, rnum, rtype }
-            }
-            Ok(UhidEventType::SetReport) => {
-                let id = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-                let rnum = buf[8];
-                let rtype = buf[9];
-                let size = u16::from_le_bytes([buf[10], buf[11]]) as usize;
-                let size = size.min(4096);
-                UhidEvent::SetReport {
-                    id,
-                    rnum,
-                    rtype,
-                    data: buf[12..12 + size].to_vec(),
-                }
-            }
-            Ok(_) => UhidEvent::Unknown(ev_type),
-            Err(_) => UhidEvent::Unknown(ev_type),
+        let ev = match parse_uhid_event(&buf[..n as usize])? {
+            Some(ev) => ev,
+            None => return Ok(None),
         };
 
         debug!("UHID recv: {ev:?}");
@@ -330,5 +366,64 @@ impl Drop for UhidDevice {
 impl UhidEventType {
     fn to_u32_le(self) -> [u8; 4] {
         (self as u32).to_le_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event_type_bytes(event_type: UhidEventType) -> [u8; 4] {
+        event_type.to_u32_le()
+    }
+
+    #[test]
+    fn parse_output_rejects_short_header() {
+        let mut buf = vec![0u8; 4102];
+        buf[0..4].copy_from_slice(&event_type_bytes(UhidEventType::Output));
+
+        let err = parse_uhid_event(&buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn parse_output_rejects_oversized_payload() {
+        let mut buf = vec![0u8; 4103];
+        buf[0..4].copy_from_slice(&event_type_bytes(UhidEventType::Output));
+        buf[4100..4102].copy_from_slice(&(4097u16).to_le_bytes());
+
+        let err = parse_uhid_event(&buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn parse_set_report_rejects_short_payload() {
+        let mut buf = vec![0u8; 13];
+        buf[0..4].copy_from_slice(&event_type_bytes(UhidEventType::SetReport));
+        buf[10..12].copy_from_slice(&(2u16).to_le_bytes());
+
+        let err = parse_uhid_event(&buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn parse_set_report_accepts_exact_payload() {
+        let mut buf = vec![0u8; 14];
+        buf[0..4].copy_from_slice(&event_type_bytes(UhidEventType::SetReport));
+        buf[4..8].copy_from_slice(&7u32.to_le_bytes());
+        buf[8] = 0x05;
+        buf[9] = 0;
+        buf[10..12].copy_from_slice(&(2u16).to_le_bytes());
+        buf[12..14].copy_from_slice(&[0xaa, 0xbb]);
+
+        assert_eq!(
+            parse_uhid_event(&buf).unwrap(),
+            Some(UhidEvent::SetReport {
+                id: 7,
+                rnum: 0x05,
+                rtype: 0,
+                data: vec![0xaa, 0xbb],
+            })
+        );
     }
 }

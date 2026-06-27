@@ -284,7 +284,7 @@ impl Proxy {
         Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
-    pub fn skip_restore(&mut self) {
+    pub fn forget_restore_on_physical_disconnect(&mut self) {
         self.hidraw.clear_restored_paths();
     }
 
@@ -428,7 +428,7 @@ impl Proxy {
         let mut seq: u8 = 0;
         let mut events = [EpollEvent::empty(); 8];
 
-        while RUNNING.load(std::sync::atomic::Ordering::SeqCst)
+        'run: while RUNNING.load(std::sync::atomic::Ordering::SeqCst)
             && !DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
             match ep_fd.wait(&mut events, 16u16) {
                 Ok(n) => {
@@ -438,12 +438,12 @@ impl Proxy {
                         if fd_num == 1 {
                             if let Err(e) = self.handle_hidraw_input(&mut seq) {
                                 error!("hidraw handler error: {e}");
-                                break;
+                                break 'run;
                             }
                         } else if fd_num == 2 {
                             if let Err(e) = self.handle_uhid_event() {
                                 error!("UHID handler error: {e}");
-                                break;
+                                break 'run;
                             }
                         } else if fd_num == 3 {
                             self.handle_fifo_command();
@@ -729,21 +729,18 @@ impl Proxy {
                         self.log_button_diff(&physical_snapshot, &state);
                         out.to_vec()
                     } else {
-                        warn!("parse_input_report failed, raw forwarding (mapping lost for this frame)");
-                        if buf.len() > 7 {
-                            buf[7] = *seq;
-                        }
-                        buf.clone()
+                        warn!(
+                            "source input decode failed; dropping frame"
+                        );
+                        continue;
                     };
 
-                    if let Err(e) = self.uhid.send_input(&out_report) {
-                        error!("Failed to send UHID input: {e}");
-                    }
+                    self.uhid.send_input(&out_report)?;
                 }
                 Ok(_) => continue,
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(ref e) if e.raw_os_error() == Some(libc::EIO) => {
-                    warn!("hidraw I/O error (EIO). Controller disconnected?");
+                Err(ref e) if is_disconnect_io_error(e) => {
+                    warn!("hidraw input failed; controller disconnected? {e}");
                     DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
                     break;
                 }
@@ -784,13 +781,20 @@ impl Proxy {
                                 let encoded = self.codec.target
                                     .decode_output(data)
                                     .and_then(|command| self.codec.physical.encode_output(&command));
-                                let result = if let Ok(encoded) = encoded {
-                                    self.hidraw.write_output(&encoded)
-                                } else {
-                                    Err(io::Error::other("unsupported physical output conversion"))
-                                };
-                                if let Err(e) = result {
-                                    error!("Failed to forward output report: {e}");
+                                match encoded {
+                                    Ok(encoded) => {
+                                        if let Err(e) = self.hidraw.write_output(&encoded) {
+                                            if is_disconnect_io_error(&e) {
+                                                warn!("hidraw output failed; controller disconnected? {e}");
+                                                DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                break;
+                                            }
+                                            error!("Failed to forward output report: {e}");
+                                        }
+                                    }
+                                    Err(_) => {
+                                        error!("Failed to forward output report: unsupported physical output conversion");
+                                    }
                                 }
                             } else {
                                 warn!("UHID Output with unexpected rtype={rtype}, ignoring");
@@ -818,6 +822,7 @@ impl Proxy {
                         }
                         UhidEvent::SetReport { id, rnum, rtype, ref data } => {
                             trace!("UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}", data.len());
+                            let mut reply_err = 0;
                             if rtype == 0 {
                                 // PhysicalCodec decides whether this target
                                 // feature report can be forwarded to hidraw.
@@ -825,23 +830,34 @@ impl Proxy {
                                 if let Some(full_data) = self.codec.physical.encode_set_report(self.codec.target, rnum, data) {
                                     if let Err(e) = self.hidraw.send_feature_report(&full_data) {
                                         warn!("Failed to forward set_report rnum={rnum}: {e}");
+                                        reply_err = 1;
+                                        if is_disconnect_io_error(&e) {
+                                            DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                                        }
                                     }
                                 }
                             }
-                            if let Err(e) = self.uhid.send_set_report_reply(id, 0) {
+                            if let Err(e) = self.uhid.send_set_report_reply(id, reply_err) {
                                 warn!("Failed to send SET_REPORT reply: {e}");
+                            }
+                            if DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
+                                break;
                             }
                         }
                     }
                 }
                 Ok(None) => break,
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(e) => {
-                    error!("UHID read error: {e}");
-                    break;
-                }
+                Err(e) => return Err(e),
             }
         }
         Ok(())
     }
+}
+
+fn is_disconnect_io_error(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EIO | libc::ENODEV | libc::ENXIO)
+    )
 }

@@ -251,6 +251,11 @@ impl HidrawDevice {
         };
         if n < 0 {
             Err(io::Error::last_os_error())
+        } else if n as usize != data.len() {
+            Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                format!("short hidraw output write: wrote {n} of {} bytes", data.len()),
+            ))
         } else {
             Ok(n as usize)
         }
@@ -318,8 +323,8 @@ impl HidrawDevice {
                 return Ok(());
             }
 
-            if let Ok(entries) = fs::read_dir(&input_dir) {
-                for input_entry in entries.flatten() {
+            match fs::read_dir(&input_dir) {
+                Ok(entries) => for input_entry in entries.flatten() {
                     let input_path = input_entry.path();
                     if !input_path.is_dir()
                         || !input_path
@@ -329,8 +334,8 @@ impl HidrawDevice {
                         continue;
                     }
 
-                    if let Ok(ev_entries) = fs::read_dir(&input_path) {
-                        for ev_entry in ev_entries.flatten() {
+                    match fs::read_dir(&input_path) {
+                        Ok(ev_entries) => for ev_entry in ev_entries.flatten() {
                             let ev_path = ev_entry.path();
                             let ev_name =
                                 ev_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -341,9 +346,11 @@ impl HidrawDevice {
                                     hidden.push(ev_name.to_string());
                                 }
                             }
-                        }
+                        },
+                        Err(e) => warn!("Failed to read input child directory {:?}: {e}", input_path),
                     }
-                }
+                },
+                Err(e) => warn!("Failed to read input directory {:?}: {e}", input_dir),
             }
         }
 

@@ -235,7 +235,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 debug!("GET_REPORT cache: read report 0x{:02x} from physical device", request.report_id);
                 report_cache.insert(request.report_id, buf);
             } else {
-                debug!("GET_REPORT cache: failed to read 0x{:02x}, using built-in fallback", request.report_id);
+                warn!("GET_REPORT cache: failed to read 0x{:02x}, using built-in fallback", request.report_id);
             }
         }
         codec_pipeline.target.seed_feature_reports(&mut report_cache);
@@ -324,12 +324,11 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         match proxy.run() {
             proxy::ExitReason::ConfigChanged => {
                 config_path = Some(proxy.config_path().to_string());
-                proxy.skip_restore();
                 info!("output_device changed in config, recreating virtual device...");
             }
             proxy::ExitReason::DeviceGone => {
                 config_path = None;
-                proxy.skip_restore();
+                proxy.forget_restore_on_physical_disconnect();
                 info!("Device disconnected, waiting for reconnect...");
                 std::thread::sleep(Duration::from_secs(2));
             }

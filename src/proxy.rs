@@ -848,7 +848,10 @@ impl Proxy {
                             if rtype == 0 {
                                 // PhysicalCodec decides whether this target
                                 // feature report can be forwarded to hidraw.
-                                // BT may need different framing here.
+                                // BT SET_REPORT is intentionally not
+                                // forwarded yet: it needs feature CRC framing
+                                // and known use cases are vendor/test commands,
+                                // while game output uses UHID OUTPUT.
                                 if let Some(full_data) = self.codec.physical.encode_set_report(self.codec.target, rnum, data) {
                                     if let Err(e) = self.hidraw.send_feature_report(&full_data) {
                                         warn!("Failed to forward set_report rnum={rnum}: {e}");

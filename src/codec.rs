@@ -113,6 +113,10 @@ impl PhysicalCodec {
                 target_ds5_usb::PHYSICAL_FEATURE_REPORTS_TO_CACHE
             }
             (Self::Ds5Usb, TargetCodec::Ds4Usb) => &[],
+            // DS5 Bluetooth feature reports use the same IDs for calibration
+            // and firmware info, but carry Bluetooth feature CRC framing. Do
+            // not cache or hand them to the USB virtual target until there is
+            // an explicit BT-feature-to-USB-feature conversion path.
             (Self::Ds5Bt, _) => &[],
         }
     }
@@ -143,14 +147,23 @@ impl PhysicalCodec {
                 Some(full_data)
             }
             (Self::Ds5Usb, TargetCodec::Ds4Usb) => None,
+            // Bluetooth SET_REPORT needs feature-report framing/CRC and is
+            // mainly used by vendor/test tools in the known cases so far
+            // (for example factory speaker commands). Games normally drive
+            // rumble, LEDs, mic LED, player LEDs, and adaptive triggers through
+            // the main output report path below, so keep this unsupported until
+            // a real game/hardware need appears.
             (Self::Ds5Bt, _) => None,
         }
     }
 }
 
-// TODO(bt-output): Ds5UsbOutput is still a raw target-format wrapper. BT
-// physical output wraps the USB payload in the known Bluetooth envelope, but
-// adaptive trigger and other reserved bytes still need real-game validation.
+// TODO(output-abstraction): Ds5UsbOutput is intentionally still a raw
+// target-format wrapper. The BT physical path wraps this USB payload in the
+// known 0x31 Bluetooth envelope, which preserves rumble, LEDs, mic LED, player
+// LEDs, and adaptive-trigger payloads for current DS5/Edge targets. We do not
+// normalize those fields into structured commands until a new target/device
+// needs real semantic conversion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ds5UsbOutput {
     raw: Vec<u8>,

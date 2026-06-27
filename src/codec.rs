@@ -6,6 +6,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodecError {
     InvalidReport,
+    UnsupportedPhysicalOutput,
 }
 
 pub type CodecResult<T> = Result<T, CodecError>;
@@ -58,6 +59,7 @@ impl FeatureReportCache {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceCodec {
     Ds5Usb,
+    Ds5Bt,
 }
 
 impl SourceCodec {
@@ -66,24 +68,30 @@ impl SourceCodec {
             (SonyDeviceKind::DualSense | SonyDeviceKind::DualSenseEdge, SourceTransport::Usb) => {
                 Self::Ds5Usb
             }
+            (SonyDeviceKind::DualSense | SonyDeviceKind::DualSenseEdge, SourceTransport::Bluetooth) => {
+                Self::Ds5Bt
+            }
         }
     }
 
     pub fn input_report_size(self) -> usize {
         match self {
             Self::Ds5Usb => report::USB_INPUT_REPORT_SIZE,
+            Self::Ds5Bt => DS5_BT_INPUT_REPORT_SIZE,
         }
     }
 
     pub fn decode_input(self, raw: &[u8]) -> CodecResult<ControllerFrame> {
         match self {
             Self::Ds5Usb => input_ds5_usb::decode(raw),
+            Self::Ds5Bt => input_ds5_bt::decode(raw),
         }
     }
 
     pub fn physical_codec(self) -> PhysicalCodec {
         match self {
             Self::Ds5Usb => PhysicalCodec::Ds5Usb,
+            Self::Ds5Bt => PhysicalCodec::Ds5Bt,
         }
     }
 }
@@ -91,6 +99,7 @@ impl SourceCodec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhysicalCodec {
     Ds5Usb,
+    Ds5Bt,
 }
 
 impl PhysicalCodec {
@@ -100,6 +109,7 @@ impl PhysicalCodec {
                 target_ds5_usb::PHYSICAL_FEATURE_REPORTS_TO_CACHE
             }
             (Self::Ds5Usb, TargetCodec::Ds4Usb) => &[],
+            (Self::Ds5Bt, _) => &[],
         }
     }
 
@@ -111,6 +121,7 @@ impl PhysicalCodec {
             (Self::Ds5Usb, OutputCommand::Ds4Usb(output)) => {
                 physical_ds5_usb::encode_output_from_ds4_usb(output)
             }
+            (Self::Ds5Bt, _) => Err(CodecError::UnsupportedPhysicalOutput),
         }
     }
 
@@ -122,6 +133,7 @@ impl PhysicalCodec {
                 Some(full_data)
             }
             (Self::Ds5Usb, TargetCodec::Ds4Usb) => None,
+            (Self::Ds5Bt, _) => None,
         }
     }
 }
@@ -237,7 +249,13 @@ impl TargetCodec {
                 // See Ds5UsbForced: DS5/Edge targets keep UHID uniq empty.
                 uniq: "",
                 product_id: source.pid as u32,
-                report_descriptor: physical_report_descriptor,
+                report_descriptor: match source.transport {
+                    SourceTransport::Usb => physical_report_descriptor,
+                    SourceTransport::Bluetooth => match source.kind {
+                        SonyDeviceKind::DualSense => &descriptor::DS_USB_DESCRIPTOR,
+                        SonyDeviceKind::DualSenseEdge => &descriptor::DS_EDGE_USB_DESCRIPTOR,
+                    },
+                },
                 label: match source.kind {
                     SonyDeviceKind::DualSenseEdge => "DualSense Edge (auto)",
                     SonyDeviceKind::DualSense => "DualSense (auto)",
@@ -255,9 +273,18 @@ pub struct UsbTargetIdentity<'a> {
     pub label: &'static str,
 }
 
+pub const DS5_BT_INPUT_REPORT_ID: u8 = 0x31;
+pub const DS5_BT_INPUT_REPORT_SIZE: usize = 78;
+const DS5_BT_INPUT_COMMON_OFFSET: usize = 2;
+const DS5_BT_CRC_SIZE: usize = 4;
+const PS_INPUT_CRC32_SEED: u8 = 0xA1;
+
 #[derive(Debug, Clone)]
 pub enum SourceReport {
     Ds5Usb([u8; report::USB_INPUT_REPORT_SIZE]),
+    Ds5Bt {
+        usb_backing: [u8; report::USB_INPUT_REPORT_SIZE],
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,6 +324,13 @@ impl ControllerFrame {
                     parse_ds5_usb_touchpad_contact(raw, 37),
                 ],
             }),
+            SourceReport::Ds5Bt { usb_backing, .. } => Some(TouchpadFrame {
+                button: usb_backing[10] & 0x02 != 0,
+                contacts: [
+                    parse_ds5_usb_touchpad_contact(usb_backing, 33),
+                    parse_ds5_usb_touchpad_contact(usb_backing, 37),
+                ],
+            }),
         }
     }
 
@@ -312,6 +346,38 @@ impl ControllerFrame {
             Button::TouchpadRight
         })
     }
+}
+
+fn crc32_le_update(mut crc: u32, bytes: &[u8]) -> u32 {
+    for &byte in bytes {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc
+}
+
+fn ps_crc32(seed: u8, data: &[u8]) -> u32 {
+    let crc = crc32_le_update(0xFFFF_FFFF, &[seed]);
+    !crc32_le_update(crc, data)
+}
+
+fn check_ps_crc32(seed: u8, data: &[u8], expected: u32) -> bool {
+    ps_crc32(seed, data) == expected
+}
+
+fn ds5_bt_to_usb_backing(raw: &[u8; DS5_BT_INPUT_REPORT_SIZE]) -> [u8; report::USB_INPUT_REPORT_SIZE] {
+    let mut usb = [0u8; report::USB_INPUT_REPORT_SIZE];
+    usb[0] = report::USB_INPUT_REPORT_ID;
+    usb[1..].copy_from_slice(
+        &raw[DS5_BT_INPUT_COMMON_OFFSET..DS5_BT_INPUT_COMMON_OFFSET + report::USB_INPUT_REPORT_SIZE - 1],
+    );
+    usb
 }
 
 fn read_i16_le(raw: &[u8; report::USB_INPUT_REPORT_SIZE], offset: usize) -> i16 {
@@ -370,6 +436,43 @@ pub mod input_ds5_usb {
     }
 }
 
+pub mod input_ds5_bt {
+    use super::*;
+
+    pub fn decode(raw: &[u8]) -> CodecResult<ControllerFrame> {
+        if raw.len() < DS5_BT_INPUT_REPORT_SIZE {
+            return Err(CodecError::InvalidReport);
+        }
+        if raw[0] != DS5_BT_INPUT_REPORT_ID {
+            return Err(CodecError::InvalidReport);
+        }
+
+        let mut source = [0u8; DS5_BT_INPUT_REPORT_SIZE];
+        source.copy_from_slice(&raw[..DS5_BT_INPUT_REPORT_SIZE]);
+        let crc_offset = DS5_BT_INPUT_REPORT_SIZE - DS5_BT_CRC_SIZE;
+        let expected_crc = u32::from_le_bytes([
+            source[crc_offset],
+            source[crc_offset + 1],
+            source[crc_offset + 2],
+            source[crc_offset + 3],
+        ]);
+        if !check_ps_crc32(PS_INPUT_CRC32_SEED, &source[..crc_offset], expected_crc) {
+            return Err(CodecError::InvalidReport);
+        }
+
+        let usb_backing = ds5_bt_to_usb_backing(&source);
+        let state = report::parse_input_report(&usb_backing).ok_or(CodecError::InvalidReport)?;
+        let motion = Some(parse_ds5_usb_motion(&usb_backing));
+        Ok(ControllerFrame {
+            state,
+            motion,
+            source_report: SourceReport::Ds5Bt {
+                usb_backing,
+            },
+        })
+    }
+}
+
 pub mod target_ds5_usb {
     use super::*;
 
@@ -382,6 +485,11 @@ pub mod target_ds5_usb {
         match &frame.source_report {
             SourceReport::Ds5Usb(raw) => {
                 let mut out = *raw;
+                report::apply_state_to_report(&mut out, &frame.state, seq);
+                Ok(out)
+            }
+            SourceReport::Ds5Bt { usb_backing, .. } => {
+                let mut out = *usb_backing;
                 report::apply_state_to_report(&mut out, &frame.state, seq);
                 Ok(out)
             }
@@ -441,6 +549,14 @@ pub mod target_ds4_usb {
         match &frame.source_report {
             SourceReport::Ds5Usb(raw) => {
                 let mut out = *raw;
+                if let Some(motion) = frame.motion {
+                    write_ds5_usb_motion(&mut out, motion);
+                }
+                report::apply_state_to_ds4_report(&mut out, &frame.state, seq);
+                Ok(out)
+            }
+            SourceReport::Ds5Bt { usb_backing, .. } => {
+                let mut out = *usb_backing;
                 if let Some(motion) = frame.motion {
                     write_ds5_usb_motion(&mut out, motion);
                 }
@@ -541,6 +657,15 @@ mod tests {
         raw
     }
 
+    fn ds5_bt_raw_from_usb(usb: &[u8; report::USB_INPUT_REPORT_SIZE]) -> [u8; DS5_BT_INPUT_REPORT_SIZE] {
+        let mut raw = [0u8; DS5_BT_INPUT_REPORT_SIZE];
+        raw[0] = DS5_BT_INPUT_REPORT_ID;
+        raw[2..65].copy_from_slice(&usb[1..]);
+        let crc = ps_crc32(PS_INPUT_CRC32_SEED, &raw[..DS5_BT_INPUT_REPORT_SIZE - DS5_BT_CRC_SIZE]);
+        raw[74..78].copy_from_slice(&crc.to_le_bytes());
+        raw
+    }
+
     #[test]
     fn ds5_usb_frame_encodes_remapped_state_over_backing_report() {
         let mut raw = ds5_usb_raw();
@@ -634,6 +759,65 @@ mod tests {
     }
 
     #[test]
+    fn ds5_bt_frame_decodes_common_payload_like_usb() {
+        let mut usb = ds5_usb_raw();
+        usb[1] = 10;
+        usb[2] = 20;
+        usb[3] = 30;
+        usb[4] = 40;
+        usb[5] = 50;
+        usb[6] = 60;
+        usb[8] = 0x20;
+        usb[10] = 0x42;
+        usb[16..18].copy_from_slice(&(-123i16).to_le_bytes());
+        usb[18..20].copy_from_slice(&(456i16).to_le_bytes());
+        usb[20..22].copy_from_slice(&(-789i16).to_le_bytes());
+        usb[22..24].copy_from_slice(&(111i16).to_le_bytes());
+        usb[24..26].copy_from_slice(&(-222i16).to_le_bytes());
+        usb[26..28].copy_from_slice(&(333i16).to_le_bytes());
+        usb[33] = 0x07;
+        usb[34] = 0x34;
+        usb[35] = 0x12;
+        usb[36] = 0x56;
+
+        let bt = ds5_bt_raw_from_usb(&usb);
+        let frame = input_ds5_bt::decode(&bt).unwrap();
+
+        assert_eq!(frame.state.left_stick_x, 10);
+        assert_eq!(frame.state.left_stick_y, 20);
+        assert_eq!(frame.state.right_stick_x, 30);
+        assert_eq!(frame.state.right_stick_y, 40);
+        assert_eq!(frame.state.l2_analog, 50);
+        assert_eq!(frame.state.r2_analog, 60);
+        assert!(frame.state.button(Button::Cross));
+        assert!(frame.state.button(Button::Touchpad));
+        assert!(frame.state.button(Button::LeftPaddle));
+        assert_eq!(frame.motion, Some(MotionFrame {
+            gyro: [-123, 456, -789],
+            accel: [111, -222, 333],
+        }));
+        assert_eq!(frame.touchpad().unwrap().contacts[0], TouchpadContact {
+            active: true,
+            id: 0x07,
+            x: 0x234,
+            y: 0x561,
+        });
+    }
+
+    #[test]
+    fn ds5_bt_frame_rejects_bad_crc_or_report_shape() {
+        let usb = ds5_usb_raw();
+        let mut bt = ds5_bt_raw_from_usb(&usb);
+        bt[10] ^= 0x01;
+        assert!(matches!(input_ds5_bt::decode(&bt), Err(CodecError::InvalidReport)));
+
+        let mut bt = ds5_bt_raw_from_usb(&usb);
+        bt[0] = 0x01;
+        assert!(matches!(input_ds5_bt::decode(&bt), Err(CodecError::InvalidReport)));
+        assert!(matches!(input_ds5_bt::decode(&bt[..77]), Err(CodecError::InvalidReport)));
+    }
+
+    #[test]
     fn ds4_output_conversion_is_exposed_through_codec_boundary() {
         let mut ds4 = [0u8; 32];
         ds4[0] = 0x05;
@@ -673,6 +857,23 @@ mod tests {
     }
 
     #[test]
+    fn target_codecs_encode_bt_source_frames_to_usb_targets() {
+        let mut usb = ds5_usb_raw();
+        usb[33] = 0x80;
+        let bt = ds5_bt_raw_from_usb(&usb);
+        let mut frame = input_ds5_bt::decode(&bt).unwrap();
+        frame.state.set_button(Button::Cross, true);
+
+        let ds5 = TargetCodec::Ds5UsbAuto.encode_input(&frame, 0x10).unwrap();
+        assert_eq!(ds5[0], report::USB_INPUT_REPORT_ID);
+        assert_eq!(ds5[8] & 0x20, 0x20);
+
+        let ds4 = TargetCodec::Ds4Usb.encode_input(&frame, 0x10).unwrap();
+        assert_eq!(ds4[0], report::USB_INPUT_REPORT_ID);
+        assert_eq!(ds4[5] & 0x20, 0x20);
+    }
+
+    #[test]
     fn source_codec_selects_ds5_usb_for_current_sony_devices() {
         for kind in [SonyDeviceKind::DualSense, SonyDeviceKind::DualSenseEdge] {
             let source = SourceCodec::from_device(kind, SourceTransport::Usb);
@@ -683,7 +884,17 @@ mod tests {
     }
 
     #[test]
-    fn codec_pipeline_selects_current_usb_codecs() {
+    fn source_codec_selects_ds5_bt_for_current_sony_devices() {
+        for kind in [SonyDeviceKind::DualSense, SonyDeviceKind::DualSenseEdge] {
+            let source = SourceCodec::from_device(kind, SourceTransport::Bluetooth);
+            assert_eq!(source, SourceCodec::Ds5Bt);
+            assert_eq!(source.physical_codec(), PhysicalCodec::Ds5Bt);
+            assert_eq!(source.input_report_size(), DS5_BT_INPUT_REPORT_SIZE);
+        }
+    }
+
+    #[test]
+    fn codec_pipeline_selects_usb_and_bt_codecs() {
         let pipeline = CodecPipeline::from_device_and_output(
             SonyDeviceKind::DualSenseEdge,
             SourceTransport::Usb,
@@ -693,10 +904,20 @@ mod tests {
         assert_eq!(pipeline.source, SourceCodec::Ds5Usb);
         assert_eq!(pipeline.physical, PhysicalCodec::Ds5Usb);
         assert_eq!(pipeline.target, TargetCodec::Ds4Usb);
+
+        let pipeline = CodecPipeline::from_device_and_output(
+            SonyDeviceKind::DualSenseEdge,
+            SourceTransport::Bluetooth,
+            "dualshock4",
+        );
+
+        assert_eq!(pipeline.source, SourceCodec::Ds5Bt);
+        assert_eq!(pipeline.physical, PhysicalCodec::Ds5Bt);
+        assert_eq!(pipeline.target, TargetCodec::Ds4Usb);
     }
 
     #[test]
-    fn target_codec_usb_identity_preserves_auto_and_forced_ds5_modes() {
+    fn target_codec_usb_identity_preserves_usb_auto_and_forced_ds5_modes() {
         let source = DeviceInfo {
             path: std::path::PathBuf::from("/dev/hidraw0"),
             vid: device::SONY_VID,
@@ -715,6 +936,33 @@ mod tests {
         assert_eq!(forced.product_id, device::DS5_PID as u32);
         assert_eq!(forced.report_descriptor, &descriptor::DS_USB_DESCRIPTOR);
         assert_eq!(forced.label, "DualSense (forced)");
+    }
+
+    #[test]
+    fn target_codec_usb_identity_uses_builtin_descriptors_for_bt_auto() {
+        let ds_source = DeviceInfo {
+            path: std::path::PathBuf::from("/dev/hidraw0"),
+            vid: device::SONY_VID,
+            pid: device::DS5_PID,
+            kind: SonyDeviceKind::DualSense,
+            transport: SourceTransport::Bluetooth,
+        };
+        let edge_source = DeviceInfo {
+            path: std::path::PathBuf::from("/dev/hidraw1"),
+            vid: device::SONY_VID,
+            pid: device::DS5_EDGE_PID,
+            kind: SonyDeviceKind::DualSenseEdge,
+            transport: SourceTransport::Bluetooth,
+        };
+        let physical_desc = [0x01, 0x02, 0x03];
+
+        let ds_auto = TargetCodec::Ds5UsbAuto.usb_identity(&ds_source, &physical_desc);
+        assert_eq!(ds_auto.product_id, device::DS5_PID as u32);
+        assert_eq!(ds_auto.report_descriptor, &descriptor::DS_USB_DESCRIPTOR);
+
+        let edge_auto = TargetCodec::Ds5UsbAuto.usb_identity(&edge_source, &physical_desc);
+        assert_eq!(edge_auto.product_id, device::DS5_EDGE_PID as u32);
+        assert_eq!(edge_auto.report_descriptor, &descriptor::DS_EDGE_USB_DESCRIPTOR);
     }
 
     #[test]
@@ -763,6 +1011,10 @@ mod tests {
             PhysicalCodec::Ds5Usb.encode_set_report(TargetCodec::Ds4Usb, 0x31, &data),
             None
         );
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.encode_set_report(TargetCodec::Ds5UsbAuto, 0x31, &data),
+            None
+        );
     }
 
     #[test]
@@ -777,6 +1029,17 @@ mod tests {
         assert_eq!(forced_requests, auto_requests);
         assert!(!auto_requests.iter().any(|r| r.report_id == 0x09));
         assert!(PhysicalCodec::Ds5Usb.feature_reports_to_cache(TargetCodec::Ds4Usb).is_empty());
+        assert!(PhysicalCodec::Ds5Bt.feature_reports_to_cache(TargetCodec::Ds5UsbAuto).is_empty());
+        assert!(PhysicalCodec::Ds5Bt.feature_reports_to_cache(TargetCodec::Ds4Usb).is_empty());
+    }
+
+    #[test]
+    fn physical_ds5_bt_rejects_output_forwarding_for_now() {
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&[0x02, 0x01]).unwrap();
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.encode_output(&command),
+            Err(CodecError::UnsupportedPhysicalOutput)
+        );
     }
 
     #[test]

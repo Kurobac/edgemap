@@ -8,7 +8,7 @@ use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::os::fd::BorrowedFd;
 
-use crate::codec::{CodecPipeline, TargetCodec};
+use crate::codec::{CodecError, CodecPipeline, PhysicalCodec, TargetCodec};
 use crate::device::{HidrawDevice, SonyDeviceKind};
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::Button;
@@ -253,6 +253,8 @@ pub struct Proxy {
     last_keyboard: HashMap<u16, bool>,
     last_snapshot: Option<crate::report::GamepadState>,
     last_output: Option<crate::report::GamepadState>,
+    physical_output_unsupported_warned: bool,
+    physical_set_report_unsupported_warned: bool,
     turbo_runtimes: Vec<TurboRuntime>,
     combo_runtimes: Vec<ComboRuntime>,
     macro_runtimes: Vec<MacroRuntime>,
@@ -282,7 +284,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, physical_output_unsupported_warned: false, physical_set_report_unsupported_warned: false, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn forget_restore_on_physical_disconnect(&mut self) {
@@ -794,8 +796,14 @@ impl Proxy {
                                             error!("Failed to forward output report: {e}");
                                         }
                                     }
-                                    Err(_) => {
-                                        error!("Failed to forward output report: unsupported physical output conversion");
+                                    Err(CodecError::UnsupportedPhysicalOutput) => {
+                                        if !self.physical_output_unsupported_warned {
+                                            warn!("physical Bluetooth output forwarding is not supported yet; dropping output reports");
+                                            self.physical_output_unsupported_warned = true;
+                                        }
+                                    }
+                                    Err(CodecError::InvalidReport) => {
+                                        error!("Failed to forward output report: invalid target output report");
                                     }
                                 }
                             } else {
@@ -837,6 +845,9 @@ impl Proxy {
                                             DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
                                         }
                                     }
+                                } else if self.codec.physical == PhysicalCodec::Ds5Bt && !self.physical_set_report_unsupported_warned {
+                                    warn!("physical Bluetooth SET_REPORT forwarding is not supported yet; dropping feature report 0x{rnum:02x}");
+                                    self.physical_set_report_unsupported_warned = true;
                                 }
                             }
                             if let Err(e) = self.uhid.send_set_report_reply(id, reply_err) {

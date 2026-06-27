@@ -17,6 +17,7 @@ pub const DS5_EDGE_PID: u16 = 0x0DF2;
 pub const DS4_PID: u16 = 0x09CC;
 
 const BUS_USB: u32 = 0x0003;
+const BUS_BLUETOOTH: u32 = 0x0005;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SonyDeviceKind {
@@ -44,12 +45,14 @@ impl SonyDeviceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceTransport {
     Usb,
+    Bluetooth,
 }
 
 impl SourceTransport {
     fn from_bustype(bustype: u32) -> Option<Self> {
         match bustype {
             BUS_USB => Some(Self::Usb),
+            BUS_BLUETOOTH => Some(Self::Bluetooth),
             _ => None,
         }
     }
@@ -57,6 +60,7 @@ impl SourceTransport {
     pub fn name(self) -> &'static str {
         match self {
             Self::Usb => "USB",
+            Self::Bluetooth => "Bluetooth",
         }
     }
 }
@@ -512,7 +516,7 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
         let transport = match SourceTransport::from_bustype(devinfo.bustype) {
             Some(t) => t,
             None => {
-                debug!("skipping non-USB DualSense {} (bustype={})", name_str, devinfo.bustype);
+                debug!("skipping unsupported DualSense {} (bustype={})", name_str, devinfo.bustype);
                 continue;
             }
         };

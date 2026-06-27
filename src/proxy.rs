@@ -9,7 +9,7 @@ use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal
 use std::os::fd::BorrowedFd;
 
 use crate::codec::{CodecPipeline, TargetCodec};
-use crate::device::HidrawDevice;
+use crate::device::{HidrawDevice, SonyDeviceKind};
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::Button;
 use crate::uhid::UhidDevice;
@@ -246,6 +246,7 @@ pub struct Proxy {
     config_path: String,
     report_cache: HashMap<u8, Vec<u8>>,
     codec: CodecPipeline,
+    source_kind: SonyDeviceKind,
     output_device_config: String,
     recreate_uhid: bool,
     keyboard: crate::keyboard::KeyboardDevice,
@@ -266,7 +267,7 @@ impl Proxy {
         self.codec.target.fallback_feature_report(report_id)
     }
 
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, codec: CodecPipeline, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, codec: CodecPipeline, source_kind: SonyDeviceKind, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
         let fifo_fd = OwnedFd::from(fifo_file);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
@@ -281,7 +282,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn forget_restore_on_physical_disconnect(&mut self) {
@@ -313,6 +314,7 @@ impl Proxy {
                                     warn!("{name}: not configured, passthrough");
                                 }
                             }
+                            warn_ignored_edge_passthroughs(&cfg, self.source_kind, self.codec.target);
                             new_mapping = m;
                             new_output_device = cfg.output_device.clone();
                             cfg_ok = true;
@@ -852,6 +854,26 @@ impl Proxy {
             }
         }
         Ok(())
+    }
+}
+
+pub(crate) fn warn_ignored_edge_passthroughs(
+    cfg: &crate::config::Config,
+    source_kind: SonyDeviceKind,
+    target: TargetCodec,
+) {
+    if source_kind != SonyDeviceKind::DualSenseEdge {
+        return;
+    }
+    if matches!(target, TargetCodec::Ds5UsbAuto) {
+        return;
+    }
+
+    for name in ["left_paddle", "right_paddle", "left_fn", "right_fn"] {
+        let remap = cfg.buttons.get(name).and_then(|button| button.remap.as_deref());
+        if remap.is_none() || remap == Some("passthrough") {
+            warn!("{name}: passthrough may be ignored by the target");
+        }
     }
 }
 

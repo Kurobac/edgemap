@@ -374,7 +374,10 @@ pub fn apply_state_to_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) 
     if state.button(Button::PS) { b2 |= 0x01; }
     if state.button(Button::Touchpad) { b2 |= 0x02; }
     if state.button(Button::Mic) { b2 |= 0x04; }
-    // Edge buttons in vendor usage 0x21 bits 0-3 (byte 10 high nibble)
+    // Edge buttons in vendor usage 0x21 bits 0-3 (byte 10 high nibble).
+    // DS5 targets keep writing them because the descriptor advertises these
+    // usages; games may still ignore them. DS4 target encoding has no matching
+    // fields, so Edge-only passthrough state is dropped there.
     if state.button(Button::FnLeft) { b2 |= 0x10; }
     if state.button(Button::FnRight) { b2 |= 0x20; }
     if state.button(Button::LeftPaddle) { b2 |= 0x40; }

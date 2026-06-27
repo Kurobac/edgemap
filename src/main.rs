@@ -286,6 +286,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                                         warn!("{name}: not configured, passthrough");
                                     }
                                 }
+                                proxy::warn_ignored_edge_passthroughs(&cfg, dev_info.kind, codec_pipeline.target);
                                 m
                             }
                             Err(e) => {
@@ -320,7 +321,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             }
         };
 
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache.into_inner(), codec_pipeline, output_device, keyboard, dup_fifo_fd(&fifo_fd));
+        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache.into_inner(), codec_pipeline, dev_info.kind, output_device, keyboard, dup_fifo_fd(&fifo_fd));
         match proxy.run() {
             proxy::ExitReason::ConfigChanged => {
                 config_path = Some(proxy.config_path().to_string());

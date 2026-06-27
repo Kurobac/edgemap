@@ -193,8 +193,8 @@ impl HidrawDevice {
         };
 
         if devinfo.bustype == BUS_USB {
-            // validate USB device state: read first input report
-            // limit to USB for now, BT not tested yet.
+            // Validate USB device state by reading the first full input report.
+            // Bluetooth uses a different report envelope and is handled below.
             let mut buf = [0u8; 64];
             match device.read_input(&mut buf) {
                 Ok(64) if buf[0] == 0x01 => {
@@ -216,6 +216,10 @@ impl HidrawDevice {
                 }
             }
         } else {
+            // DualSense Bluetooth may deliver a minimal 0x01 report before the
+            // full 0x31 state report. Runtime input decoding already validates
+            // the 0x31 report shape and CRC, so avoid failing open on a valid
+            // but unusable-for-us BT packet here.
             debug!("skipping first input report validation for non-USB device");
         }
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-UHID proxy for USB DualSense and DualSense Edge controllers (PID 0x0CE6 / 0x0DF2). Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Reads physical DualSense input via `/dev/hidraw`, applies button remapping frame-by-frame, and forwards all other HID data (gyro, touchpad, LED, rumble, adaptive trigger FFB, HD haptics via audio) transparently through a virtual HID device via `/dev/uhid`.
+UHID proxy for USB DualSense and DualSense Edge controllers (PID 0x0CE6 / 0x0DF2). Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Reads physical DualSense input via `/dev/hidraw`, decodes it through a source codec, applies button remapping frame-by-frame, and emits a virtual USB HID target through `/dev/uhid`. Native Sony behavior is preserved through explicit codec paths rather than unconditional raw passthrough.
 
 Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/uhid` and `/dev/hidraw` access (daemon only). Kernel compatibility: tested 7.0, should work 6.7+, may work 5.12+.
 
@@ -48,15 +48,16 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 
 - DS4 target GUI warning: selecting `DualShock 4 (Beta)` now shows a reminder that some native DS4 games under Proton may require the patched Proton build.
 - GUI test coverage: 21 tests with DS4 selection warning and existing-config no-warning coverage.
+- Codec/error-handling cleanup: source/physical/target codec boundaries, no raw forwarding on decode failure, stricter UHID event validation, unified hidraw disconnect handling.
 
 ## Implemented Features
 
 ### Core UHID Proxy
-- Virtual DualSense Edge HID device via `/dev/uhid` (UHID_CREATE2)
-- Physical hidraw read → report update → UHID_INPUT2 forward
-- Game output report (rtype=1) → raw write passthrough to physical hardware
-- All 28 feature reports handled (GET_REPORT cache)
-- SET_REPORT → UHID_SET_REPORT_REPLY + HIDIOCSFEATURE forward
+- Virtual USB HID target via `/dev/uhid` (UHID_CREATE2)
+- Physical hidraw read → `SourceCodec` decode → `ControllerFrame` → L1/L2 mapping → `TargetCodec` encode → UHID_INPUT2
+- Game output report (rtype=1) → `TargetCodec` decode → `PhysicalCodec` encode → physical hidraw write
+- GET_REPORT served from physical feature-report cache, target seed data, or target fallback
+- SET_REPORT replies through UHID; physical forwarding is selected by `PhysicalCodec`
 - Physical device node hiding: `chmod 000` + `setfacl -b`, restore on exit
 - ACL save/restore (getfacl → setfacl)
 
@@ -133,12 +134,13 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | `[cross] turbo=true` (no remap) | Self-turbo: cross toggle itself |
 | `[cross] remap="block" turbo=true` | Turbo toggle consumed by block L1 filter (no visible output; toggle drives combo key) |
 
-### Pipeline Architecture (v0.0.9+)
+### Pipeline Architecture
 Three-layer per-frame processing model:
 ```
-Layer 1 (physical filter): parse → touchpad → TURBO → combo detection → BLOCK → freeze(L1)
+Source codec: hidraw bytes → ControllerFrame
+Layer 1 (physical filter): touchpad split → TURBO → combo detection → BLOCK → freeze(L1)
 Layer 2 (virtual generate): macro detection → REMAP → combo injection → macro injection → keyboard flush
-Layer 3 (output): apply_state_to_report → UHID_INPUT2
+Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 ```
 - **Turbo** runs in L1 before freeze: reads physical snapshot, writes to state
 - **Combo detection** runs in L1 before block and suppresses modifier + key
@@ -146,6 +148,22 @@ Layer 3 (output): apply_state_to_report → UHID_INPUT2
 - **Remap** (`MappingConfig::apply`) reads frozen L1, writes virtual output
 - Combo injection runs after remap so source clearing cannot erase combo output
 - Keyboard flush combines remap, combo, and macro keyboard events
+
+### Codec Architecture
+- `SourceCodec` owns physical input report decoding and input report size.
+- `ControllerFrame` carries `GamepadState`, optional motion data, and the source report backing.
+- `TargetCodec` owns virtual target input encoding, target output decoding, USB identity, and target GET_REPORT seed/fallback behavior.
+- `PhysicalCodec` owns physical output encoding, SET_REPORT forwarding policy, and which physical feature reports are safe to cache.
+- DS5 USB target keeps the DS5 USB source report as backing where possible. DS4 target converts input/output through DS4-specific USB report code.
+- DS5/DS4 USB byte layout helpers in `report.rs` are wire-format routines, not a transport-neutral HID model.
+
+### Error Handling Policy
+- Bad or short input frames are dropped. They are not raw-forwarded to the virtual target.
+- Single output or feature-report failures reply with an error or drop that request while the input path keeps running.
+- hidraw disconnect errors (`EIO`, `ENODEV`, `ENXIO`) stop the current proxy and wait for reconnect.
+- Malformed UHID events, UHID read errors, and UHID input write errors stop the current proxy loop.
+- Startup config and required daemon setup failures are fatal. Hot reload failures currently fall back to passthrough.
+- Permission hiding/restoration failures are warning-level unless a direct node restriction call returns an error to the caller.
 
 ### Combo System (v0.0.10)
 - **Modifier key combinations**: hold DSE button + press standard key → mapped output
@@ -186,21 +204,23 @@ Layer 3 (output): apply_state_to_report → UHID_INPUT2
 - Physical-only: reject UHID virtual devices (check `/sys/class/hidraw/N/device/uevent`)
 - USB-only: reject Bluetooth DualSense devices before opening them
 - Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported
-- HID report descriptor read from physical device via HIDIOCGRDESC, `DS_EDGE_USB_DESCRIPTOR` fallback
+- HID report descriptor read from physical device via HIDIOCGRDESC; read failure aborts device open
 - `output_device = "dualsense"` overrides the virtual device to regular DS (PID 0x0CE6 + `DS_USB_DESCRIPTOR`); changing it on reload recreates UHID
 - `output_device = "dualshock4"` exposes a DualShock 4 target (PID 0x09CC + `DS4_USB_DESCRIPTOR`, Beta); native DS4 games under Proton should use the DS4 UHID MI_03 identity patch from `proton-eg-patch` for best compatibility
-- State validation: read first input report on open()
+- State validation: read first input report on open() for USB devices
 - Multi-device: warn if more than one DualSense detected
-- EIO cooldown: 2-second sleep after disconnect
+- Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
 
-### Rust Unit Tests (158 total: 77 dseuhid + 81 edgemap, all passing)
+### Rust Unit Tests (179 total: 98 dseuhid + 81 edgemap, all passing)
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `mapping.rs` | 15 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, keyboard target |
 | `report.rs` | 10 | byte position for all button groups (face/shoulder/system/Edge), all-button roundtrip, byte11 preservation, stick/trigger values, seq |
+| `codec.rs` | 17 | codec selection, USB target identities, feature report policies/fallbacks, output conversion, touchpad and motion frames |
 | `config.rs` | 49 | valid sources/targets (incl. key:xxx), trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro, keyboard step), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
 | `device.rs` | 1 | sysfs hidraw path resolution |
 | `keyboard.rs` | 2 | successful press tracking, failed press/release state preservation |
+| `uhid.rs` | 4 | malformed/oversized UHID OUTPUT and SET_REPORT parsing |
 | `edgemap.rs` | 5 | XDG absolute/fallback handling, missing HOME, absolute and tilde config paths |
 
 ### GUI Tests (21 total, PyQt6 offscreen)

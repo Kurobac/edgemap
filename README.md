@@ -1,6 +1,6 @@
 # edgemap
 
-DualSense HID remapper — remap buttons, turbo, combos, macros without losing DualSense-specific features. Three components: `dseuhid` (root daemon, UHID proxy), `edgemap` (user CLI, config management), and `edgemap-gui` (PyQt6 config editor). All DualSense-specific features (adaptive triggers, HD haptics, gyro, touchpad) pass through untouched.
+DualSense HID remapper — remap buttons, turbo, combos, macros while preserving native Sony HID behavior as much as possible. Three components: `dseuhid` (root daemon, UHID proxy), `edgemap` (user CLI, config management), and `edgemap-gui` (PyQt6 config editor). The daemon reads the physical controller through hidraw, converts reports through source/target codecs, and exposes a virtual USB HID device through UHID.
 
 ## Disclaimer
 
@@ -71,7 +71,7 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Keyboard target | Remap, combo, macro, and split-touchpad output to 107 uinput keyboard keys |
 | Profile auto-switch | Match running processes (comm/cmdline), auto-switch remap config |
 | Hot reload | Mtime-based (edgemap) or FIFO command |
-| Passthrough | All DualSense HID data — gyro, touchpad, LED, rumble, adaptive triggers, HD haptics — forwarded untouched |
+| Native HID behavior | DS5 USB target keeps the physical report backing where possible; DS4 target converts input/output through codec code |
 | Regular DualSense | Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported |
 | DSE→DS virtualization | `output_device = "dualsense"` makes Edge appear as regular DS for game compatibility |
 | DualShock 4 target (Beta) | `output_device = "dualshock4"` exposes a DS4-compatible UHID target for native DS4 games |
@@ -134,10 +134,9 @@ partial init or ignore the controller.
 
 ## Not supported (by design)
 
-- Bluetooth / wireless
 - Multiple controllers
 - D‑Bus API, inotify watch
-- Other source / target device
+- Non-Sony device
 
 ## Requirements
 

@@ -371,6 +371,9 @@ fn check_ps_crc32(seed: u8, data: &[u8], expected: u32) -> bool {
     ps_crc32(seed, data) == expected
 }
 
+// DualSense Bluetooth input reports carry the same 63-byte common payload as
+// USB input reports, wrapped with Bluetooth-specific header/trailer bytes.
+
 fn ds5_bt_to_usb_backing(raw: &[u8; DS5_BT_INPUT_REPORT_SIZE]) -> [u8; report::USB_INPUT_REPORT_SIZE] {
     let mut usb = [0u8; report::USB_INPUT_REPORT_SIZE];
     usb[0] = report::USB_INPUT_REPORT_ID;

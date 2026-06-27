@@ -1,5 +1,8 @@
 use std::fmt;
 
+// DS5/DS4 USB report helpers. These are wire-format routines, not a
+// transport-neutral HID model; add BT-specific codecs before reusing them for
+// Bluetooth report layouts.
 pub const USB_INPUT_REPORT_SIZE: usize = 64;
 pub const USB_INPUT_REPORT_ID: u8 = 0x01;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -383,6 +386,9 @@ pub fn apply_state_to_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) 
 }
 
 pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) {
+    // DS4 target conversion currently consumes a DS5 USB backing report for
+    // touchpad and motion passthrough. Revisit this when a non-USB source
+    // provides equivalent data through ControllerFrame abstractions.
     raw[0] = USB_INPUT_REPORT_ID;
     raw[1] = state.left_stick_x;
     raw[2] = state.left_stick_y;

@@ -513,6 +513,8 @@ impl Proxy {
         let input_report_size = self.codec.source.input_report_size();
         let mut buf = vec![0u8; input_report_size];
 
+        // Proxy owns physical hidraw reads; SourceCodec owns the byte format.
+        // Keep transport-specific input parsing out of the event loop.
         loop {
             match self.hidraw.read_input(&mut buf) {
                 Ok(n) if n >= input_report_size => {
@@ -776,6 +778,9 @@ impl Proxy {
                         UhidEvent::Output { rtype, ref data } => {
                             if rtype == 1 {
                                 trace!("UHID OUTPUT: size={}", data.len());
+                                // TargetCodec identifies the virtual output
+                                // format; PhysicalCodec converts it for the
+                                // real hidraw transport before the final write.
                                 let encoded = self.codec.target
                                     .decode_output(data)
                                     .and_then(|command| self.codec.physical.encode_output(&command));
@@ -814,6 +819,9 @@ impl Proxy {
                         UhidEvent::SetReport { id, rnum, rtype, ref data } => {
                             trace!("UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}", data.len());
                             if rtype == 0 {
+                                // PhysicalCodec decides whether this target
+                                // feature report can be forwarded to hidraw.
+                                // BT may need different framing here.
                                 if let Some(full_data) = self.codec.physical.encode_set_report(self.codec.target, rnum, data) {
                                     if let Err(e) = self.hidraw.send_feature_report(&full_data) {
                                         warn!("Failed to forward set_report rnum={rnum}: {e}");

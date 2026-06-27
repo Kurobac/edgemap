@@ -94,6 +94,15 @@ pub enum PhysicalCodec {
 }
 
 impl PhysicalCodec {
+    pub fn feature_reports_to_cache(self, target: TargetCodec) -> &'static [PhysicalFeatureReportRequest] {
+        match (self, target) {
+            (Self::Ds5Usb, TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced) => {
+                target_ds5_usb::PHYSICAL_FEATURE_REPORTS_TO_CACHE
+            }
+            (Self::Ds5Usb, TargetCodec::Ds4Usb) => &[],
+        }
+    }
+
     pub fn encode_output(self, command: &OutputCommand) -> CodecResult<Vec<u8>> {
         match (self, command) {
             (Self::Ds5Usb, OutputCommand::Ds5Usb(output)) => {
@@ -187,13 +196,6 @@ impl TargetCodec {
         match self {
             Self::Ds4Usb => target_ds4_usb::seed_feature_reports(cache),
             Self::Ds5UsbAuto | Self::Ds5UsbForced => {}
-        }
-    }
-
-    pub fn physical_feature_reports_to_cache(self) -> &'static [PhysicalFeatureReportRequest] {
-        match self {
-            Self::Ds5UsbAuto | Self::Ds5UsbForced => target_ds5_usb::PHYSICAL_FEATURE_REPORTS_TO_CACHE,
-            Self::Ds4Usb => &[],
         }
     }
 
@@ -764,15 +766,17 @@ mod tests {
     }
 
     #[test]
-    fn ds5_targets_request_only_safe_physical_feature_reports() {
-        let requests = TargetCodec::Ds5UsbAuto.physical_feature_reports_to_cache();
+    fn physical_ds5_usb_requests_only_safe_ds5_target_feature_reports() {
+        let auto_requests = PhysicalCodec::Ds5Usb.feature_reports_to_cache(TargetCodec::Ds5UsbAuto);
+        let forced_requests = PhysicalCodec::Ds5Usb.feature_reports_to_cache(TargetCodec::Ds5UsbForced);
 
-        assert_eq!(requests, [
+        assert_eq!(auto_requests, [
             PhysicalFeatureReportRequest { report_id: 0x05, size: 41 },
             PhysicalFeatureReportRequest { report_id: 0x20, size: 64 },
         ]);
-        assert!(!requests.iter().any(|r| r.report_id == 0x09));
-        assert!(TargetCodec::Ds4Usb.physical_feature_reports_to_cache().is_empty());
+        assert_eq!(forced_requests, auto_requests);
+        assert!(!auto_requests.iter().any(|r| r.report_id == 0x09));
+        assert!(PhysicalCodec::Ds5Usb.feature_reports_to_cache(TargetCodec::Ds4Usb).is_empty());
     }
 
     #[test]

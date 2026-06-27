@@ -226,7 +226,9 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         );
 
         let mut report_cache = codec::FeatureReportCache::new();
-        for request in codec_pipeline.target.physical_feature_reports_to_cache() {
+        // Physical transport decides which real-device reports are safe to read.
+        // main owns the hidraw ioctl; codec owns the source/target policy.
+        for request in codec_pipeline.physical.feature_reports_to_cache(codec_pipeline.target) {
             let mut buf = vec![request.report_id];
             buf.resize(request.size, 0);
             if device::ioctl_get_feature_report(hidraw.as_raw_fd(), &mut buf).is_ok() {
@@ -238,6 +240,8 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         }
         codec_pipeline.target.seed_feature_reports(&mut report_cache);
 
+        // Target devices are USB-only for now. Auto mode reuses the physical
+        // USB descriptor; revisit this when a BT source can back a USB target.
         let target_identity = codec_pipeline.target.usb_identity(&dev_info, hidraw.report_descriptor());
         if let Err(e) = uhid.create(
             &target_identity.name,

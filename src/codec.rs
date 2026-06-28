@@ -36,6 +36,11 @@ pub struct PhysicalFeatureReportRequest {
     pub size: usize,
 }
 
+const DS5_PHYSICAL_FEATURE_REPORTS_TO_CACHE: [PhysicalFeatureReportRequest; 2] = [
+    PhysicalFeatureReportRequest { report_id: 0x05, size: 41 },
+    PhysicalFeatureReportRequest { report_id: 0x20, size: 64 },
+];
+
 #[derive(Debug, Default)]
 pub struct FeatureReportCache {
     reports: HashMap<u8, Vec<u8>>,
@@ -110,14 +115,20 @@ impl PhysicalCodec {
     pub fn feature_reports_to_cache(self, target: TargetCodec) -> &'static [PhysicalFeatureReportRequest] {
         match (self, target) {
             (Self::Ds5Usb, TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced) => {
-                target_ds5_usb::PHYSICAL_FEATURE_REPORTS_TO_CACHE
+                &DS5_PHYSICAL_FEATURE_REPORTS_TO_CACHE
             }
             (Self::Ds5Usb, TargetCodec::Ds4Usb) => &[],
-            // DS5 Bluetooth feature reports use the same IDs for calibration
-            // and firmware info, but carry Bluetooth feature CRC framing. Do
-            // not cache or hand them to the USB virtual target until there is
-            // an explicit BT-feature-to-USB-feature conversion path.
-            (Self::Ds5Bt, _) => &[],
+            // DS5 Bluetooth feature reports use the same IDs and total sizes
+            // as USB for calibration (0x05) and firmware info (0x20), but the
+            // last 4 bytes are a feature CRC32 with seed 0xA3. Hardware tests
+            // showed that the useful fields live before that tail. Validate
+            // the CRC first but keep the full-size report in the USB target
+            // cache; truncating the CRC tail would change the GET_REPORT
+            // length expected by hid-playstation.
+            (Self::Ds5Bt, TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced) => {
+                &DS5_PHYSICAL_FEATURE_REPORTS_TO_CACHE
+            }
+            (Self::Ds5Bt, TargetCodec::Ds4Usb) => &[],
         }
     }
 
@@ -136,6 +147,17 @@ impl PhysicalCodec {
                 let ds5 = report::convert_ds4_output_to_ds5(output.as_bytes());
                 physical_ds5_bt::encode_output_from_ds5_usb_bytes(&ds5, state)
             }
+        }
+    }
+
+    pub fn decode_feature_report(
+        self,
+        request: PhysicalFeatureReportRequest,
+        raw: Vec<u8>,
+    ) -> CodecResult<Vec<u8>> {
+        match self {
+            Self::Ds5Usb => physical_ds5_usb::decode_feature_report(request, raw),
+            Self::Ds5Bt => physical_ds5_bt::decode_feature_report(request, raw),
         }
     }
 
@@ -307,6 +329,7 @@ const DS5_BT_OUTPUT_PAYLOAD_OFFSET: usize = 3;
 const DS5_BT_OUTPUT_CRC_OFFSET: usize = 74;
 const PS_INPUT_CRC32_SEED: u8 = 0xA1;
 const PS_OUTPUT_CRC32_SEED: u8 = 0xA2;
+const PS_FEATURE_CRC32_SEED: u8 = 0xA3;
 
 #[derive(Debug, Clone)]
 pub enum SourceReport {
@@ -508,11 +531,6 @@ pub mod input_ds5_bt {
 pub mod target_ds5_usb {
     use super::*;
 
-    pub const PHYSICAL_FEATURE_REPORTS_TO_CACHE: &[PhysicalFeatureReportRequest] = &[
-        PhysicalFeatureReportRequest { report_id: 0x05, size: 41 },
-        PhysicalFeatureReportRequest { report_id: 0x20, size: 64 },
-    ];
-
     pub fn encode_input(frame: &ControllerFrame, seq: u8) -> CodecResult<[u8; report::USB_INPUT_REPORT_SIZE]> {
         match &frame.source_report {
             SourceReport::Ds5Usb(raw) => {
@@ -677,10 +695,40 @@ pub mod physical_ds5_usb {
     pub fn encode_output_from_ds4_usb(output: &Ds4UsbOutput) -> CodecResult<Vec<u8>> {
         Ok(report::convert_ds4_output_to_ds5(output.as_bytes()).to_vec())
     }
+
+    pub fn decode_feature_report(
+        request: PhysicalFeatureReportRequest,
+        raw: Vec<u8>,
+    ) -> CodecResult<Vec<u8>> {
+        if raw.len() != request.size || raw.first() != Some(&request.report_id) {
+            return Err(CodecError::InvalidReport);
+        }
+        Ok(raw)
+    }
 }
 
 pub mod physical_ds5_bt {
     use super::*;
+
+    pub fn decode_feature_report(
+        request: PhysicalFeatureReportRequest,
+        raw: Vec<u8>,
+    ) -> CodecResult<Vec<u8>> {
+        if raw.len() != request.size || raw.first() != Some(&request.report_id) {
+            return Err(CodecError::InvalidReport);
+        }
+        let crc_offset = raw.len() - 4;
+        let expected_crc = u32::from_le_bytes([
+            raw[crc_offset],
+            raw[crc_offset + 1],
+            raw[crc_offset + 2],
+            raw[crc_offset + 3],
+        ]);
+        if !check_ps_crc32(PS_FEATURE_CRC32_SEED, &raw[..crc_offset], expected_crc) {
+            return Err(CodecError::InvalidReport);
+        }
+        Ok(raw)
+    }
 
     pub fn encode_output_from_ds5_usb(
         output: &Ds5UsbOutput,
@@ -733,6 +781,18 @@ mod tests {
         raw[2..65].copy_from_slice(&usb[1..]);
         let crc = ps_crc32(PS_INPUT_CRC32_SEED, &raw[..DS5_BT_INPUT_REPORT_SIZE - DS5_BT_CRC_SIZE]);
         raw[74..78].copy_from_slice(&crc.to_le_bytes());
+        raw
+    }
+
+    fn ds5_bt_feature_report(report_id: u8, size: usize) -> Vec<u8> {
+        assert!(size >= 4, "BT feature report test helper requires room for CRC");
+        let mut raw = vec![0u8; size];
+        raw[0] = report_id;
+        for (i, byte) in raw[1..size - 4].iter_mut().enumerate() {
+            *byte = (i as u8).wrapping_add(1);
+        }
+        let crc = ps_crc32(PS_FEATURE_CRC32_SEED, &raw[..size - 4]);
+        raw[size - 4..].copy_from_slice(&crc.to_le_bytes());
         raw
     }
 
@@ -1093,16 +1153,70 @@ mod tests {
     fn physical_ds5_usb_requests_only_safe_ds5_target_feature_reports() {
         let auto_requests = PhysicalCodec::Ds5Usb.feature_reports_to_cache(TargetCodec::Ds5UsbAuto);
         let forced_requests = PhysicalCodec::Ds5Usb.feature_reports_to_cache(TargetCodec::Ds5UsbForced);
+        let bt_requests = PhysicalCodec::Ds5Bt.feature_reports_to_cache(TargetCodec::Ds5UsbAuto);
 
         assert_eq!(auto_requests, [
             PhysicalFeatureReportRequest { report_id: 0x05, size: 41 },
             PhysicalFeatureReportRequest { report_id: 0x20, size: 64 },
         ]);
         assert_eq!(forced_requests, auto_requests);
+        assert_eq!(bt_requests, auto_requests);
         assert!(!auto_requests.iter().any(|r| r.report_id == 0x09));
         assert!(PhysicalCodec::Ds5Usb.feature_reports_to_cache(TargetCodec::Ds4Usb).is_empty());
-        assert!(PhysicalCodec::Ds5Bt.feature_reports_to_cache(TargetCodec::Ds5UsbAuto).is_empty());
         assert!(PhysicalCodec::Ds5Bt.feature_reports_to_cache(TargetCodec::Ds4Usb).is_empty());
+    }
+
+    #[test]
+    fn physical_feature_report_decode_validates_usb_shape() {
+        let request = PhysicalFeatureReportRequest { report_id: 0x05, size: 41 };
+        let mut raw = vec![0u8; 41];
+        raw[0] = 0x05;
+
+        assert_eq!(
+            PhysicalCodec::Ds5Usb.decode_feature_report(request, raw.clone()),
+            Ok(raw)
+        );
+
+        let mut wrong_id = vec![0u8; 41];
+        wrong_id[0] = 0x20;
+        assert_eq!(
+            PhysicalCodec::Ds5Usb.decode_feature_report(request, wrong_id),
+            Err(CodecError::InvalidReport)
+        );
+        assert_eq!(
+            PhysicalCodec::Ds5Usb.decode_feature_report(request, vec![0x05; 40]),
+            Err(CodecError::InvalidReport)
+        );
+    }
+
+    #[test]
+    fn physical_ds5_bt_feature_report_validates_crc_and_keeps_full_size() {
+        let request = PhysicalFeatureReportRequest { report_id: 0x05, size: 41 };
+        let raw = ds5_bt_feature_report(0x05, 41);
+
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.decode_feature_report(request, raw.clone()),
+            Ok(raw)
+        );
+
+        let mut bad_crc = ds5_bt_feature_report(0x05, 41);
+        bad_crc[40] ^= 0x01;
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.decode_feature_report(request, bad_crc),
+            Err(CodecError::InvalidReport)
+        );
+
+        let wrong_id = ds5_bt_feature_report(0x20, 41);
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.decode_feature_report(request, wrong_id),
+            Err(CodecError::InvalidReport)
+        );
+
+        let wrong_size = ds5_bt_feature_report(0x05, 40);
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.decode_feature_report(request, wrong_size),
+            Err(CodecError::InvalidReport)
+        );
     }
 
     #[test]

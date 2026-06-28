@@ -232,8 +232,15 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             let mut buf = vec![request.report_id];
             buf.resize(request.size, 0);
             if device::ioctl_get_feature_report(hidraw.as_raw_fd(), &mut buf).is_ok() {
-                debug!("GET_REPORT cache: read report 0x{:02x} from physical device", request.report_id);
-                report_cache.insert(request.report_id, buf);
+                match codec_pipeline.physical.decode_feature_report(*request, buf) {
+                    Ok(data) => {
+                        debug!("GET_REPORT cache: read report 0x{:02x} from physical device", request.report_id);
+                        report_cache.insert(request.report_id, data);
+                    }
+                    Err(_) => {
+                        warn!("GET_REPORT cache: invalid report 0x{:02x}, using built-in fallback", request.report_id);
+                    }
+                }
             } else {
                 warn!("GET_REPORT cache: failed to read 0x{:02x}, using built-in fallback", request.report_id);
             }

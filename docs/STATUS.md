@@ -51,7 +51,8 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - Codec/error-handling cleanup: source/physical/target codec boundaries, no raw forwarding on decode failure, stricter UHID event validation, unified hidraw disconnect handling.
 - DualSense / DualSense Edge Bluetooth source support: BT input report 0x31 decodes into `ControllerFrame`; virtual targets remain USB UHID.
 - Bluetooth physical main output forwarding: DS5/DS4 USB target output is converted into DS5 BT 0x31 output with sequence tag and CRC. Rumble, lightbar, player LED, mic LED, and adaptive trigger payloads are raw-carried through this path.
-- BT SET_REPORT and BT feature-report forwarding remain unsupported by design for now; known WebHID vendor/test commands are warned/dropped.
+- BT GET_REPORT cache for 0x05/0x20 is supported with feature CRC32 seed 0xA3 validation; 0x09 physical MAC is still skipped.
+- BT SET_REPORT / vendor feature-report forwarding remains unsupported by design for now; known WebHID vendor/test commands are warned/dropped.
 - Hot reload and switch-config now keep the previous live config/path on load, validation, or mapping-build failure.
 - Output and report diagnostics now log report size/id and distinguish GET_REPORT physical cache from target fallback.
 
@@ -163,7 +164,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - `PhysicalCodec` owns physical output encoding, SET_REPORT forwarding policy, and which physical feature reports are safe to cache.
 - DS5 USB target keeps the DS5 USB source report as backing where possible. DS4 target converts input/output through DS4-specific USB report code.
 - DS5/DS4 USB byte layout helpers in `report.rs` are wire-format routines, not a transport-neutral HID model.
-- DS5 BT source input uses a BT-specific codec and USB-compatible backing; DS5 BT physical output wraps USB target output into the 0x31 Bluetooth main-output envelope. BT feature reports are not cached/forwarded until an explicit BT-feature-to-USB-feature conversion exists.
+- DS5 BT source input uses a BT-specific codec and USB-compatible backing; DS5 BT physical output wraps USB target output into the 0x31 Bluetooth main-output envelope. BT physical GET_REPORT cache validates the 0xA3 feature CRC and keeps full-size 0x05/0x20 reports for the USB virtual target.
 
 ### Error Handling Policy
 - Bad or short input frames are dropped. They are not raw-forwarded to the virtual target.
@@ -219,12 +220,12 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Multi-device: warn if more than one DualSense detected
 - Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
 
-### Rust Unit Tests (190 total: 109 dseuhid + 81 edgemap, all passing)
+### Rust Unit Tests (192 total: 111 dseuhid + 81 edgemap, all passing)
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `mapping.rs` | 15 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, keyboard target |
 | `report.rs` | 10 | byte position for all button groups (face/shoulder/system/Edge), all-button roundtrip, byte11 preservation, stick/trigger values, seq |
-| `codec.rs` | 28 | codec selection, USB/BT source paths, USB target identities, BT auto identity, feature report policies/fallbacks, DS5/DS4 output conversion, BT output framing/CRC/sequence, touchpad and motion frames |
+| `codec.rs` | 30 | codec selection, USB/BT source paths, USB target identities, BT auto identity, feature report policies/fallbacks, USB/BT feature report validation, DS5/DS4 output conversion, BT output framing/CRC/sequence, touchpad and motion frames |
 | `config.rs` | 49 | valid sources/targets (incl. key:xxx), trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro, keyboard step), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
 | `device.rs` | 1 | sysfs hidraw path resolution |
 | `keyboard.rs` | 2 | successful press tracking, failed press/release state preservation |

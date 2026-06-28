@@ -6,7 +6,7 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 190 tests total (109 dseuhid + 81 edgemap)
+cargo test                # 192 tests total (111 dseuhid + 81 edgemap)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
@@ -102,8 +102,8 @@ Input order inside `handle_hidraw_input()`:
 - **Snapshot isolation**: `apply()` clones state before rules evaluate — rules read snapshot, write to live state. Prevents rule ordering artifacts.
 - **DSE buttons excluded from targets** — only standard buttons, stick dirs, and trigger-full are valid targets. Edge buttons (paddles, Fn) can only be sources.
 - **Device detection** skips virtual UHID devices (checks `/sys/class/hidraw/N/device/uevent` for `DRIVER=uhid`) to avoid recursively proxying itself.
-- **GET_REPORT cache**: physical codec policy reads physical feature reports 0x05 (IMU calibration) and 0x20 (firmware info) for DS5 USB physical devices backing DS5 USB targets. Read failures warn and fall back to target responses. Report 0x09 (MAC address) is intentionally skipped — caching it would duplicate the physical device's MAC in sysfs, causing `hid-playstation` probe failure (#63). DS5 BT physical feature reports are not cached yet because they carry BT feature CRC framing and need an explicit conversion path before serving a USB virtual target.
-- **Bluetooth source**: DS5/Edge BT input report 0x31 is decoded into `ControllerFrame` with USB-compatible backing. Virtual targets remain USB UHID only. BT physical main output is supported by wrapping DS5 USB target output into the DS5 BT 0x31 output envelope with sequence tag and CRC; BT SET_REPORT/feature-report forwarding is intentionally unsupported for now.
+- **GET_REPORT cache**: physical codec policy reads physical feature reports 0x05 (IMU calibration) and 0x20 (firmware info) for DS5 USB/BT physical devices backing DS5 USB targets. BT feature reports are CRC-validated with seed 0xA3 and kept full-size in the USB target cache. Read/validation failures warn and fall back to target responses. Report 0x09 (MAC address) is intentionally skipped — caching it would duplicate the physical device's MAC in sysfs, causing `hid-playstation` probe failure (#63).
+- **Bluetooth source**: DS5/Edge BT input report 0x31 is decoded into `ControllerFrame` with USB-compatible backing. Virtual targets remain USB UHID only. BT physical main output is supported by wrapping DS5 USB target output into the DS5 BT 0x31 output envelope with sequence tag and CRC; BT SET_REPORT/vendor feature-report forwarding is intentionally unsupported for now.
 - **`Target::Block` removed** — replaced by `MappingConfig.blocked_buttons` (L1 suppression, not L2 remap). `remap="block"` in config maps to this.
 - **`apply()` signature**: `apply(&self, l1: &GamepadState, state: &mut GamepadState, keyboard_out: &mut Vec<(u16, bool)>)` — reads frozen L1 output, writes to mutable state, pushes keyboard events.
 - **Combo injection never clears** — only pushes activation, not deactivation. State re-parse handles cleanup naturally.
@@ -117,7 +117,7 @@ Input order inside `handle_hidraw_input()`:
 ## Key constraints
 
 - DualSense Edge (0DF2) + regular DualSense (0CE6), USB or Bluetooth source hidraw. Virtual target is still USB UHID only; no Bluetooth target.
-- Bluetooth physical SET_REPORT / feature-report forwarding is not implemented. Current BT support covers input and main output report forwarding.
+- Bluetooth physical SET_REPORT / vendor feature-report forwarding is not implemented. Current BT support covers input, main output report forwarding, and GET_REPORT cache for 0x05/0x20.
 - `-c` config path resets to passthrough on device reconnect; edgemap is the recommended way to set config.
 - `output_device = "dualsense"` in config TOML: virtualize as regular DS (0x0CE6 PID + DS descriptor). Reload triggers UHID recreate.
 - `output_device = "dualshock4"` in config TOML: virtualize as DS4 (0x09CC PID + DS4 descriptor, Beta). Native DS4 games under Proton may need the DS4 UHID MI_03 identity patch.

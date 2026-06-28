@@ -75,7 +75,7 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Regular DualSense | DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported over USB and Bluetooth source hidraw |
 | DSE→DS virtualization | `output_device = "dualsense"` makes Edge appear as regular DS for game compatibility |
 | DualShock 4 target (Beta) | `output_device = "dualshock4"` exposes a DS4-compatible UHID target for native DS4 games |
-| GET_REPORT cache | DS5 USB physical devices read calibration/firmware data on startup; BT feature-report cache is intentionally disabled for now |
+| GET_REPORT cache | DS5 USB/BT physical devices read calibration/firmware data on startup; BT feature reports are CRC-validated before caching |
 | GUI config editor | PyQt6 native editor — remap, turbo, combo, macro, macro manager, save/load |
 
 > **Note:** `output_device = "dualsense"` on a regular DualSense is harmless — the device
@@ -136,7 +136,7 @@ partial init or ignore the controller.
 
 - Multiple controllers
 - Bluetooth virtual target; dseuhid always exposes a USB UHID target
-- Bluetooth physical SET_REPORT / feature-report forwarding
+- Bluetooth physical SET_REPORT / vendor feature-report forwarding
 - D‑Bus API, inotify watch
 - Non-Sony device
 

@@ -8,12 +8,15 @@ use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::os::fd::BorrowedFd;
 
-use crate::codec::{CodecError, CodecPipeline, PhysicalCodec, PhysicalOutputState, TargetCodec};
+use crate::codec::{CodecError, CodecPipeline, PhysicalCodec, PhysicalOutputState, SourceCodec, TargetCodec};
 use crate::device::{HidrawDevice, SonyDeviceKind};
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::Button;
 use crate::uhid::UhidDevice;
 use std::time::Instant;
+
+const DS5_USB_SYNTHETIC_SENSOR_TIMESTAMP_DELTA: u32 = 3000;
+
 
 fn apply_target_to_state(state: &mut crate::report::GamepadState, target: &Target, on: bool) {
     use crate::mapping::StickDir;
@@ -253,6 +256,7 @@ pub struct Proxy {
     last_keyboard: HashMap<u16, bool>,
     last_snapshot: Option<crate::report::GamepadState>,
     last_output: Option<crate::report::GamepadState>,
+    ds5_usb_sensor_timestamp: u32,
     physical_output_state: PhysicalOutputState,
     physical_set_report_unsupported_warned: HashSet<u8>,
     turbo_runtimes: Vec<TurboRuntime>,
@@ -300,7 +304,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, physical_output_state: PhysicalOutputState::default(), physical_set_report_unsupported_warned: HashSet::new(), turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, ds5_usb_sensor_timestamp: 0, physical_output_state: PhysicalOutputState::default(), physical_set_report_unsupported_warned: HashSet::new(), turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn forget_restore_on_physical_disconnect(&mut self) {
@@ -730,6 +734,23 @@ impl Proxy {
 
                         // ========== L3: Output ==========
                         frame.state = state.clone();
+                        if self.codec.source == SourceCodec::Ds5Bt
+                            && matches!(
+                                self.codec.target,
+                                TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced
+                            )
+                        {
+                            // Bluetooth input uses a different timestamp
+                            // domain. For a USB virtual target, synthesize the
+                            // DS5 USB-scale sensor timestamp and keep motion
+                            // axes unchanged.
+                            self.ds5_usb_sensor_timestamp =
+                                self.ds5_usb_sensor_timestamp.wrapping_add(
+                                    DS5_USB_SYNTHETIC_SENSOR_TIMESTAMP_DELTA,
+                                );
+                            frame.sensor_timestamp_override =
+                                Some(self.ds5_usb_sensor_timestamp);
+                        }
                         let out = self.codec.target
                             .encode_input(&frame, *seq)
                             .expect("DS5 USB source should encode to selected USB target");
@@ -882,11 +903,16 @@ impl Proxy {
                             if rtype == 0 {
                                 // PhysicalCodec decides whether this target
                                 // feature report can be forwarded to hidraw.
-                                // BT SET_REPORT is intentionally not
-                                // forwarded yet: it needs feature CRC framing
-                                // and known use cases are vendor/test commands,
-                                // while game output uses UHID OUTPUT.
-                                if let Some(full_data) = self.codec.physical.encode_set_report(self.codec.target, rnum, data) {
+                                // BT forwards only reports whose shape/CRC is
+                                // known; other vendor/test commands are
+                                // dropped without affecting the input path.
+                                if let Some(full_data) =
+                                    self.codec.physical.encode_set_report(
+                                        self.codec.target,
+                                        rnum,
+                                        data,
+                                    )
+                                {
                                     if let Err(e) = self.hidraw.send_feature_report(&full_data) {
                                         warn!("Failed to forward set_report rnum={rnum}: {e}");
                                         reply_err = 1;
@@ -898,9 +924,10 @@ impl Proxy {
                                     && self.physical_set_report_unsupported_warned.insert(rnum)
                                 {
                                     warn!(
-                                        "physical Bluetooth SET_REPORT forwarding is not supported yet; dropping rnum=0x{rnum:02x}, size={}, report_id={}",
+                                        "physical Bluetooth SET_REPORT forwarding is not supported for this report yet; dropping rnum=0x{rnum:02x}, size={}, report_id={}, data={}",
                                         data.len(),
-                                        report_id_label(data)
+                                        report_id_label(data),
+                                        hex_prefix(data, 64)
                                     );
                                 }
                             }
@@ -954,4 +981,19 @@ fn report_id_label(data: &[u8]) -> String {
         Some(report_id) => format!("0x{report_id:02x}"),
         None => "none".to_string(),
     }
+}
+
+fn hex_prefix(data: &[u8], max_len: usize) -> String {
+    let shown = data.len().min(max_len);
+    let mut out = String::with_capacity(shown * 3 + 16);
+    for (i, byte) in data[..shown].iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("{byte:02x}"));
+    }
+    if shown < data.len() {
+        out.push_str(" ...");
+    }
+    out
 }

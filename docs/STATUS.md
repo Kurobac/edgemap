@@ -52,7 +52,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - DualSense / DualSense Edge Bluetooth source support: BT input report 0x31 decodes into `ControllerFrame`; virtual targets remain USB UHID.
 - Bluetooth physical main output forwarding: DS5/DS4 USB target output is converted into DS5 BT 0x31 output with sequence tag and CRC. Rumble, lightbar, player LED, mic LED, and adaptive trigger payloads are raw-carried through this path.
 - BT GET_REPORT cache for 0x05/0x20 is supported with feature CRC32 seed 0xA3 validation; 0x09 physical MAC is still skipped.
-- BT SET_REPORT / vendor feature-report forwarding remains unsupported by design for now; known WebHID vendor/test commands are warned/dropped.
+- BT SET_REPORT / vendor feature-report forwarding remains unsupported by design for now; known WebHID vendor/test commands and Genshin Impact's feature report 0x08 are warned/dropped. Hardware rejected a naive 0x08 HIDIOCSFEATURE transfer even with a feature CRC tail, so this needs real BT traces before implementation.
 - Hot reload and switch-config now keep the previous live config/path on load, validation, or mapping-build failure.
 - Output and report diagnostics now log report size/id and distinguish GET_REPORT physical cache from target fallback.
 
@@ -220,12 +220,12 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Multi-device: warn if more than one DualSense detected
 - Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
 
-### Rust Unit Tests (192 total: 111 dseuhid + 81 edgemap, all passing)
+### Rust Unit Tests (193 total: 112 dseuhid + 81 edgemap, all passing)
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `mapping.rs` | 15 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, keyboard target |
 | `report.rs` | 10 | byte position for all button groups (face/shoulder/system/Edge), all-button roundtrip, byte11 preservation, stick/trigger values, seq |
-| `codec.rs` | 30 | codec selection, USB/BT source paths, USB target identities, BT auto identity, feature report policies/fallbacks, USB/BT feature report validation, DS5/DS4 output conversion, BT output framing/CRC/sequence, touchpad and motion frames |
+| `codec.rs` | 31 | codec selection, USB/BT source paths, USB target identities, BT auto identity, feature report policies/fallbacks, USB/BT feature report validation, DS5/DS4 output conversion, BT output framing/CRC/sequence, BT SET_REPORT non-forwarding policy, touchpad and motion frames |
 | `config.rs` | 49 | valid sources/targets (incl. key:xxx), trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro, keyboard step), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
 | `device.rs` | 1 | sysfs hidraw path resolution |
 | `keyboard.rs` | 2 | successful press tracking, failed press/release state preservation |

@@ -164,17 +164,13 @@ impl PhysicalCodec {
     pub fn encode_set_report(self, target: TargetCodec, report_id: u8, data: &[u8]) -> Option<Vec<u8>> {
         match (self, target) {
             (Self::Ds5Usb, TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced) => {
-                let mut full_data = vec![report_id];
-                full_data.extend_from_slice(data);
-                Some(full_data)
+                Some(feature_report_with_id(report_id, data))
             }
             (Self::Ds5Usb, TargetCodec::Ds4Usb) => None,
-            // Bluetooth SET_REPORT needs feature-report framing/CRC and is
-            // mainly used by vendor/test tools in the known cases so far
-            // (for example factory speaker commands). Games normally drive
-            // rumble, LEDs, mic LED, player LEDs, and adaptive triggers through
-            // the main output report path below, so keep this unsupported until
-            // a real game/hardware need appears.
+            // DS5 BT feature reports advertise the same IDs as USB, but
+            // hardware rejects a naive HIDIOCSFEATURE transfer even when a
+            // feature CRC is appended. Keep BT SET_REPORT disabled until the
+            // actual framing/transport rule is confirmed from hardware traces.
             (Self::Ds5Bt, _) => None,
         }
     }
@@ -363,6 +359,7 @@ pub struct MotionFrame {
 pub struct ControllerFrame {
     pub state: GamepadState,
     pub motion: Option<MotionFrame>,
+    pub sensor_timestamp_override: Option<u32>,
     source_report: SourceReport,
 }
 
@@ -460,6 +457,17 @@ fn write_ds5_usb_motion(raw: &mut [u8; report::USB_INPUT_REPORT_SIZE], motion: M
     }
 }
 
+fn feature_report_with_id(report_id: u8, data: &[u8]) -> Vec<u8> {
+    if data.first() == Some(&report_id) {
+        data.to_vec()
+    } else {
+        let mut full_data = Vec::with_capacity(data.len() + 1);
+        full_data.push(report_id);
+        full_data.extend_from_slice(data);
+        full_data
+    }
+}
+
 fn parse_ds5_usb_touchpad_contact(raw: &[u8; report::USB_INPUT_REPORT_SIZE], base: usize) -> TouchpadContact {
     let contact = raw[base];
     let x = ((raw[base + 2] as u16 & 0x0F) << 8) | raw[base + 1] as u16;
@@ -486,6 +494,7 @@ pub mod input_ds5_usb {
         Ok(ControllerFrame {
             state,
             motion,
+            sensor_timestamp_override: None,
             source_report: SourceReport::Ds5Usb(source),
         })
     }
@@ -521,6 +530,7 @@ pub mod input_ds5_bt {
         Ok(ControllerFrame {
             state,
             motion,
+            sensor_timestamp_override: None,
             source_report: SourceReport::Ds5Bt {
                 usb_backing,
             },
@@ -536,11 +546,17 @@ pub mod target_ds5_usb {
             SourceReport::Ds5Usb(raw) => {
                 let mut out = *raw;
                 report::apply_state_to_report(&mut out, &frame.state, seq);
+                if let Some(timestamp) = frame.sensor_timestamp_override {
+                    out[28..32].copy_from_slice(&timestamp.to_le_bytes());
+                }
                 Ok(out)
             }
             SourceReport::Ds5Bt { usb_backing, .. } => {
                 let mut out = *usb_backing;
                 report::apply_state_to_report(&mut out, &frame.state, seq);
+                if let Some(timestamp) = frame.sensor_timestamp_override {
+                    out[28..32].copy_from_slice(&timestamp.to_le_bytes());
+                }
                 Ok(out)
             }
         }
@@ -1006,6 +1022,21 @@ mod tests {
     }
 
     #[test]
+    fn ds5_target_can_override_sensor_timestamp_without_changing_motion() {
+        let mut usb = ds5_usb_raw();
+        usb[16..28].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        usb[28..32].copy_from_slice(&0x11223344u32.to_le_bytes());
+
+        let bt = ds5_bt_raw_from_usb(&usb);
+        let mut frame = input_ds5_bt::decode(&bt).unwrap();
+        frame.sensor_timestamp_override = Some(0x55667788);
+
+        let ds5 = TargetCodec::Ds5UsbAuto.encode_input(&frame, 0x10).unwrap();
+        assert_eq!(&ds5[16..28], &usb[16..28]);
+        assert_eq!(&ds5[28..32], &0x55667788u32.to_le_bytes());
+    }
+
+    #[test]
     fn source_codec_selects_ds5_usb_for_current_sony_devices() {
         for kind in [SonyDeviceKind::DualSense, SonyDeviceKind::DualSenseEdge] {
             let source = SourceCodec::from_device(kind, SourceTransport::Usb);
@@ -1136,6 +1167,14 @@ mod tests {
             Some(vec![0x31, 0x11, 0x22, 0x33])
         );
         assert_eq!(
+            PhysicalCodec::Ds5Usb.encode_set_report(
+                TargetCodec::Ds5UsbAuto,
+                0x31,
+                &[0x31, 0x11],
+            ),
+            Some(vec![0x31, 0x11])
+        );
+        assert_eq!(
             PhysicalCodec::Ds5Usb.encode_set_report(TargetCodec::Ds5UsbForced, 0x31, &data),
             Some(vec![0x31, 0x11, 0x22, 0x33])
         );
@@ -1145,6 +1184,22 @@ mod tests {
         );
         assert_eq!(
             PhysicalCodec::Ds5Bt.encode_set_report(TargetCodec::Ds5UsbAuto, 0x31, &data),
+            None
+        );
+    }
+
+    #[test]
+    fn physical_ds5_bt_does_not_forward_feature_set_reports_yet() {
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.encode_set_report(TargetCodec::Ds5UsbAuto, 0x08, &[0x08; 48]),
+            None
+        );
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.encode_set_report(TargetCodec::Ds5UsbAuto, 0x80, &[0x80; 64]),
+            None
+        );
+        assert_eq!(
+            PhysicalCodec::Ds5Bt.encode_set_report(TargetCodec::Ds4Usb, 0x08, &[0x08; 48]),
             None
         );
     }

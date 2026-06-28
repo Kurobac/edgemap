@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::{Arc, RwLock};
@@ -254,19 +254,35 @@ pub struct Proxy {
     last_snapshot: Option<crate::report::GamepadState>,
     last_output: Option<crate::report::GamepadState>,
     physical_output_state: PhysicalOutputState,
-    physical_set_report_unsupported_warned: bool,
+    physical_set_report_unsupported_warned: HashSet<u8>,
     turbo_runtimes: Vec<TurboRuntime>,
     combo_runtimes: Vec<ComboRuntime>,
     macro_runtimes: Vec<MacroRuntime>,
     fifo_fd: OwnedFd,
 }
 
+struct CachedReport {
+    source: CachedReportSource,
+    data: Vec<u8>,
+}
+
+enum CachedReportSource {
+    PhysicalCache,
+    TargetFallback,
+}
+
 impl Proxy {
-    fn get_cached_report(&self, report_id: u8) -> Option<Vec<u8>> {
+    fn get_cached_report(&self, report_id: u8) -> Option<CachedReport> {
         if let Some(data) = self.report_cache.get(&report_id) {
-            return Some(data.clone());
+            return Some(CachedReport {
+                source: CachedReportSource::PhysicalCache,
+                data: data.clone(),
+            });
         }
-        self.codec.target.fallback_feature_report(report_id)
+        self.codec.target.fallback_feature_report(report_id).map(|data| CachedReport {
+            source: CachedReportSource::TargetFallback,
+            data,
+        })
     }
 
     pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, codec: CodecPipeline, source_kind: SonyDeviceKind, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
@@ -284,7 +300,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, physical_output_state: PhysicalOutputState::default(), physical_set_report_unsupported_warned: false, turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, physical_output_state: PhysicalOutputState::default(), physical_set_report_unsupported_warned: HashSet::new(), turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn forget_restore_on_physical_disconnect(&mut self) {
@@ -734,14 +750,25 @@ impl Proxy {
                         out.to_vec()
                     } else {
                         warn!(
-                            "source input decode failed; dropping frame"
+                            "source input decode failed; dropping frame: source={:?}, size={}, report_id={}",
+                            self.codec.source,
+                            n,
+                            report_id_label(&buf[..n])
                         );
                         continue;
                     };
 
                     self.uhid.send_input(&out_report)?;
                 }
-                Ok(_) => continue,
+                Ok(n) => {
+                    trace!(
+                        "short hidraw input report ignored: source={:?}, size={n}, expected>={}, report_id={}",
+                        self.codec.source,
+                        input_report_size,
+                        report_id_label(&buf[..n])
+                    );
+                    continue;
+                }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(ref e) if is_disconnect_io_error(e) => {
                     warn!("hidraw input failed; controller disconnected? {e}");
@@ -821,9 +848,16 @@ impl Proxy {
                         UhidEvent::GetReport { id, rnum, rtype } => {
                             trace!("UHID GET_REPORT: id={id}, rnum={rnum}, rtype={rtype}");
                             match self.get_cached_report(rnum) {
-                                Some(data) => {
-                                    trace!("GET_REPORT rnum={rnum}: served from cache");
-                                    if let Err(e) = self.uhid.send_get_report_reply(id, 0, &data) {
+                                Some(report) => {
+                                    match report.source {
+                                        CachedReportSource::PhysicalCache => {
+                                            trace!("GET_REPORT rnum={rnum}: served from physical cache");
+                                        }
+                                        CachedReportSource::TargetFallback => {
+                                            trace!("GET_REPORT rnum={rnum}: served from target fallback");
+                                        }
+                                    }
+                                    if let Err(e) = self.uhid.send_get_report_reply(id, 0, &report.data) {
                                         warn!("Failed to send GET_REPORT reply: {e}");
                                     }
                                 }
@@ -860,13 +894,14 @@ impl Proxy {
                                             DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
                                         }
                                     }
-                                } else if self.codec.physical == PhysicalCodec::Ds5Bt && !self.physical_set_report_unsupported_warned {
+                                } else if self.codec.physical == PhysicalCodec::Ds5Bt
+                                    && self.physical_set_report_unsupported_warned.insert(rnum)
+                                {
                                     warn!(
                                         "physical Bluetooth SET_REPORT forwarding is not supported yet; dropping rnum=0x{rnum:02x}, size={}, report_id={}",
                                         data.len(),
                                         report_id_label(data)
                                     );
-                                    self.physical_set_report_unsupported_warned = true;
                                 }
                             }
                             if let Err(e) = self.uhid.send_set_report_reply(id, reply_err) {

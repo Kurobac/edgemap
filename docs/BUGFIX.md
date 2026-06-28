@@ -531,3 +531,15 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 **Root cause:** Edit and Delete disabled focus while Apply retained dialog auto-default/focus behavior, causing Qt themes to emphasize it differently.
 
 **Fix:** Give all three action buttons matching `NoFocus` and `autoDefault = false` properties.
+
+### #102 — Hot reload failure reverted the live mapping to passthrough
+
+**Root cause:** `Proxy::reload_config()` built a default `MappingConfig` before loading the new config. If load, validation, or mapping construction failed, the default mapping was still installed, clearing remaps and runtimes even though the reload did not succeed. `switch-config` could also leave the daemon pointed at a bad path for future reloads.
+
+**Fix:** Only replace the live mapping, runtimes, output-device config, and config path after the new config fully loads, validates, and converts to `MappingConfig`. Failed reloads and failed `switch-config` attempts keep the previous live config and path.
+
+### #103 — Bluetooth DualSense output rejected valid 48-byte DS5 main output reports
+
+**Root cause:** The BT output wrapper initially required DS5 USB main output report `0x02` to be at least 63 bytes. Regular DualSense USB descriptors advertise a 47-byte payload plus report ID (48 bytes total), while DualSense Edge can use a 63-byte payload plus report ID (64 bytes total). Valid regular DS output packets were therefore dropped before Bluetooth framing.
+
+**Fix:** Accept DS5 USB main output report sizes `48..=64`, copy the actual payload length into the BT `0x31` output envelope, zero-pad the remaining BT payload, and keep rejecting wrong report IDs or out-of-range sizes.

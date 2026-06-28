@@ -71,11 +71,11 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Keyboard target | Remap, combo, macro, and split-touchpad output to 107 uinput keyboard keys |
 | Profile auto-switch | Match running processes (comm/cmdline), auto-switch remap config |
 | Hot reload | Mtime-based (edgemap) or FIFO command |
-| Native HID behavior | DS5 USB target keeps the physical report backing where possible; DS4 target converts input/output through codec code |
-| Regular DualSense | Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported |
+| Native HID behavior | DS5 USB target keeps source backing where possible; BT physical output wraps USB target output into the DS5 BT main-output envelope |
+| Regular DualSense | DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported over USB and Bluetooth source hidraw |
 | DSE→DS virtualization | `output_device = "dualsense"` makes Edge appear as regular DS for game compatibility |
 | DualShock 4 target (Beta) | `output_device = "dualshock4"` exposes a DS4-compatible UHID target for native DS4 games |
-| GET_REPORT cache | IMU calibration data read from physical device on startup (accurate gyro) |
+| GET_REPORT cache | DS5 USB physical devices read calibration/firmware data on startup; BT feature-report cache is intentionally disabled for now |
 | GUI config editor | PyQt6 native editor — remap, turbo, combo, macro, macro manager, save/load |
 
 > **Note:** `output_device = "dualsense"` on a regular DualSense is harmless — the device
@@ -135,6 +135,8 @@ partial init or ignore the controller.
 ## Not supported (by design)
 
 - Multiple controllers
+- Bluetooth virtual target; dseuhid always exposes a USB UHID target
+- Bluetooth physical SET_REPORT / feature-report forwarding
 - D‑Bus API, inotify watch
 - Non-Sony device
 
@@ -143,7 +145,7 @@ partial init or ignore the controller.
 - Linux with `uhid` kernel module
 - `acl` utilities (`getfacl` and `setfacl`) for hiding/restoring physical device nodes
 - Kernel: tested 7.0, should work 6.7+, may work 5.12+
-- DualSense (0x0CE6) or DualSense Edge (0x0DF2) controller, USB only
+- DualSense (0x0CE6) or DualSense Edge (0x0DF2) controller over USB or Bluetooth source hidraw
 - Root for `dseuhid` only
 - `python-pyqt6` for GUI support (optional)
 - `libnotify` for profile-switch notifications (optional)

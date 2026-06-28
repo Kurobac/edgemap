@@ -1,8 +1,8 @@
-# edgemap — Project Status (2026-06-26)
+# edgemap — Project Status (2026-06-28)
 
 ## Overview
 
-UHID proxy for USB DualSense and DualSense Edge controllers (PID 0x0CE6 / 0x0DF2). Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Reads physical DualSense input via `/dev/hidraw`, decodes it through a source codec, applies button remapping frame-by-frame, and emits a virtual USB HID target through `/dev/uhid`. Native Sony behavior is preserved through explicit codec paths rather than unconditional raw passthrough.
+UHID proxy for DualSense and DualSense Edge controllers (PID 0x0CE6 / 0x0DF2) over USB or Bluetooth source hidraw. Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Reads physical DualSense input via `/dev/hidraw`, decodes it through a source codec, applies button remapping frame-by-frame, and emits a virtual USB HID target through `/dev/uhid`. Native Sony behavior is preserved through explicit codec paths rather than unconditional raw passthrough.
 
 Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/uhid` and `/dev/hidraw` access (daemon only). Kernel compatibility: tested 7.0, should work 6.7+, may work 5.12+.
 
@@ -49,6 +49,11 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - DS4 target GUI warning: selecting `DualShock 4 (Beta)` now shows a reminder that some native DS4 games under Proton may require the patched Proton build.
 - GUI test coverage: 21 tests with DS4 selection warning and existing-config no-warning coverage.
 - Codec/error-handling cleanup: source/physical/target codec boundaries, no raw forwarding on decode failure, stricter UHID event validation, unified hidraw disconnect handling.
+- DualSense / DualSense Edge Bluetooth source support: BT input report 0x31 decodes into `ControllerFrame`; virtual targets remain USB UHID.
+- Bluetooth physical main output forwarding: DS5/DS4 USB target output is converted into DS5 BT 0x31 output with sequence tag and CRC. Rumble, lightbar, player LED, mic LED, and adaptive trigger payloads are raw-carried through this path.
+- BT SET_REPORT and BT feature-report forwarding remain unsupported by design for now; known WebHID vendor/test commands are warned/dropped.
+- Hot reload and switch-config now keep the previous live config/path on load, validation, or mapping-build failure.
+- Output and report diagnostics now log report size/id and distinguish GET_REPORT physical cache from target fallback.
 
 ## Implemented Features
 
@@ -58,6 +63,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - Game output report (rtype=1) → `TargetCodec` decode → `PhysicalCodec` encode → physical hidraw write
 - GET_REPORT served from physical feature-report cache, target seed data, or target fallback
 - SET_REPORT replies through UHID; physical forwarding is selected by `PhysicalCodec`
+- USB and Bluetooth sources are supported for DS5/Edge; all virtual targets are USB UHID targets
 - Physical device node hiding: `chmod 000` + `setfacl -b`, restore on exit
 - ACL save/restore (getfacl → setfacl)
 
@@ -71,6 +77,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | LED / player indicators | ✅ | WebHID tester |
 | Rumble | ✅ | SDL games |
 | Adaptive trigger FFB | ✅ | CP2077 |
+| BT main output | ✅ | WebHID tester (rumble, lightbar, player LED, mic LED, adaptive trigger) |
 | HD haptics | ✅ | 原神 (Genshin Impact), CP2077 |
 | Steam Input bridge | ✅ | Steam games |
 | SDL / evdev | ✅ | Non-Steam SDL games |
@@ -104,7 +111,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 ### Hot Reload
 - FIFO commands (`edgemap reload`, `edgemap switch-config`) trigger config re-read
 - `Arc<RwLock<MappingConfig>>` — read lock per frame, write lock on reload
-- Failed reload reverts to passthrough (`MappingConfig::default`) without changing `output_device`
+- Failed reload keeps the previous live config, mapping, runtimes, output-device setting, and config path
 - Debug snapshots cleared on reload
 - Turbo/combo/macro runtimes rebuilt on reload
 
@@ -156,13 +163,14 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - `PhysicalCodec` owns physical output encoding, SET_REPORT forwarding policy, and which physical feature reports are safe to cache.
 - DS5 USB target keeps the DS5 USB source report as backing where possible. DS4 target converts input/output through DS4-specific USB report code.
 - DS5/DS4 USB byte layout helpers in `report.rs` are wire-format routines, not a transport-neutral HID model.
+- DS5 BT source input uses a BT-specific codec and USB-compatible backing; DS5 BT physical output wraps USB target output into the 0x31 Bluetooth main-output envelope. BT feature reports are not cached/forwarded until an explicit BT-feature-to-USB-feature conversion exists.
 
 ### Error Handling Policy
 - Bad or short input frames are dropped. They are not raw-forwarded to the virtual target.
 - Single output or feature-report failures reply with an error or drop that request while the input path keeps running.
 - hidraw disconnect errors (`EIO`, `ENODEV`, `ENXIO`) stop the current proxy and wait for reconnect.
 - Malformed UHID events, UHID read errors, and UHID input write errors stop the current proxy loop.
-- Startup config and required daemon setup failures are fatal. Hot reload failures currently fall back to passthrough.
+- Startup config and required daemon setup failures are fatal. Hot reload failures keep the previous live config.
 - Permission hiding/restoration failures are warning-level unless a direct node restriction call returns an error to the caller.
 
 ### Combo System (v0.0.10)
@@ -202,21 +210,21 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 ### Device Detection
 - Scan `/dev/hidraw*`, ioctl HIDIOCGRAWINFO for VID/PID
 - Physical-only: reject UHID virtual devices (check `/sys/class/hidraw/N/device/uevent`)
-- USB-only: reject Bluetooth DualSense devices before opening them
+- USB and Bluetooth source hidraw are accepted for DualSense and DualSense Edge
 - Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported
 - HID report descriptor read from physical device via HIDIOCGRDESC; read failure aborts device open
+- USB state validation reads the first full input report on open. BT skips open-time validation because BT may first deliver a minimal 0x01 report; runtime `SourceCodec` validation handles full 0x31 reports and CRC.
 - `output_device = "dualsense"` overrides the virtual device to regular DS (PID 0x0CE6 + `DS_USB_DESCRIPTOR`); changing it on reload recreates UHID
 - `output_device = "dualshock4"` exposes a DualShock 4 target (PID 0x09CC + `DS4_USB_DESCRIPTOR`, Beta); native DS4 games under Proton should use the DS4 UHID MI_03 identity patch from `proton-eg-patch` for best compatibility
-- State validation: read first input report on open() for USB devices
 - Multi-device: warn if more than one DualSense detected
 - Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
 
-### Rust Unit Tests (179 total: 98 dseuhid + 81 edgemap, all passing)
+### Rust Unit Tests (190 total: 109 dseuhid + 81 edgemap, all passing)
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `mapping.rs` | 15 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, keyboard target |
 | `report.rs` | 10 | byte position for all button groups (face/shoulder/system/Edge), all-button roundtrip, byte11 preservation, stick/trigger values, seq |
-| `codec.rs` | 17 | codec selection, USB target identities, feature report policies/fallbacks, output conversion, touchpad and motion frames |
+| `codec.rs` | 28 | codec selection, USB/BT source paths, USB target identities, BT auto identity, feature report policies/fallbacks, DS5/DS4 output conversion, BT output framing/CRC/sequence, touchpad and motion frames |
 | `config.rs` | 49 | valid sources/targets (incl. key:xxx), trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro, keyboard step), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
 | `device.rs` | 1 | sysfs hidraw path resolution |
 | `keyboard.rs` | 2 | successful press tracking, failed press/release state preservation |

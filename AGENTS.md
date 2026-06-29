@@ -6,7 +6,7 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 192 tests total (111 dseuhid + 81 edgemap)
+cargo test                # 195 tests total (114 dseuhid + 81 edgemap)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
@@ -137,7 +137,7 @@ Input order inside `handle_hidraw_input()`:
 Tarball layout (GitHub Actions builds on tag):
 
 ```
-edgemap-v1.0.1-x86_64.tar.gz
+edgemap-v1.1.0-x86_64.tar.gz
 ├── install.sh                 # sudo ./install.sh
 ├── dseuhid                    → /usr/local/bin/
 ├── edgemap                    → /usr/local/bin/

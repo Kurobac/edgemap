@@ -543,3 +543,15 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 **Root cause:** The BT output wrapper initially required DS5 USB main output report `0x02` to be at least 63 bytes. Regular DualSense USB descriptors advertise a 47-byte payload plus report ID (48 bytes total), while DualSense Edge can use a 63-byte payload plus report ID (64 bytes total). Valid regular DS output packets were therefore dropped before Bluetooth framing.
 
 **Fix:** Accept DS5 USB main output report sizes `48..=64`, copy the actual payload length into the BT `0x31` output envelope, zero-pad the remaining BT payload, and keep rejecting wrong report IDs or out-of-range sizes.
+
+### #104 — Invalid source reports could raw-forward across incompatible source/target formats
+
+**Root cause:** When source input decoding failed, the proxy could fall back to forwarding the raw physical report to the UHID target. That was survivable only while source and target report formats were effectively the same. With Bluetooth source support, a bad DS5 BT report could otherwise be written into a USB DS5/DS4 virtual target as if it were a valid USB report.
+
+**Fix:** Drop bad or short source frames after logging instead of raw-forwarding unknown bytes. All valid input now goes through `SourceCodec -> ControllerFrame -> TargetCodec`; malformed frames do not reach UHID.
+
+### #105 — BT repeat rate was added on top of the physical report rate
+
+**Root cause:** The BT gyro cadence workaround initially sent every physical BT input to UHID immediately, then also sent repeated frames from the scheduler. The configured repeat rate therefore behaved like `physical report rate + repeat rate`; even `1Hz` still produced hundreds of UHID reports per second.
+
+**Fix:** In repeat mode, physical BT frames only update the latest encoded target report. The repeat scheduler is the sole UHID input sender, so `DSEUHID_BT_DS5_USB_REPEAT_HZ` and the opt-in `DSEUHID_BT_DS4_USB_REPEAT_HZ` control the actual virtual input cadence.

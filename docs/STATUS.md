@@ -1,4 +1,4 @@
-# edgemap — Project Status (2026-06-28)
+# edgemap — Project Status (2026-06-30)
 
 ## Overview
 
@@ -43,8 +43,9 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v1.0.0 | `4bef496` | **Stable release**: `output_device` enum, USB-only detection, UHID state tracking, hardened reload/install/keyboard/ACL failure paths; 153 tests |
 | v1.0.1 | `35894d3` | **Path and GUI hardening**: strict XDG/HOME handling, stable passthrough/keyboard/macro editor state, safe TOML/profile serialization, macro reference integrity, GUI CI; 158 Rust + 19 GUI tests |
 | v1.0.2 | `4006227` | **DualShock 4 target Beta**: GUI entry and docs for `output_device = "dualshock4"`; native DS4 Proton compatibility notes point to the DS4 UHID MI_03 identity patch in `proton-eg-patch`; 158 Rust + 20 GUI tests |
+| v1.1.0 | `TBD` | **Bluetooth source support**: DS5/Edge BT input, BT main-output forwarding, BT GET_REPORT cache, DS5 gyro cadence pacer, codec/error-handling cleanup, safer hot reload; 195 Rust + 21 GUI tests |
 
-## Unreleased
+## v1.1.0 Release Notes
 
 - DS4 target GUI warning: selecting `DualShock 4 (Beta)` now shows a reminder that some native DS4 games under Proton may require the patched Proton build.
 - GUI test coverage: 21 tests with DS4 selection warning and existing-config no-warning coverage.
@@ -52,7 +53,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - DualSense / DualSense Edge Bluetooth source support: BT input report 0x31 decodes into `ControllerFrame`; virtual targets remain USB UHID.
 - Bluetooth physical main output forwarding: DS5/DS4 USB target output is converted into DS5 BT 0x31 output with sequence tag and CRC. Rumble, lightbar, player LED, mic LED, and adaptive trigger payloads are raw-carried through this path.
 - BT GET_REPORT cache for 0x05/0x20 is supported with feature CRC32 seed 0xA3 validation; 0x09 physical MAC is still skipped.
-- BT SET_REPORT / vendor feature-report forwarding remains unsupported by design for now; known WebHID vendor/test commands and Genshin Impact's feature report 0x08 are warned/dropped. Hardware rejected a naive 0x08 HIDIOCSFEATURE transfer even with a feature CRC tail, so this needs real BT traces before implementation.
+- BT SET_REPORT / vendor feature-report forwarding remains unsupported by design for now; known WebHID vendor/test commands and Genshin Impact's feature report 0x08 are debug-logged and dropped. Hardware rejected a naive 0x08 HIDIOCSFEATURE transfer even with a feature CRC tail, so this needs real BT traces before implementation.
 - Added `docs/BT_GYRO_INVESTIGATION.md` to record the Genshin BT-source gyro investigation. BT source → DS5 USB target now normalizes UHID input cadence with fixed-rate seq-only repeat by default at 1000Hz; repeat frames advance `raw[7]` but keep the sensor timestamp unchanged. A 250Hz retest also avoids the original severe drift, so cadence stability appears more important than raw rate. `DSEUHID_BT_DS5_USB_REPEAT_HZ` overrides the DS5 target rate, and `DSEUHID_BT_DS5_USB_REPEAT_MODE=passthrough` restores one UHID input per physical BT input. BT source → DS4 USB target repeat is available as an opt-in via `DSEUHID_BT_DS4_USB_REPEAT_HZ`.
 - Hot reload and switch-config now keep the previous live config/path on load, validation, or mapping-build failure.
 - Output and report diagnostics now log report size/id and distinguish GET_REPORT physical cache from target fallback.
@@ -221,7 +222,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Multi-device: warn if more than one DualSense detected
 - Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
 
-### Rust Unit Tests (192 total: 111 dseuhid + 81 edgemap, all passing)
+### Rust Unit Tests (195 total: 114 dseuhid + 81 edgemap, all passing)
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `mapping.rs` | 15 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, keyboard target |
@@ -229,6 +230,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 | `codec.rs` | 31 | codec selection, USB/BT source paths, USB target identities, BT auto identity, feature report policies/fallbacks, USB/BT feature report validation, DS5/DS4 output conversion, BT output framing/CRC/sequence, BT SET_REPORT non-forwarding policy, touchpad and motion frames |
 | `config.rs` | 49 | valid sources/targets (incl. key:xxx), trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro, keyboard step), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
 | `device.rs` | 1 | sysfs hidraw path resolution |
+| `proxy.rs` | 2 | BT repeat report sequence handling for DS5 USB and opt-in DS4 USB targets |
 | `keyboard.rs` | 2 | successful press tracking, failed press/release state preservation |
 | `uhid.rs` | 4 | malformed/oversized UHID OUTPUT and SET_REPORT parsing |
 | `edgemap.rs` | 5 | XDG absolute/fallback handling, missing HOME, absolute and tilde config paths |

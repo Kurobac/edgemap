@@ -213,6 +213,7 @@ struct RepeatInput {
     interval: Duration,
     timestamp_delta: u32,
     mode: RepeatMode,
+    target: RepeatTarget,
     next_tick: Instant,
     last_report: Option<Vec<u8>>,
 }
@@ -224,33 +225,51 @@ enum RepeatMode {
     SeqAndTimestamp,
 }
 
+#[derive(Clone, Copy)]
+enum RepeatTarget {
+    Ds5Usb,
+    Ds4Usb,
+}
+
 impl RepeatInput {
     fn from_env(codec: CodecPipeline) -> Option<Self> {
-        if codec.source != SourceCodec::Ds5Bt
-            || !matches!(codec.target, TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced)
-        {
+        if codec.source != SourceCodec::Ds5Bt {
             return None;
         }
-        let mode = match env::var("DSEUHID_BT_DS5_USB_REPEAT_MODE").as_deref() {
-            Ok("passthrough") => RepeatMode::Passthrough,
-            Ok("seq_only") | Err(_) => RepeatMode::SeqOnly,
-            Ok("seq_ts") => RepeatMode::SeqAndTimestamp,
-            Ok(value) => {
-                warn!("unknown DSEUHID_BT_DS5_USB_REPEAT_MODE={value}; disabling repeat");
-                return None;
+
+        let (target, mode, hz) = match codec.target {
+            TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced => {
+                let mode = match env::var("DSEUHID_BT_DS5_USB_REPEAT_MODE").as_deref() {
+                    Ok("passthrough") => RepeatMode::Passthrough,
+                    Ok("seq_only") | Err(_) => RepeatMode::SeqOnly,
+                    Ok("seq_ts") => RepeatMode::SeqAndTimestamp,
+                    Ok(value) => {
+                        warn!("unknown DSEUHID_BT_DS5_USB_REPEAT_MODE={value}; disabling repeat");
+                        return None;
+                    }
+                };
+                let hz = parse_repeat_hz(
+                    "DSEUHID_BT_DS5_USB_REPEAT_HZ",
+                    env::var("DSEUHID_BT_DS5_USB_REPEAT_HZ").ok(),
+                    Some("1000"),
+                )?;
+                (RepeatTarget::Ds5Usb, mode, hz)
+            }
+            TargetCodec::Ds4Usb => {
+                let hz = parse_repeat_hz(
+                    "DSEUHID_BT_DS4_USB_REPEAT_HZ",
+                    env::var("DSEUHID_BT_DS4_USB_REPEAT_HZ").ok(),
+                    None,
+                )?;
+                (RepeatTarget::Ds4Usb, RepeatMode::SeqOnly, hz)
             }
         };
         if matches!(mode, RepeatMode::Passthrough) {
             return None;
         }
-        let value = env::var("DSEUHID_BT_DS5_USB_REPEAT_HZ")
-            .unwrap_or_else(|_| "1000".to_string());
-        let hz = match value.parse::<u64>() {
-            Ok(hz) if (1..=2000).contains(&hz) => hz,
-            _ => {
-                warn!("invalid DSEUHID_BT_DS5_USB_REPEAT_HZ={value}, expected 1..=2000; disabling repeat");
-                return None;
-            }
+        let target_name = match target {
+            RepeatTarget::Ds5Usb => "DS5 USB",
+            RepeatTarget::Ds4Usb => "DS4 USB",
         };
         let interval = Duration::from_nanos(1_000_000_000 / hz);
         let timestamp_delta = ((interval.as_nanos() / 333).max(1)) as u32;
@@ -260,13 +279,14 @@ impl RepeatInput {
             RepeatMode::SeqAndTimestamp => "seq_ts",
         };
         info!(
-            "DSEUHID_BT_DS5_USB_REPEAT enabled: {hz}Hz fixed-rate UHID output, mode={mode_name}, interval={}us, timestamp_delta={timestamp_delta}",
+            "BT source -> {target_name} repeat enabled: {hz}Hz fixed-rate UHID output, mode={mode_name}, interval={}us, timestamp_delta={timestamp_delta}",
             interval.as_micros()
         );
         Some(Self {
             interval,
             timestamp_delta,
             mode,
+            target,
             next_tick: Instant::now(),
             last_report: None,
         })
@@ -296,11 +316,39 @@ impl RepeatInput {
                 self.next_tick += self.interval;
                 continue;
             };
-            advance_ds5_usb_repeat_report(report, seq, self.timestamp_delta, self.mode);
+            advance_repeat_report(report, seq, self.timestamp_delta, self.mode, self.target);
             uhid.send_input(report)?;
             self.next_tick += self.interval;
         }
         Ok(())
+    }
+}
+
+fn parse_repeat_hz(env_name: &str, value: Option<String>, default: Option<&str>) -> Option<u64> {
+    let value = match (value, default) {
+        (Some(value), _) => value,
+        (None, Some(default)) => default.to_string(),
+        (None, None) => return None,
+    };
+    match value.parse::<u64>() {
+        Ok(hz) if (1..=2000).contains(&hz) => Some(hz),
+        _ => {
+            warn!("invalid {env_name}={value}, expected 1..=2000; disabling repeat");
+            None
+        }
+    }
+}
+
+fn advance_repeat_report(
+    report: &mut [u8],
+    seq: &mut u8,
+    timestamp_delta: u32,
+    mode: RepeatMode,
+    target: RepeatTarget,
+) {
+    match target {
+        RepeatTarget::Ds5Usb => advance_ds5_usb_repeat_report(report, seq, timestamp_delta, mode),
+        RepeatTarget::Ds4Usb => advance_ds4_usb_repeat_report(report, seq),
     }
 }
 
@@ -321,6 +369,16 @@ fn advance_ds5_usb_repeat_report(
     let timestamp = u32::from_le_bytes([report[28], report[29], report[30], report[31]])
         .wrapping_add(timestamp_delta);
     report[28..32].copy_from_slice(&timestamp.to_le_bytes());
+}
+
+fn advance_ds4_usb_repeat_report(report: &mut [u8], seq: &mut u8) {
+    if report.len() < 35 {
+        return;
+    }
+    *seq = seq.wrapping_add(1) & 0x3F;
+    report[7] = (report[7] & 0x03) | (*seq << 2);
+    report[10..12].copy_from_slice(&(*seq as u16).to_le_bytes());
+    report[34] = *seq;
 }
 
 #[derive(Debug, PartialEq)]
@@ -1108,4 +1166,50 @@ fn hex_prefix(data: &[u8], max_len: usize) -> String {
         out.push_str(" ...");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ds5_repeat_advances_sequence_without_timestamp_in_seq_only_mode() {
+        let mut report = [0u8; 64];
+        report[28..32].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        let mut seq = 0x41;
+
+        advance_repeat_report(
+            &mut report,
+            &mut seq,
+            10,
+            RepeatMode::SeqOnly,
+            RepeatTarget::Ds5Usb,
+        );
+
+        assert_eq!(seq, 0x42);
+        assert_eq!(report[7], 0x42);
+        assert_eq!(&report[28..32], &0x1234_5678u32.to_le_bytes());
+    }
+
+    #[test]
+    fn ds4_repeat_advances_ds4_sequence_fields() {
+        let mut report = [0u8; 64];
+        report[7] = 0x03;
+        report[10..12].copy_from_slice(&0x1234u16.to_le_bytes());
+        report[34] = 0x12;
+        let mut seq = 0x3F;
+
+        advance_repeat_report(
+            &mut report,
+            &mut seq,
+            10,
+            RepeatMode::SeqOnly,
+            RepeatTarget::Ds4Usb,
+        );
+
+        assert_eq!(seq, 0);
+        assert_eq!(report[7], 0x03);
+        assert_eq!(&report[10..12], &0u16.to_le_bytes());
+        assert_eq!(report[34], 0);
+    }
 }

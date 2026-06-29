@@ -210,21 +210,25 @@ Current best answer from manual testing:
 
 ## Retained Behavior and Controls
 
-BT source -> DS5 USB target uses fixed-rate repeat by default.
+BT source -> DS5 USB target uses fixed-rate repeat by default. BT source ->
+DS4 USB target can opt into the same pacer, but remains disabled by default.
 
-- Applies only to BT source -> DS5 USB target.
-- Default is `1000Hz` with `seq_only` behavior.
+- DS5 USB target default is `1000Hz` with `seq_only` behavior.
 - `DSEUHID_BT_DS5_USB_REPEAT_HZ` overrides the repeat rate and accepts
   `1..=2000`.
 - `DSEUHID_BT_DS5_USB_REPEAT_MODE=passthrough` disables repeat and restores the
   original behavior: one UHID input per physical BT input.
+- DS4 USB target repeat is opt-in only. `DSEUHID_BT_DS4_USB_REPEAT_HZ` enables
+  it and accepts `1..=2000`.
 - After the first valid physical BT frame, repeats the latest target report at
   the requested rate.
-- Repeated frames advance `raw[7]` sequence.
+- DS5 repeated frames advance `raw[7]` sequence.
 - The default behavior is `DSEUHID_BT_DS5_USB_REPEAT_MODE=seq_only`, which
   keeps `raw[28..32]` unchanged on repeated frames.
 - `DSEUHID_BT_DS5_USB_REPEAT_MODE=seq_ts` is retained only as a comparison mode;
   it made jitter much worse in Genshin.
+- DS4 repeated frames advance DS4 sequence fields and do not apply DS5 timestamp
+  handling.
 
 ## Removed Debug Controls
 

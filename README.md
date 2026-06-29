@@ -19,8 +19,6 @@ but makes no warranty regarding functionality or stability.
 Some games may require a [patched Proton build](https://github.com/Kurobac/proton-eg-patch)
 for DualSense HD haptics or the DualShock 4 target (`output_device = "dualshock4"`).
 
-See [docs/HD-HAPTICS-FIX.md](docs/HD-HAPTICS-FIX.md) for the technical details.
-
 ## Install
 
 ### Arch Linux
@@ -75,7 +73,7 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Regular DualSense | DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported over USB and Bluetooth source hidraw |
 | DSE→DS virtualization | `output_device = "dualsense"` makes Edge appear as regular DS for game compatibility |
 | DualShock 4 target (Beta) | `output_device = "dualshock4"` exposes a DS4-compatible UHID target for native DS4 games |
-| GET_REPORT cache | DS5 USB/BT physical devices read calibration/firmware data on startup; BT feature reports are CRC-validated before caching |
+| GET_REPORT cache | DS5 USB/BT physical devices read calibration/firmware data on startup |
 | GUI config editor | PyQt6 native editor — remap, turbo, combo, macro, macro manager, save/load |
 
 > **Note:** `output_device = "dualsense"` on a regular DualSense is harmless — the device
@@ -132,11 +130,32 @@ Sony feature init sequence (`0x12 -> 0xA3 -> 0x14 -> 0x02`). Without the patch,
 some games still accept buttons and show Sony icons, while others may only do a
 partial init or ignore the controller.
 
-## Not supported (by design)
+### Bluetooth source support
+
+DualSense and DualSense Edge can be used as physical Bluetooth source devices.
+The virtual controller is still exposed as a USB UHID target; dseuhid does not
+create a Bluetooth virtual target.
+
+Bluetooth source input is decoded into the same remap/combo/macro pipeline as
+USB input. DS5 USB target output is wrapped back into the DualSense Bluetooth
+main-output report, so normal vibration, player LEDs, mic LED, lightbar, and
+adaptive-trigger payloads can work when games use the main output path.
+
+Bluetooth SET_REPORT / vendor feature-report forwarding is not implemented.
+Known vendor/test commands are dropped, so hardware-test tools may miss some
+factory or speaker functions. Games that rely on normal DualSense output
+reports should continue to work.
+
+For BT source → DS5 USB target, dseuhid repeats the latest virtual input at a
+stable cadence by default to avoid gyro drift in some games.
+Use `DSEUHID_BT_DS5_USB_REPEAT_HZ` to override the default
+`1000Hz`, or `DSEUHID_BT_DS5_USB_REPEAT_MODE=passthrough` to disable it. DS4
+target repeat is disabled by default and can be enabled with
+`DSEUHID_BT_DS4_USB_REPEAT_HZ`.
+
+## Not supported
 
 - Multiple controllers
-- Bluetooth virtual target; dseuhid always exposes a USB UHID target
-- Bluetooth physical SET_REPORT / vendor feature-report forwarding
 - D‑Bus API, inotify watch
 - Non-Sony device
 
@@ -154,8 +173,6 @@ partial init or ignore the controller.
 
 *   **[inputplumber](https://github.com/ShadowBlip/InputPlumber)** - The initial demo of this project was built based on its core concepts and ideas.
 *   **[dualsense-tester](https://github.com/daidr/dualsense-tester)** - This repository served as a valuable reference for establishing and defining our HID behaviors.
-*   **Deepseek and Opencode** - The tools built the software.
-*   **KDE Community** - We use icon from Breeze.
 
 ## License
 

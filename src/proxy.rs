@@ -1093,7 +1093,7 @@ impl Proxy {
                                 } else if self.codec.physical == PhysicalCodec::Ds5Bt
                                     && self.physical_set_report_unsupported_warned.insert(rnum)
                                 {
-                                    warn!(
+                                    debug!(
                                         "physical Bluetooth SET_REPORT forwarding is not supported for this report yet; dropping rnum=0x{rnum:02x}, size={}, report_id={}, data={}",
                                         data.len(),
                                         report_id_label(data),

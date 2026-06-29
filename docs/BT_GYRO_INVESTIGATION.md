@@ -130,10 +130,10 @@ Current interpretation:
   slight movement means raw gyro noise is not the whole problem.
 - `zero_ts` freezing horizontal gyro response strongly suggests Genshin uses the
   DS5 sensor timestamp for at least part of its motion integration/filtering.
-- The largest remaining hypothesis is a cadence/timestamp mismatch: dseuhid
-  currently emits one UHID input per physical BT report, while a USB DualSense
-  target may be expected by the game to behave closer to a high-rate USB input
-  stream.
+- The largest remaining hypothesis is a cadence/timestamp mismatch. The original
+  passthrough path emitted one UHID input immediately for each physical BT
+  report, so the game saw the hidraw/epoll arrival jitter directly. A USB
+  DualSense target appears to need a steadier virtual input cadence.
 - Fixed-rate repeat tests support this cadence hypothesis:
   - `DSEUHID_BT_DS5_USB_REPEAT_HZ=1000 DSEUHID_BT_DS5_USB_REPEAT_MODE=seq_ts`
     made the left/right
@@ -142,9 +142,13 @@ Current interpretation:
   - `DSEUHID_BT_DS5_USB_REPEAT_HZ=1000 DSEUHID_BT_DS5_USB_REPEAT_MODE=seq_only`
     almost completely
     removed the visible jitter while preserving usable motion.
-  - `250Hz` and `500Hz` `seq_only` also improved behavior; `250Hz` felt a bit
-    less stable, while `500Hz` and `1000Hz` were hard to distinguish in manual
-    testing.
+  - `DSEUHID_BT_DS5_USB_REPEAT_MODE=passthrough` reproduces the original
+    one-physical-frame-to-one-UHID-frame behavior and still drifts badly.
+  - `250Hz` `seq_only` was retested and does not show the original severe drift,
+    even though BT input itself is also roughly in this rate class. This points
+    at cadence stability rather than raw average report rate as the important
+    part.
+  - `500Hz` and `1000Hz` `seq_only` were hard to distinguish in manual testing.
   - This suggests repeat frames should advance the USB report sequence byte but
     should not claim a new IMU sample by advancing `raw[28..32]`.
 
@@ -195,12 +199,14 @@ sensitive to timestamp progression and report cadence.
 
 Current best answer from manual testing:
 
-- For BT source -> DS5 USB target, emit a stable high-rate UHID input stream.
+- For BT source -> DS5 USB target, normalize the UHID input cadence instead of
+  forwarding each physical BT report at its original arrival time.
 - Repeat frames should advance `raw[7]` sequence.
 - Repeat frames should keep `raw[28..32]` sensor timestamp unchanged.
 - Only real physical BT frames should bring a new sensor timestamp.
 - `1000Hz` is the current default because real USB DualSense input is close to
-  1000Hz, and manual testing did not show a downside compared with 500Hz.
+  1000Hz. The `250Hz` retest suggests the fix is not simply "more frames"; a
+  steady cadence is the key behavior.
 
 ## Retained Behavior and Controls
 
@@ -235,6 +241,8 @@ the repeat path.
 ## Remaining Follow-Up
 
 - Validate the default `1000Hz seq_only` behavior outside Genshin.
+- If another game is sensitive to repeat rate, compare `250Hz`, `500Hz`, and
+  `1000Hz` before changing the default.
 - Remove or hide `seq_ts` later unless further debugging needs it.
 - Optionally add lightweight cadence statistics if another game shows similar
   behavior.

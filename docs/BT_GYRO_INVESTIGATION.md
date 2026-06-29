@@ -135,10 +135,12 @@ Current interpretation:
   target may be expected by the game to behave closer to a high-rate USB input
   stream.
 - Fixed-rate repeat tests support this cadence hypothesis:
-  - `DSEUHID_REPEAT_HZ=1000 DSEUHID_REPEAT_MODE=seq_ts` made the left/right
+  - `DSEUHID_BT_DS5_USB_REPEAT_HZ=1000 DSEUHID_BT_DS5_USB_REPEAT_MODE=seq_ts`
+    made the left/right
     jitter much worse, likely because repeated frames advanced the sensor
     timestamp while carrying the same physical gyro sample.
-  - `DSEUHID_REPEAT_HZ=1000 DSEUHID_REPEAT_MODE=seq_only` almost completely
+  - `DSEUHID_BT_DS5_USB_REPEAT_HZ=1000 DSEUHID_BT_DS5_USB_REPEAT_MODE=seq_only`
+    almost completely
     removed the visible jitter while preserving usable motion.
   - `250Hz` and `500Hz` `seq_only` also improved behavior; `250Hz` felt a bit
     less stable, while `500Hz` and `1000Hz` were hard to distinguish in manual
@@ -197,23 +199,26 @@ Current best answer from manual testing:
 - Repeat frames should advance `raw[7]` sequence.
 - Repeat frames should keep `raw[28..32]` sensor timestamp unchanged.
 - Only real physical BT frames should bring a new sensor timestamp.
-- `1000Hz` is a reasonable default candidate because real USB DualSense input
-  is close to 1000Hz, and manual testing did not show a downside compared with
-  500Hz.
+- `1000Hz` is the current default because real USB DualSense input is close to
+  1000Hz, and manual testing did not show a downside compared with 500Hz.
 
-## Retained Debug Control
+## Retained Behavior and Controls
 
-`DSEUHID_REPEAT_HZ` remains as the retained experiment/workaround switch.
+BT source -> DS5 USB target uses fixed-rate repeat by default.
 
 - Applies only to BT source -> DS5 USB target.
-- Accepts `1..=2000`.
+- Default is `1000Hz` with `seq_only` behavior.
+- `DSEUHID_BT_DS5_USB_REPEAT_HZ` overrides the repeat rate and accepts
+  `1..=2000`.
+- `DSEUHID_BT_DS5_USB_REPEAT_MODE=passthrough` disables repeat and restores the
+  original behavior: one UHID input per physical BT input.
 - After the first valid physical BT frame, repeats the latest target report at
   the requested rate.
 - Repeated frames advance `raw[7]` sequence.
-- The default/preferred behavior is `DSEUHID_REPEAT_MODE=seq_only`, which keeps
-  `raw[28..32]` unchanged on repeated frames.
-- `DSEUHID_REPEAT_MODE=seq_ts` is retained only as a comparison mode; it made
-  jitter much worse in Genshin.
+- The default behavior is `DSEUHID_BT_DS5_USB_REPEAT_MODE=seq_only`, which
+  keeps `raw[28..32]` unchanged on repeated frames.
+- `DSEUHID_BT_DS5_USB_REPEAT_MODE=seq_ts` is retained only as a comparison mode;
+  it made jitter much worse in Genshin.
 
 ## Removed Debug Controls
 
@@ -229,8 +234,7 @@ the repeat path.
 
 ## Remaining Follow-Up
 
-- Decide whether to promote `1000Hz seq_only` from environment-controlled
-  workaround to default behavior for BT source -> DS5 USB target.
-- If promoted, remove or hide `seq_ts` unless further debugging needs it.
+- Validate the default `1000Hz seq_only` behavior outside Genshin.
+- Remove or hide `seq_ts` later unless further debugging needs it.
 - Optionally add lightweight cadence statistics if another game shows similar
   behavior.

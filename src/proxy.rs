@@ -219,6 +219,7 @@ struct RepeatInput {
 
 #[derive(Clone, Copy)]
 enum RepeatMode {
+    Passthrough,
     SeqOnly,
     SeqAndTimestamp,
 }
@@ -230,32 +231,36 @@ impl RepeatInput {
         {
             return None;
         }
-        let Ok(value) = env::var("DSEUHID_REPEAT_HZ") else {
-            return None;
+        let mode = match env::var("DSEUHID_BT_DS5_USB_REPEAT_MODE").as_deref() {
+            Ok("passthrough") => RepeatMode::Passthrough,
+            Ok("seq_only") | Err(_) => RepeatMode::SeqOnly,
+            Ok("seq_ts") => RepeatMode::SeqAndTimestamp,
+            Ok(value) => {
+                warn!("unknown DSEUHID_BT_DS5_USB_REPEAT_MODE={value}; disabling repeat");
+                return None;
+            }
         };
+        if matches!(mode, RepeatMode::Passthrough) {
+            return None;
+        }
+        let value = env::var("DSEUHID_BT_DS5_USB_REPEAT_HZ")
+            .unwrap_or_else(|_| "1000".to_string());
         let hz = match value.parse::<u64>() {
             Ok(hz) if (1..=2000).contains(&hz) => hz,
             _ => {
-                warn!("invalid DSEUHID_REPEAT_HZ={value}, expected 1..=2000; disabling repeat");
+                warn!("invalid DSEUHID_BT_DS5_USB_REPEAT_HZ={value}, expected 1..=2000; disabling repeat");
                 return None;
             }
         };
         let interval = Duration::from_nanos(1_000_000_000 / hz);
         let timestamp_delta = ((interval.as_nanos() / 333).max(1)) as u32;
-        let mode = match env::var("DSEUHID_REPEAT_MODE").as_deref() {
-            Ok("seq_only") | Err(_) => RepeatMode::SeqOnly,
-            Ok("seq_ts") => RepeatMode::SeqAndTimestamp,
-            Ok(value) => {
-                warn!("unknown DSEUHID_REPEAT_MODE={value}, using seq_only");
-                RepeatMode::SeqOnly
-            }
-        };
         let mode_name = match mode {
+            RepeatMode::Passthrough => "passthrough",
             RepeatMode::SeqOnly => "seq_only",
             RepeatMode::SeqAndTimestamp => "seq_ts",
         };
         info!(
-            "DSEUHID_REPEAT_HZ enabled: {hz}Hz, mode={mode_name}, interval={}us, timestamp_delta={timestamp_delta}",
+            "DSEUHID_BT_DS5_USB_REPEAT enabled: {hz}Hz, mode={mode_name}, interval={}us, timestamp_delta={timestamp_delta}",
             interval.as_micros()
         );
         Some(Self {

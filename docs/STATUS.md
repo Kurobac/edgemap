@@ -53,6 +53,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - Bluetooth physical main output forwarding: DS5/DS4 USB target output is converted into DS5 BT 0x31 output with sequence tag and CRC. Rumble, lightbar, player LED, mic LED, and adaptive trigger payloads are raw-carried through this path.
 - BT GET_REPORT cache for 0x05/0x20 is supported with feature CRC32 seed 0xA3 validation; 0x09 physical MAC is still skipped.
 - BT SET_REPORT / vendor feature-report forwarding remains unsupported by design for now; known WebHID vendor/test commands and Genshin Impact's feature report 0x08 are warned/dropped. Hardware rejected a naive 0x08 HIDIOCSFEATURE transfer even with a feature CRC tail, so this needs real BT traces before implementation.
+- Added `docs/BT_GYRO_INVESTIGATION.md` to record the Genshin BT-source gyro investigation and tested timestamp/SET_REPORT hypotheses.
 - Hot reload and switch-config now keep the previous live config/path on load, validation, or mapping-build failure.
 - Output and report diagnostics now log report size/id and distinguish GET_REPORT physical cache from target fallback.
 

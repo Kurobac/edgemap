@@ -260,14 +260,14 @@ impl RepeatInput {
             RepeatMode::SeqAndTimestamp => "seq_ts",
         };
         info!(
-            "DSEUHID_BT_DS5_USB_REPEAT enabled: {hz}Hz, mode={mode_name}, interval={}us, timestamp_delta={timestamp_delta}",
+            "DSEUHID_BT_DS5_USB_REPEAT enabled: {hz}Hz fixed-rate UHID output, mode={mode_name}, interval={}us, timestamp_delta={timestamp_delta}",
             interval.as_micros()
         );
         Some(Self {
             interval,
             timestamp_delta,
             mode,
-            next_tick: Instant::now() + interval,
+            next_tick: Instant::now(),
             last_report: None,
         })
     }
@@ -277,13 +277,17 @@ impl RepeatInput {
         if self.next_tick <= now {
             return 0;
         }
-        let ms = self.next_tick.duration_since(now).as_millis();
-        ms.min(u16::MAX as u128) as u16
+        let remaining = self.next_tick.duration_since(now);
+        let ms = remaining.as_millis();
+        if ms == 0 {
+            1
+        } else {
+            ms.min(u16::MAX as u128) as u16
+        }
     }
 
     fn store(&mut self, report: &[u8]) {
         self.last_report = Some(report.to_vec());
-        self.next_tick = Instant::now() + self.interval;
     }
 
     fn send_due(&mut self, uhid: &UhidDevice, seq: &mut u8) -> io::Result<()> {
@@ -880,9 +884,13 @@ impl Proxy {
                         continue;
                     };
 
-                    self.uhid.send_input(&out_report)?;
                     if let Some(repeat) = self.repeat_input.as_mut() {
+                        // In repeat mode, physical BT frames update the latest target report only.
+                        // The repeat scheduler is the sole UHID input sender, so the configured
+                        // rate is an output cadence instead of "physical rate + repeat rate".
                         repeat.store(&out_report);
+                    } else {
+                        self.uhid.send_input(&out_report)?;
                     }
                 }
                 Ok(n) => {

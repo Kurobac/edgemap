@@ -100,8 +100,9 @@ Tests performed:
   BT `0x01`: kept, because a virtual USB target should not expose the BT fixed
   sequence byte.
 
-Later manual tests weakened the fixed-`+3000` conclusion. The current working
-tree has debug switches for timestamp experiments instead of a fixed policy.
+Later manual tests weakened the fixed-`+3000` conclusion. The temporary
+timestamp/motion/mask debug switches were useful for isolating the issue, but
+the final retained workaround is the fixed-rate repeat path described below.
 
 ## Latest Findings
 
@@ -185,72 +186,51 @@ Current conclusion:
 - HHD is useful as reference material, but it is not currently a reliable oracle
   for Genshin USB DualSense behavior in this environment.
 
-## Current Suspects
+## Current Conclusion
 
-The raw gyro/accel axes are probably mostly correct, but the game appears
-sensitive to timestamp progression and report cadence. Remaining suspects:
+The raw gyro/accel axes are probably mostly correct, but Genshin appears
+sensitive to timestamp progression and report cadence.
 
-- `raw[28..32]`: sensor timestamp.
-- UHID input cadence: BT source reports may arrive at a lower or less stable
-  rate than the USB target identity implies.
-- Whether repeated UHID frames should advance `raw[7]` sequence and
-  `raw[28..32]` timestamp even when no new physical BT report has arrived.
-- Current best answer from manual testing: repeat frames should advance
-  `raw[7]` but keep `raw[28..32]` unchanged. Only real physical BT frames
-  should bring a new sensor timestamp.
-- `raw[12..15]`: reserved/counter field seen changing on real USB.
-- `raw[32]`: temperature/reserved byte.
-- `raw[44..47]`: host timestamp-like field.
-- `raw[49..52]`: device timestamp-like field.
-- `raw[53..55]`: battery/plugged/status bits.
+Current best answer from manual testing:
 
-## Next Possible Tests
+- For BT source -> DS5 USB target, emit a stable high-rate UHID input stream.
+- Repeat frames should advance `raw[7]` sequence.
+- Repeat frames should keep `raw[28..32]` sensor timestamp unchanged.
+- Only real physical BT frames should bring a new sensor timestamp.
+- `1000Hz` is a reasonable default candidate because real USB DualSense input
+  is close to 1000Hz, and manual testing did not show a downside compared with
+  500Hz.
 
-- Add a short-lived debug logger or capture helper that records selected bytes
-  from the final UHID input report, not only the physical source report.
-- Use `DSEUHID_BT_USB_MASK` to zero selected uncertain fields in the final
-  BT-source -> DS5 USB target report. Supported comma-separated entries:
-  `reserved`, `host_ts`, `device_ts`, `temp`, `status`, and `all`.
-- Use `DSEUHID_MOTION_CAPTURE=/tmp/ds5-motion.bin` with a USB source to append
-  final DS5 USB target `raw[16..32]` motion/timestamp frames, then use
-  `DSEUHID_MOTION_REPLAY=/tmp/ds5-motion.bin` with a BT source to loop those
-  16-byte frames into the final DS5 USB target report. Replay defaults to
-  `DSEUHID_MOTION_REPLAY_MODE=axes`, which only replaces `raw[16..28]`. Use
-  `ts` to replace only `raw[28..32]`, or `axes_ts` to replace both.
-- Use `DSEUHID_MOTION_REPLAY_MODE=fixed_ts` to synthesize `raw[28..32]` by
-  adding 3000 per frame, or `zero_ts` to force the timestamp to zero.
-- Use `DSEUHID_MOTION_REPLAY_MODE=zero_gyro` without a replay file to clear
-  only the gyro fields `raw[16..22]` while leaving accelerometer and timestamp
-  data unchanged.
-- Use `DSEUHID_MOTION_REPLAY_MODE=neutral_accel` without a replay file to write
-  an approximate resting accelerometer value into `raw[22..28]`:
-  `x=0`, `y=8192` (1g), `z=1421` (about 1.7m/s^2). Replay modes can be
-  comma-combined, for example `zero_gyro,neutral_accel`.
-- Add an input cadence logger that records final UHID `send_input` intervals for
-  USB source vs BT source.
-- Add a fixed-rate UHID repeat experiment, for example `DSEUHID_REPEAT_HZ=1000`,
-  only for BT source -> DS5 USB target. After the first valid physical BT frame,
-  repeat the latest target report at the requested rate. Repeat frames should
-  advance the DS5 USB sequence byte so the virtual USB stream has a stable
-  cadence.
-  - Current debug implementation accepts `DSEUHID_REPEAT_HZ=1..2000`.
-  - Timestamp delta is computed from the requested interval as
-    `interval_ns / 333`, matching the DS5 timestamp scale used elsewhere, but
-    this is only used by the experimental `seq_ts` mode.
-  - `DSEUHID_REPEAT_MODE=seq_ts` advances both `raw[7]` and `raw[28..32]`;
-    `DSEUHID_REPEAT_MODE=seq_only` advances only `raw[7]`.
-- Promote `seq_only` to the preferred repeat behavior if follow-up testing stays
-  stable. `1000Hz` is a reasonable default candidate because real USB DualSense
-  input is close to 1000Hz, and manual testing did not show a downside compared
-  with 500Hz.
-- Compare repeat modes:
-  - timestamp delta based on requested repeat interval;
-  - timestamp delta based on real elapsed monotonic time;
-  - optional clamp/smoothing if BT physical frames arrive in bursts.
-- Compare three streams field-by-field:
-  - real USB DualSense input,
-  - BT physical common payload converted to USB backing,
-  - final dseuhid BT source -> USB target UHID input.
-- Try synthesizing more USB-like status/reserved fields one group at a time.
-- Avoid broad "from scratch" target rewriting unless a specific field group is
-  shown to matter.
+## Retained Debug Control
+
+`DSEUHID_REPEAT_HZ` remains as the retained experiment/workaround switch.
+
+- Applies only to BT source -> DS5 USB target.
+- Accepts `1..=2000`.
+- After the first valid physical BT frame, repeats the latest target report at
+  the requested rate.
+- Repeated frames advance `raw[7]` sequence.
+- The default/preferred behavior is `DSEUHID_REPEAT_MODE=seq_only`, which keeps
+  `raw[28..32]` unchanged on repeated frames.
+- `DSEUHID_REPEAT_MODE=seq_ts` is retained only as a comparison mode; it made
+  jitter much worse in Genshin.
+
+## Removed Debug Controls
+
+The following temporary switches were removed from code after the investigation:
+
+- `DSEUHID_BT_USB_MASK`
+- `DSEUHID_MOTION_CAPTURE`
+- `DSEUHID_MOTION_REPLAY`
+- `DSEUHID_MOTION_REPLAY_MODE`
+
+Their findings remain documented above, but the implementation now keeps only
+the repeat path.
+
+## Remaining Follow-Up
+
+- Decide whether to promote `1000Hz seq_only` from environment-controlled
+  workaround to default behavior for BT source -> DS5 USB target.
+- If promoted, remove or hide `seq_ts` unless further debugging needs it.
+- Optionally add lightweight cadence statistics if another game shows similar
+  behavior.

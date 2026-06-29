@@ -359,7 +359,6 @@ pub struct MotionFrame {
 pub struct ControllerFrame {
     pub state: GamepadState,
     pub motion: Option<MotionFrame>,
-    pub sensor_timestamp_override: Option<u32>,
     source_report: SourceReport,
 }
 
@@ -494,7 +493,6 @@ pub mod input_ds5_usb {
         Ok(ControllerFrame {
             state,
             motion,
-            sensor_timestamp_override: None,
             source_report: SourceReport::Ds5Usb(source),
         })
     }
@@ -530,7 +528,6 @@ pub mod input_ds5_bt {
         Ok(ControllerFrame {
             state,
             motion,
-            sensor_timestamp_override: None,
             source_report: SourceReport::Ds5Bt {
                 usb_backing,
             },
@@ -546,17 +543,11 @@ pub mod target_ds5_usb {
             SourceReport::Ds5Usb(raw) => {
                 let mut out = *raw;
                 report::apply_state_to_report(&mut out, &frame.state, seq);
-                if let Some(timestamp) = frame.sensor_timestamp_override {
-                    out[28..32].copy_from_slice(&timestamp.to_le_bytes());
-                }
                 Ok(out)
             }
             SourceReport::Ds5Bt { usb_backing, .. } => {
                 let mut out = *usb_backing;
                 report::apply_state_to_report(&mut out, &frame.state, seq);
-                if let Some(timestamp) = frame.sensor_timestamp_override {
-                    out[28..32].copy_from_slice(&timestamp.to_le_bytes());
-                }
                 Ok(out)
             }
         }
@@ -1019,21 +1010,6 @@ mod tests {
         let ds4 = TargetCodec::Ds4Usb.encode_input(&frame, 0x10).unwrap();
         assert_eq!(ds4[0], report::USB_INPUT_REPORT_ID);
         assert_eq!(ds4[5] & 0x20, 0x20);
-    }
-
-    #[test]
-    fn ds5_target_can_override_sensor_timestamp_without_changing_motion() {
-        let mut usb = ds5_usb_raw();
-        usb[16..28].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-        usb[28..32].copy_from_slice(&0x11223344u32.to_le_bytes());
-
-        let bt = ds5_bt_raw_from_usb(&usb);
-        let mut frame = input_ds5_bt::decode(&bt).unwrap();
-        frame.sensor_timestamp_override = Some(0x55667788);
-
-        let ds5 = TargetCodec::Ds5UsbAuto.encode_input(&frame, 0x10).unwrap();
-        assert_eq!(&ds5[16..28], &usb[16..28]);
-        assert_eq!(&ds5[28..32], &0x55667788u32.to_le_bytes());
     }
 
     #[test]

@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::fs::{File, OpenOptions};
 use std::io;
-use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::{Arc, RwLock};
 
@@ -211,231 +209,6 @@ static ALL_BUTTONS: &[Button] = &[
     Button::FnLeft, Button::FnRight, Button::LeftPaddle, Button::RightPaddle,
 ];
 
-#[derive(Clone, Copy, Default)]
-struct BtUsbMask {
-    bits: u8,
-}
-
-impl BtUsbMask {
-    const RESERVED: u8 = 1 << 0;
-    const HOST_TS: u8 = 1 << 1;
-    const DEVICE_TS: u8 = 1 << 2;
-    const TEMP: u8 = 1 << 3;
-    const STATUS: u8 = 1 << 4;
-    const ALL: u8 = Self::RESERVED | Self::HOST_TS | Self::DEVICE_TS | Self::TEMP | Self::STATUS;
-
-    fn from_env() -> Self {
-        let Ok(value) = env::var("DSEUHID_BT_USB_MASK") else {
-            return Self::default();
-        };
-        let mut bits = 0;
-        for item in value.split(',').map(str::trim).filter(|item| !item.is_empty()) {
-            match item {
-                "reserved" => bits |= Self::RESERVED,
-                "host_ts" => bits |= Self::HOST_TS,
-                "device_ts" => bits |= Self::DEVICE_TS,
-                "temp" => bits |= Self::TEMP,
-                "status" => bits |= Self::STATUS,
-                "all" => bits |= Self::ALL,
-                other => warn!("unknown DSEUHID_BT_USB_MASK entry ignored: {other}"),
-            }
-        }
-        Self { bits }
-    }
-
-    fn is_empty(self) -> bool {
-        self.bits == 0
-    }
-
-    fn apply(self, report: &mut [u8]) {
-        if report.len() < 64 {
-            return;
-        }
-        if self.bits & Self::RESERVED != 0 {
-            report[12..16].fill(0);
-        }
-        if self.bits & Self::HOST_TS != 0 {
-            report[44..48].fill(0);
-        }
-        if self.bits & Self::DEVICE_TS != 0 {
-            report[49..53].fill(0);
-        }
-        if self.bits & Self::TEMP != 0 {
-            report[32] = 0;
-        }
-        if self.bits & Self::STATUS != 0 {
-            report[53..56].fill(0);
-        }
-    }
-}
-
-struct MotionDebug {
-    capture: Option<File>,
-    replay_frames: Vec<[u8; 16]>,
-    replay_index: usize,
-    replay_mode: MotionReplayMode,
-    fixed_timestamp: u32,
-}
-
-#[derive(Clone, Copy)]
-struct MotionReplayMode {
-    replay_axes: bool,
-    replay_timestamp: bool,
-    zero_gyro: bool,
-    neutral_accel: bool,
-    fixed_timestamp: bool,
-    zero_timestamp: bool,
-}
-
-impl MotionReplayMode {
-    fn from_env() -> Self {
-        let Ok(value) = env::var("DSEUHID_MOTION_REPLAY_MODE") else {
-            return Self {
-                replay_axes: true,
-                replay_timestamp: false,
-                zero_gyro: false,
-                neutral_accel: false,
-                fixed_timestamp: false,
-                zero_timestamp: false,
-            };
-        };
-
-        let mut mode = Self {
-            replay_axes: false,
-            replay_timestamp: false,
-            zero_gyro: false,
-            neutral_accel: false,
-            fixed_timestamp: false,
-            zero_timestamp: false,
-        };
-        for item in value.split(',').map(str::trim).filter(|item| !item.is_empty()) {
-            match item {
-                "axes" => mode.replay_axes = true,
-                "ts" => mode.replay_timestamp = true,
-                "axes_ts" => {
-                    mode.replay_axes = true;
-                    mode.replay_timestamp = true;
-                }
-                "zero_gyro" => mode.zero_gyro = true,
-                "neutral_accel" => mode.neutral_accel = true,
-                "fixed_ts" => mode.fixed_timestamp = true,
-                "zero_ts" => mode.zero_timestamp = true,
-                other => warn!("unknown DSEUHID_MOTION_REPLAY_MODE entry ignored: {other}"),
-            }
-        }
-        mode
-    }
-}
-
-impl MotionDebug {
-    fn from_env() -> Self {
-        let capture = match env::var("DSEUHID_MOTION_CAPTURE") {
-            Ok(path) => match OpenOptions::new().create(true).append(true).open(&path) {
-                Ok(file) => {
-                    info!("capturing DS5 USB motion frames to {path}");
-                    Some(file)
-                }
-                Err(e) => {
-                    warn!("failed to open DSEUHID_MOTION_CAPTURE={path}: {e}");
-                    None
-                }
-            },
-            Err(_) => None,
-        };
-
-        let replay_frames = match env::var("DSEUHID_MOTION_REPLAY") {
-            Ok(path) => match Self::load_replay(&path) {
-                Ok(frames) => {
-                    info!("loaded {} DS5 USB motion frames from {path}", frames.len());
-                    frames
-                }
-                Err(e) => {
-                    warn!("failed to load DSEUHID_MOTION_REPLAY={path}: {e}");
-                    Vec::new()
-                }
-            },
-            Err(_) => Vec::new(),
-        };
-
-        let replay_mode = MotionReplayMode::from_env();
-
-        Self {
-            capture,
-            replay_frames,
-            replay_index: 0,
-            replay_mode,
-            fixed_timestamp: 0,
-        }
-    }
-
-    fn load_replay(path: &str) -> io::Result<Vec<[u8; 16]>> {
-        let mut data = Vec::new();
-        File::open(path)?.read_to_end(&mut data)?;
-        if data.is_empty() || data.len() % 16 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("motion replay size must be a non-zero multiple of 16, got {}", data.len()),
-            ));
-        }
-        let mut frames = Vec::with_capacity(data.len() / 16);
-        for chunk in data.chunks_exact(16) {
-            let mut frame = [0u8; 16];
-            frame.copy_from_slice(chunk);
-            frames.push(frame);
-        }
-        Ok(frames)
-    }
-
-    fn capture(&mut self, report: &[u8]) {
-        let Some(file) = self.capture.as_mut() else {
-            return;
-        };
-        if report.len() < 32 {
-            return;
-        }
-        if let Err(e) = file.write_all(&report[16..32]) {
-            warn!("failed to capture DS5 USB motion frame: {e}");
-            self.capture = None;
-        }
-    }
-
-    fn replay(&mut self, report: &mut [u8]) {
-        if report.len() < 32 {
-            return;
-        }
-        if (self.replay_mode.replay_axes || self.replay_mode.replay_timestamp)
-            && !self.replay_frames.is_empty()
-        {
-            let frame = self.replay_frames[self.replay_index];
-            self.replay_index = (self.replay_index + 1) % self.replay_frames.len();
-            if self.replay_mode.replay_axes {
-                report[16..28].copy_from_slice(&frame[..12]);
-            }
-            if self.replay_mode.replay_timestamp {
-                report[28..32].copy_from_slice(&frame[12..16]);
-            }
-        }
-        if self.replay_mode.fixed_timestamp {
-            self.fixed_timestamp = self.fixed_timestamp.wrapping_add(3000);
-            report[28..32].copy_from_slice(&self.fixed_timestamp.to_le_bytes());
-        }
-        if self.replay_mode.zero_timestamp {
-            report[28..32].fill(0);
-        }
-        if self.replay_mode.zero_gyro {
-            report[16..22].fill(0);
-        }
-        if self.replay_mode.neutral_accel {
-            // DS5 accelerometer reports use 8192 units per 1g. The values
-            // below approximate the user's measured resting WebHID reading:
-            // x=0, y=9.8m/s^2, z=1.7m/s^2.
-            for (offset, value) in [(22, 0i16), (24, 8192i16), (26, 1421i16)] {
-                report[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-            }
-        }
-    }
-}
-
 struct RepeatInput {
     interval: Duration,
     timestamp_delta: u32,
@@ -470,11 +243,11 @@ impl RepeatInput {
         let interval = Duration::from_nanos(1_000_000_000 / hz);
         let timestamp_delta = ((interval.as_nanos() / 333).max(1)) as u32;
         let mode = match env::var("DSEUHID_REPEAT_MODE").as_deref() {
-            Ok("seq_only") => RepeatMode::SeqOnly,
-            Ok("seq_ts") | Err(_) => RepeatMode::SeqAndTimestamp,
+            Ok("seq_only") | Err(_) => RepeatMode::SeqOnly,
+            Ok("seq_ts") => RepeatMode::SeqAndTimestamp,
             Ok(value) => {
-                warn!("unknown DSEUHID_REPEAT_MODE={value}, using seq_ts");
-                RepeatMode::SeqAndTimestamp
+                warn!("unknown DSEUHID_REPEAT_MODE={value}, using seq_only");
+                RepeatMode::SeqOnly
             }
         };
         let mode_name = match mode {
@@ -586,8 +359,6 @@ pub struct Proxy {
     last_keyboard: HashMap<u16, bool>,
     last_snapshot: Option<crate::report::GamepadState>,
     last_output: Option<crate::report::GamepadState>,
-    bt_usb_mask: BtUsbMask,
-    motion_debug: MotionDebug,
     repeat_input: Option<RepeatInput>,
     physical_output_state: PhysicalOutputState,
     physical_set_report_unsupported_warned: HashSet<u8>,
@@ -623,11 +394,6 @@ impl Proxy {
 
     pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, codec: CodecPipeline, source_kind: SonyDeviceKind, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
         let fifo_fd = OwnedFd::from(fifo_file);
-        let bt_usb_mask = BtUsbMask::from_env();
-        if !bt_usb_mask.is_empty() {
-            info!("DSEUHID_BT_USB_MASK enabled for BT source -> DS5 USB target experiments");
-        }
-        let motion_debug = MotionDebug::from_env();
         let repeat_input = RepeatInput::from_env(codec);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
@@ -642,7 +408,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, bt_usb_mask, motion_debug, repeat_input, physical_output_state: PhysicalOutputState::default(), physical_set_report_unsupported_warned: HashSet::new(), turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, repeat_input, physical_output_state: PhysicalOutputState::default(), physical_set_report_unsupported_warned: HashSet::new(), turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
     }
 
     pub fn forget_restore_on_physical_disconnect(&mut self) {
@@ -1081,28 +847,9 @@ impl Proxy {
 
                         // ========== L3: Output ==========
                         frame.state = state.clone();
-                        let mut out = self.codec.target
+                        let out = self.codec.target
                             .encode_input(&frame, *seq)
                             .expect("DS5 USB source should encode to selected USB target");
-                        if self.codec.source == SourceCodec::Ds5Usb
-                            && matches!(
-                                self.codec.target,
-                                TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced
-                            )
-                        {
-                            self.motion_debug.capture(&out);
-                        }
-                        if self.codec.source == SourceCodec::Ds5Bt
-                            && matches!(
-                                self.codec.target,
-                                TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced
-                            )
-                        {
-                            self.motion_debug.replay(&mut out);
-                            // The mask only zeros selected non-motion fields
-                            // in the final USB report.
-                            self.bt_usb_mask.apply(&mut out);
-                        }
                         if self.codec.target == TargetCodec::Ds4Usb {
                             trace!("ds4 raw[..32]: {:02x?}", &out[..32]);
                         }

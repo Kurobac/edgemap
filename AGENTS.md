@@ -6,7 +6,7 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 193 tests total (112 dseuhid + 81 edgemap)
+cargo test                # 192 tests total (111 dseuhid + 81 edgemap)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
@@ -103,7 +103,7 @@ Input order inside `handle_hidraw_input()`:
 - **DSE buttons excluded from targets** — only standard buttons, stick dirs, and trigger-full are valid targets. Edge buttons (paddles, Fn) can only be sources.
 - **Device detection** skips virtual UHID devices (checks `/sys/class/hidraw/N/device/uevent` for `DRIVER=uhid`) to avoid recursively proxying itself.
 - **GET_REPORT cache**: physical codec policy reads physical feature reports 0x05 (IMU calibration) and 0x20 (firmware info) for DS5 USB/BT physical devices backing DS5 USB targets. BT feature reports are CRC-validated with seed 0xA3 and kept full-size in the USB target cache. Read/validation failures warn and fall back to target responses. Report 0x09 (MAC address) is intentionally skipped — caching it would duplicate the physical device's MAC in sysfs, causing `hid-playstation` probe failure (#63).
-- **Bluetooth source**: DS5/Edge BT input report 0x31 is decoded into `ControllerFrame` with USB-compatible backing. Virtual targets remain USB UHID only. BT physical main output is supported by wrapping DS5 USB target output into the DS5 BT 0x31 output envelope with sequence tag and CRC; BT SET_REPORT/vendor feature-report forwarding is intentionally unsupported for now. Genshin Impact sends feature report 0x08, but hardware rejected a naive HIDIOCSFEATURE transfer even with a feature CRC tail.
+- **Bluetooth source**: DS5/Edge BT input report 0x31 is decoded into `ControllerFrame` with USB-compatible backing. Virtual targets remain USB UHID only. BT physical main output is supported by wrapping DS5 USB target output into the DS5 BT 0x31 output envelope with sequence tag and CRC; BT SET_REPORT/vendor feature-report forwarding is intentionally unsupported for now. Genshin Impact sends feature report 0x08, but hardware rejected a naive HIDIOCSFEATURE transfer even with a feature CRC tail. For BT source → DS5 USB target gyro cadence issues, `DSEUHID_REPEAT_HZ` repeats the latest UHID input at a fixed rate; default repeat mode is seq-only, advancing `raw[7]` while keeping the sensor timestamp unchanged until a real BT frame arrives.
 - **`Target::Block` removed** — replaced by `MappingConfig.blocked_buttons` (L1 suppression, not L2 remap). `remap="block"` in config maps to this.
 - **`apply()` signature**: `apply(&self, l1: &GamepadState, state: &mut GamepadState, keyboard_out: &mut Vec<(u16, bool)>)` — reads frozen L1 output, writes to mutable state, pushes keyboard events.
 - **Combo injection never clears** — only pushes activation, not deactivation. State re-parse handles cleanup naturally.

@@ -765,7 +765,6 @@ fn cmd_daemon(args: &[String]) -> ! {
                     })
                     .map(|(name, _)| format!("profile '{name}'"))
                     .unwrap_or_else(|| "default config".to_string());
-                log::info!("dseuhid connected");
                 log::info!("applied {label}: {target}");
                 send_notification("edgemap", &format!("Switched to {label}"));
                 current_config = target;

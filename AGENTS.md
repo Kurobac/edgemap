@@ -6,7 +6,7 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 195 tests total (114 dseuhid + 81 edgemap)
+cargo test                # 199 tests total (114 dseuhid + 85 edgemap)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
@@ -41,7 +41,7 @@ makepkg -si              # build + install via PKGBUILD
 | `src/uhid.rs` | Raw UHID wrapper (create2, input2, get/set report reply), complete-write checks, UHID event size validation |
 | `src/keyboard.rs` | uinput keyboard device: `KeyboardDevice` (open/create, press/release, flush_held, Drop destroy), 107 keycode constants, `resolve_keycode()` name→code mapping |
 | `src/descriptor.rs` | Built-in target HID descriptors: `DS_USB_DESCRIPTOR`, `DS_EDGE_USB_DESCRIPTOR` (BT Edge auto target identity), and `DS4_USB_DESCRIPTOR` (used when `output_device = "dualshock4"`) |
-| `src/bin/edgemap.rs` | User-side CLI (`validate`, `create-config`, `reload`, `switch-config`), no root. Daemon mode (`d`/`daemon`): auto-create configs under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`), profile auto-switch by process matching, mtime-based hot reload, `notify-send` desktop notifications. Communicates via FIFO. |
+| `src/bin/edgemap.rs` | User-side CLI (`validate`, `create-config`, `reload`, `switch-config`), no root. Daemon mode (`d`/`daemon`): auto-create configs under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`), profile auto-switch by 3-second process snapshots, inotify-based config/runtime-state monitoring, `notify-send` desktop notifications. Communicates via FIFO. |
 | `edgemap-gui-v6.py` | PyQt6 config editor: two-column layout, button remap, turbo, combo/macro popup editors, macro manager, profile quick-switch, toolbar with KDE-native icons. |
 
 ## Three-layer pipeline (L1 → L2 → L3)
@@ -96,7 +96,7 @@ Input order inside `handle_hidraw_input()`:
 - **Config**: no default path. `-c`/`--config-path` optional — if omitted, starts in passthrough mode. edgemap is the intended way to manage config.
 - **Hot reload**: `edgemap reload` or `echo reload > /run/dseuhid/control` — re-reads the current live config path and rebuilds all runtimes only after load/validate/build succeeds. Failed reload keeps the previous mapping, runtimes, and config path.
 - **FIFO control**: `/run/dseuhid/control` (0666), PID at `/run/dseuhid/pid`. Commands: `reload`, `switch-config <path>`. `switch-config` commits the new path only after the new config loads successfully; failure keeps the previous live config path. Non-root users can write to it. FIFO fd is dup'd for safe reconnects.
-- **edgemap daemon**: auto-creates `edgemap.toml` + `default.toml` under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`) on first run. Profiles in `[profiles.*]` sections with `match_process` (comm exact) and/or `match_cmdline` (substring), first match in declaration order wins. Mtime-based hot reload when edgemap.toml changes. Sends `notify-send` on config switch.
+- **edgemap daemon**: auto-creates `edgemap.toml` + `default.toml` under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`) on first run. Profiles in `[profiles.*]` sections with `match_process` (comm exact) and/or `match_cmdline` (substring), first match in declaration order wins. Each 3-second profile scan reads each PID's required `comm`/`cmdline` data at most once. inotify reloads `edgemap.toml` and wakes immediately for `/run/dseuhid` PID/FIFO/connected changes. Sends `notify-send` on config switch.
 - **Byte 10 high nibble** = DSE Edge buttons: FnLeft=0x10, FnRight=0x20, LeftPaddle=0x40, RightPaddle=0x80. Byte 11 low nibble must be preserved, high nibble zeroed.
 - **Two-phase apply** (`mapping.rs`): Phase 1 clears source + collects targets, Phase 2 sets all targets atomically. Prevents cross-map (A→B, B→A) collisions.
 - **Snapshot isolation**: `apply()` clones state before rules evaluate — rules read snapshot, write to live state. Prevents rule ordering artifacts.

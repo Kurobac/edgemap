@@ -13,14 +13,29 @@ mod config;
 
 use std::env;
 use std::io::{self, Write};
+use std::os::fd::AsFd;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
 use serde::Deserialize;
 
 const FIFO_PATH: &str = "/run/dseuhid/control";
+const DSEUHID_RUNTIME_DIR: &str = "/run/dseuhid";
+const PID_PATH: &str = "/run/dseuhid/pid";
+const CONNECTED_PATH: &str = "/run/dseuhid/connected";
+const RUN_DIR: &str = "/run";
+const CONTROL_FILE_NAME: &str = "control";
+const PID_FILE_NAME: &str = "pid";
+const CONNECTED_FILE_NAME: &str = "connected";
+const STATE_CONNECTED: &str = "connected";
+const STATE_DISCONNECTED: &str = "disconnected";
+const EDGEMAP_CONFIG_FILE: &str = "edgemap.toml";
+const DEFAULT_CONFIG_FILE: &str = "default.toml";
+const PROFILE_INTERVAL: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Deserialize)]
 struct ProfileConfig {
@@ -115,6 +130,192 @@ extern "C" fn handle_daemon_signal(_sig: libc::c_int) {
     DAEMON_RUNNING.store(false, Ordering::SeqCst);
 }
 
+#[derive(Default)]
+struct DaemonWake {
+    config_changed: bool,
+    runtime_changed: bool,
+    profile_due: bool,
+}
+
+struct DaemonMonitor {
+    inotify: Inotify,
+    config_watch: WatchDescriptor,
+    run_watch: Option<WatchDescriptor>,
+    runtime_watch: Option<WatchDescriptor>,
+    config_name: std::ffi::OsString,
+}
+
+fn daemon_watch_flags() -> AddWatchFlags {
+    AddWatchFlags::IN_CLOSE_WRITE
+        | AddWatchFlags::IN_CREATE
+        | AddWatchFlags::IN_DELETE
+        | AddWatchFlags::IN_MOVED_FROM
+        | AddWatchFlags::IN_MOVED_TO
+        | AddWatchFlags::IN_DELETE_SELF
+        | AddWatchFlags::IN_MOVE_SELF
+}
+
+fn run_discovery_flags() -> AddWatchFlags {
+    AddWatchFlags::IN_CREATE | AddWatchFlags::IN_MOVED_TO
+}
+
+fn watch_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
+fn is_runtime_file(name: &std::ffi::OsStr) -> bool {
+    name == CONTROL_FILE_NAME || name == PID_FILE_NAME || name == CONNECTED_FILE_NAME
+}
+
+impl DaemonMonitor {
+    fn new(config_path: &Path) -> Result<Self, String> {
+        let inotify = Inotify::init(InitFlags::IN_CLOEXEC | InitFlags::IN_NONBLOCK)
+            .map_err(|e| format!("cannot initialize inotify: {e}"))?;
+        let watch_flags = daemon_watch_flags();
+        let config_dir = watch_parent(config_path);
+        let config_watch = inotify
+            .add_watch(config_dir, watch_flags)
+            .map_err(|e| format!("cannot watch {}: {e}", config_dir.display()))?;
+        let runtime_exists = Path::new(DSEUHID_RUNTIME_DIR).is_dir();
+        let runtime_watch = if runtime_exists {
+            Some(
+                inotify
+                    .add_watch(DSEUHID_RUNTIME_DIR, watch_flags)
+                    .map_err(|e| format!("cannot watch {DSEUHID_RUNTIME_DIR}: {e}"))?,
+            )
+        } else {
+            None
+        };
+        let run_watch = if runtime_exists {
+            None
+        } else {
+            Some(
+                inotify
+                    .add_watch(RUN_DIR, run_discovery_flags())
+                    .map_err(|e| format!("cannot watch {RUN_DIR}: {e}"))?,
+            )
+        };
+        let config_name = config_path
+            .file_name()
+            .ok_or_else(|| format!("invalid config path: {}", config_path.display()))?
+            .to_os_string();
+        Ok(Self {
+            inotify,
+            config_watch,
+            run_watch,
+            runtime_watch,
+            config_name,
+        })
+    }
+
+    fn ensure_runtime_watch(&mut self) -> Result<(), String> {
+        if self.runtime_watch.is_none() && Path::new(DSEUHID_RUNTIME_DIR).is_dir() {
+            self.runtime_watch = Some(
+                self.inotify
+                    .add_watch(DSEUHID_RUNTIME_DIR, daemon_watch_flags())
+                    .map_err(|e| format!("cannot watch {DSEUHID_RUNTIME_DIR}: {e}"))?,
+            );
+            if let Some(run_watch) = self.run_watch.take() {
+                self.inotify
+                    .rm_watch(run_watch)
+                    .map_err(|e| format!("cannot stop watching {RUN_DIR}: {e}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_run_watch(&mut self) -> Result<(), String> {
+        if self.runtime_watch.is_none() && self.run_watch.is_none() {
+            self.run_watch = Some(
+                self.inotify
+                    .add_watch(RUN_DIR, run_discovery_flags())
+                    .map_err(|e| format!("cannot watch {RUN_DIR}: {e}"))?,
+            );
+        }
+        Ok(())
+    }
+
+    fn wait(&mut self, deadline: Instant) -> Result<DaemonWake, String> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as u32;
+        let mut fds = [PollFd::new(self.inotify.as_fd(), PollFlags::POLLIN)];
+        match poll(
+            &mut fds,
+            PollTimeout::try_from(timeout_ms).unwrap_or(PollTimeout::MAX),
+        ) {
+            Ok(0) => {
+                return Ok(DaemonWake {
+                    profile_due: true,
+                    ..Default::default()
+                })
+            }
+            Ok(_) => {}
+            Err(nix::errno::Errno::EINTR) => return Ok(DaemonWake::default()),
+            Err(e) => return Err(format!("inotify poll failed: {e}")),
+        }
+
+        let mut wake = DaemonWake::default();
+        let events = self
+            .inotify
+            .read_events()
+            .map_err(|e| format!("cannot read inotify events: {e}"))?;
+        for event in events {
+            if event.mask.contains(AddWatchFlags::IN_Q_OVERFLOW) {
+                return Err("inotify event queue overflowed".to_string());
+            }
+            if event.wd == self.config_watch
+                && event.name.as_deref() == Some(self.config_name.as_os_str())
+            {
+                wake.config_changed = true;
+            }
+            if self.run_watch == Some(event.wd)
+                && event.name.as_deref() == Some(std::ffi::OsStr::new("dseuhid"))
+            {
+                wake.runtime_changed = true;
+                self.ensure_runtime_watch()?;
+            }
+            if self.runtime_watch == Some(event.wd)
+                && event.name.as_deref().is_some_and(is_runtime_file)
+            {
+                wake.runtime_changed = true;
+            }
+            if self.runtime_watch == Some(event.wd)
+                && event.mask.intersects(
+                    AddWatchFlags::IN_DELETE_SELF
+                        | AddWatchFlags::IN_MOVE_SELF
+                        | AddWatchFlags::IN_IGNORED,
+                )
+            {
+                wake.runtime_changed = true;
+                self.runtime_watch = None;
+            }
+        }
+        self.ensure_runtime_watch()?;
+        self.ensure_run_watch()?;
+        wake.profile_due = Instant::now() >= deadline;
+        Ok(wake)
+    }
+}
+
+fn wait_for_daemon_activity(
+    monitor: &mut DaemonMonitor,
+    next_profile_scan: &mut Instant,
+    config_changed: &mut bool,
+    runtime_changed: &mut bool,
+    profile_due: &mut bool,
+) -> Result<(), String> {
+    let wake = monitor.wait(*next_profile_scan)?;
+    *config_changed |= wake.config_changed;
+    *runtime_changed |= wake.runtime_changed;
+    if wake.profile_due {
+        *profile_due = true;
+        *next_profile_scan = Instant::now() + PROFILE_INTERVAL;
+    }
+    Ok(())
+}
+
 fn send_notification(summary: &str, body: &str) {
     let _ = std::process::Command::new("notify-send")
         .args(["-a", "edgemap", summary, body])
@@ -185,29 +386,63 @@ fn read_cmdline(pid: u32) -> Option<String> {
     Some(String::from_utf8_lossy(&data).replace('\0', " ").to_lowercase())
 }
 
-fn profile_matches(pid: u32, profile: &ProfileConfig) -> bool {
+#[derive(Debug, Clone)]
+struct ProcessSnapshot {
+    pid: u32,
+    comm: Option<String>,
+    cmdline: Option<String>,
+}
+
+fn profile_matches(process: &ProcessSnapshot, profile: &ProfileConfig) -> bool {
+    // load_edgemap_config() lowercases profile match fields; process snapshots
+    // are lowercased when read from /proc, so comparisons here stay allocation-free.
     if profile.match_process.is_empty() && profile.match_cmdline.is_empty() {
         return false;
     }
     if !profile.match_process.is_empty() {
-        let comm = match read_comm(pid) {
-            Some(c) => c,
+        let comm = match process.comm.as_deref() {
+            Some(comm) => comm,
             None => return false,
         };
-        if comm != profile.match_process.to_lowercase() {
+        if comm != profile.match_process {
             return false;
         }
     }
     if !profile.match_cmdline.is_empty() {
-        let cmdline = match read_cmdline(pid) {
-            Some(c) => c,
+        let cmdline = match process.cmdline.as_deref() {
+            Some(cmdline) => cmdline,
             None => return false,
         };
-        if !cmdline.contains(&profile.match_cmdline.to_lowercase()) {
+        if !cmdline.contains(&profile.match_cmdline) {
             return false;
         }
     }
     true
+}
+
+fn snapshot_processes(profiles: &[(String, ProfileConfig)]) -> Vec<ProcessSnapshot> {
+    let need_comm = profiles
+        .iter()
+        .any(|(_, profile)| !profile.match_process.is_empty());
+    let need_cmdline = profiles
+        .iter()
+        .any(|(_, profile)| !profile.match_cmdline.is_empty());
+
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse().ok()?;
+            Some(ProcessSnapshot {
+                pid,
+                comm: need_comm.then(|| read_comm(pid)).flatten(),
+                cmdline: need_cmdline.then(|| read_cmdline(pid)).flatten(),
+            })
+        })
+        .collect()
 }
 
 fn find_matching_profile(
@@ -215,16 +450,11 @@ fn find_matching_profile(
     config_dir: &Path,
     base_config: &str,
 ) -> Result<Option<String>, String> {
-    let pids: Vec<u32> = match std::fs::read_dir("/proc") {
-        Ok(d) => d.flatten()
-            .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse().ok()))
-            .collect(),
-        Err(_) => return Ok(None),
-    };
+    let processes = snapshot_processes(profiles);
     for (profile_name, profile_cfg) in profiles {
-        for &pid in &pids {
-            if profile_matches(pid, profile_cfg) {
-                log::debug!("profile '{}' matched by pid {pid}", profile_name);
+        for process in &processes {
+            if profile_matches(process, profile_cfg) {
+                log::debug!("profile '{}' matched by pid {}", profile_name, process.pid);
                 return resolve_config_path(&profile_cfg.config, config_dir).map(Some);
             }
         }
@@ -277,7 +507,9 @@ fn cmd_validate(args: &[String]) -> ! {
     let mut fail = 0;
     let mut entries: Vec<_> = match std::fs::read_dir(&dir) {
         Ok(d) => d.flatten().filter(|e| {
-            e.file_name().to_str().is_some_and(|n| n.ends_with(".toml") && n != "edgemap.toml")
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.ends_with(".toml") && n != EDGEMAP_CONFIG_FILE)
         }).collect(),
         Err(e) => {
             eprintln!("error: cannot read {}: {e}", dir.display());
@@ -474,7 +706,7 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
 
     let base_config_raw = root.get("config")
         .and_then(|v| v.as_str())
-        .unwrap_or("default.toml")
+        .unwrap_or(DEFAULT_CONFIG_FILE)
         .to_string();
     let base_config = resolve_config_path(&base_config_raw, &dir)?;
 
@@ -484,7 +716,11 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
     if let Some(t) = root.get("profiles").and_then(|v| v.as_table()) {
         for (name, val) in t.iter() {
             match val.clone().try_into::<ProfileConfig>() {
-                Ok(cfg) => profiles.push((name.clone(), cfg)),
+                Ok(mut cfg) => {
+                    cfg.match_process = cfg.match_process.to_lowercase();
+                    cfg.match_cmdline = cfg.match_cmdline.to_lowercase();
+                    profiles.push((name.clone(), cfg));
+                }
                 Err(e) => log::warn!("invalid profile '{name}': {e}, skipping"),
             }
         }
@@ -544,7 +780,7 @@ fn cmd_daemon(args: &[String]) -> ! {
         Some(path) => edgemap_config_dir()
             .and_then(|dir| resolve_config_path(path, &dir))
             .map(PathBuf::from),
-        None => edgemap_config_dir().map(|dir| dir.join("edgemap.toml")),
+        None => edgemap_config_dir().map(|dir| dir.join(EDGEMAP_CONFIG_FILE)),
     }
     .unwrap_or_else(|e| {
         eprintln!("error: {e}");
@@ -576,7 +812,7 @@ fn cmd_daemon(args: &[String]) -> ! {
             std::process::exit(1);
         }
         let default_toml_content = config::default_content();
-        let default_remap_path = dir.join("default.toml");
+        let default_remap_path = dir.join(DEFAULT_CONFIG_FILE);
         if !default_remap_path.exists() {
             if let Err(e) = std::fs::write(&default_remap_path, default_toml_content) {
                 log::error!("cannot write {}: {e}", default_remap_path.display());
@@ -584,7 +820,7 @@ fn cmd_daemon(args: &[String]) -> ! {
             }
             log::info!("Created {}", default_remap_path.display());
         }
-        let edgemap_toml = "config = \"default.toml\"\n".to_string();
+        let edgemap_toml = format!("config = \"{DEFAULT_CONFIG_FILE}\"\n");
         if let Err(e) = std::fs::write(&edgemap_config_path, edgemap_toml) {
             log::error!("cannot write {}: {e}", edgemap_config_path.display());
             std::process::exit(1);
@@ -601,10 +837,6 @@ fn cmd_daemon(args: &[String]) -> ! {
         }
     };
 
-    let mut last_mtime = std::fs::metadata(&config_path)
-        .and_then(|m| m.modified())
-        .ok();
-
     // signal handlers
     unsafe {
         let handler = libc::SIG_DFL;
@@ -620,90 +852,121 @@ fn cmd_daemon(args: &[String]) -> ! {
     }
     std::fs::write(&pid_path, std::process::id().to_string()).ok();
 
-    let alive = check_dseuhid_alive();
-    if !alive {
+    let mut monitor = DaemonMonitor::new(&config_path).unwrap_or_else(|e| {
+        log::error!("{e}");
+        std::process::exit(1);
+    });
+
+    let mut daemon_alive = check_dseuhid_alive();
+    if !daemon_alive {
         log::warn!("dseuhid not running, waiting...");
     }
 
     let mut current_config = String::new();
     let mut last_pid: Option<i32> = None;
     let mut last_uhid_state: Option<String> = None;
+    let mut config_changed = false;
+    let mut runtime_changed = true;
+    let mut profile_due = true;
+    let mut next_profile_scan = Instant::now() + PROFILE_INTERVAL;
 
     while DAEMON_RUNNING.load(Ordering::SeqCst) {
-        // hot reload on mtime change
-        if let Ok(meta) = std::fs::metadata(&config_path) {
-            if let Ok(mtime) = meta.modified() {
-                if last_mtime != Some(mtime) {
-                    match load_edgemap_config(&config_path) {
-                        Ok(s) => {
-                            state = s;
-                            log::info!("edgemap config reloaded");
-                        }
-                        Err(e) => log::error!("reload failed, keeping previous config: {e}"),
-                    }
-                    last_mtime = Some(mtime);
-                }
-            }
-        }
-
-        let alive = check_dseuhid_alive();
-        if !alive {
-            if last_uhid_state.as_deref() == Some("connected") {
-                log::info!("UHID device stopped");
-                send_notification("edgemap", "UHID device stopped");
-            }
-            if !current_config.is_empty() {
-                log::warn!("dseuhid disconnected");
-            }
-            current_config.clear();
-            last_pid = None;
-            last_uhid_state = Some("disconnected".to_string());
-            std::thread::sleep(Duration::from_secs(3));
-            continue;
-        }
-
-        // detect dseuhid restart via PID change (systemctl restart is <1s)
-        if let Ok(pid_str) = std::fs::read_to_string("/run/dseuhid/pid") {
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                if last_pid != Some(pid) {
+        if config_changed {
+            config_changed = false;
+            match load_edgemap_config(&config_path) {
+                Ok(s) => {
+                    state = s;
                     current_config.clear();
-                    last_uhid_state = None;
-                    last_pid = Some(pid);
+                    profile_due = true;
+                    log::info!("edgemap config reloaded");
                 }
+                Err(e) => log::error!("reload failed, keeping previous config: {e}"),
             }
         }
 
-        // detect UHID virtual device state via /run/dseuhid/connected
-        let uhid_state = std::fs::read_to_string("/run/dseuhid/connected")
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        if runtime_changed {
+            runtime_changed = false;
+            daemon_alive = check_dseuhid_alive();
+            if !daemon_alive {
+                if last_uhid_state.as_deref() == Some(STATE_CONNECTED) {
+                    log::info!("UHID device stopped");
+                    send_notification("edgemap", "UHID device stopped");
+                }
+                if !current_config.is_empty() {
+                    log::warn!("dseuhid disconnected");
+                }
+                current_config.clear();
+                last_pid = None;
+                last_uhid_state = Some(STATE_DISCONNECTED.to_string());
+            } else {
+                // detect dseuhid restart via PID change (systemctl restart is <1s)
+                if let Ok(pid_str) = std::fs::read_to_string(PID_PATH) {
+                    if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                        if last_pid != Some(pid) {
+                            current_config.clear();
+                            profile_due = true;
+                            last_uhid_state = None;
+                            last_pid = Some(pid);
+                        }
+                    }
+                }
 
-        // disconnected: skip injection entirely
-        if uhid_state != "connected" {
-            if last_uhid_state.as_deref() == Some("connected") {
-                log::info!("UHID device stopped");
-                send_notification("edgemap", "UHID device stopped");
+                // detect UHID virtual device state via /run/dseuhid/connected
+                let uhid_state = std::fs::read_to_string(CONNECTED_PATH)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if uhid_state != STATE_CONNECTED {
+                    if last_uhid_state.as_deref() == Some(STATE_CONNECTED) {
+                        log::info!("UHID device stopped");
+                        send_notification("edgemap", "UHID device stopped");
+                    }
+                } else if last_uhid_state.as_deref() != Some(STATE_CONNECTED) {
+                    log::info!("UHID device ready");
+                    send_notification("edgemap", "UHID device ready");
+                    current_config.clear();
+                    profile_due = true;
+                }
+                last_uhid_state = Some(uhid_state);
             }
-            last_uhid_state = Some(uhid_state);
-            std::thread::sleep(Duration::from_secs(3));
+        }
+
+        // A disconnected daemon or UHID device waits for an explicit runtime event.
+        if !daemon_alive || last_uhid_state.as_deref() != Some(STATE_CONNECTED) {
+            if let Err(e) = wait_for_daemon_activity(
+                &mut monitor,
+                &mut next_profile_scan,
+                &mut config_changed,
+                &mut runtime_changed,
+                &mut profile_due,
+            ) {
+                log::error!("{e}");
+                break;
+            }
             continue;
         }
 
-        // connected: detect new UHID device via content transition
-        // (only a "non-connected" → "connected" transition means the UHID
-        // device was recreated and needs config re-injection)
-        if last_uhid_state.as_deref() != Some("connected") {
-            log::info!("UHID device ready");
-            send_notification("edgemap", "UHID device ready");
-            current_config.clear();
+        if !profile_due {
+            if let Err(e) = wait_for_daemon_activity(
+                &mut monitor,
+                &mut next_profile_scan,
+                &mut config_changed,
+                &mut runtime_changed,
+                &mut profile_due,
+            ) {
+                log::error!("{e}");
+                break;
+            }
+            continue;
         }
-        last_uhid_state = Some(uhid_state);
+        profile_due = false;
 
         let wanted = if state.valid_profiles.is_empty() {
             state.base_config.clone()
         } else {
-            let valid: Vec<_> = state.profiles.iter()
+            let valid: Vec<_> = state
+                .profiles
+                .iter()
                 .filter(|(name, _)| state.valid_profiles.iter().any(|(vn, _)| vn == name))
                 .cloned()
                 .collect();
@@ -712,7 +975,16 @@ fn cmd_daemon(args: &[String]) -> ! {
                 Ok(None) => state.base_config.clone(),
                 Err(e) => {
                     log::error!("cannot resolve profile config: {e}");
-                    std::thread::sleep(Duration::from_secs(3));
+                    if let Err(wait_error) = wait_for_daemon_activity(
+                        &mut monitor,
+                        &mut next_profile_scan,
+                        &mut config_changed,
+                        &mut runtime_changed,
+                        &mut profile_due,
+                    ) {
+                        log::error!("{wait_error}");
+                        break;
+                    }
                     continue;
                 }
             }
@@ -745,13 +1017,31 @@ fn cmd_daemon(args: &[String]) -> ! {
                     target = state.base_config.clone();
                     if !is_valid(&target) {
                         log::warn!("default config also invalid, keeping previous");
-                        std::thread::sleep(Duration::from_secs(3));
+                        if let Err(wait_error) = wait_for_daemon_activity(
+                            &mut monitor,
+                            &mut next_profile_scan,
+                            &mut config_changed,
+                            &mut runtime_changed,
+                            &mut profile_due,
+                        ) {
+                            log::error!("{wait_error}");
+                            break;
+                        }
                         continue;
                     }
                 } else {
                     // base_config itself is invalid — just warn, don't spam
                     log::warn!("default config invalid, keeping previous");
-                    std::thread::sleep(Duration::from_secs(3));
+                    if let Err(wait_error) = wait_for_daemon_activity(
+                        &mut monitor,
+                        &mut next_profile_scan,
+                        &mut config_changed,
+                        &mut runtime_changed,
+                        &mut profile_due,
+                    ) {
+                        log::error!("{wait_error}");
+                        break;
+                    }
                     continue;
                 }
             }
@@ -770,7 +1060,16 @@ fn cmd_daemon(args: &[String]) -> ! {
                 current_config = target;
             }
         }
-        std::thread::sleep(Duration::from_secs(3));
+        if let Err(e) = wait_for_daemon_activity(
+            &mut monitor,
+            &mut next_profile_scan,
+            &mut config_changed,
+            &mut runtime_changed,
+            &mut profile_due,
+        ) {
+            log::error!("{e}");
+            break;
+        }
     }
 
     log::info!("daemon stopped");
@@ -835,6 +1134,7 @@ mod path_tests {
             resolve_config_path_with_home("/tmp/config.toml", Path::new("/base"), None),
             Ok("/tmp/config.toml".to_string())
         );
+        assert_eq!(watch_parent(Path::new("edgemap.toml")), Path::new("."));
     }
 
     #[test]
@@ -849,5 +1149,77 @@ mod path_tests {
             ),
             Ok("/home/test/config.toml".to_string())
         );
+    }
+
+    fn profile(process: &str, cmdline: &str) -> ProfileConfig {
+        ProfileConfig {
+            config: "test.toml".to_string(),
+            match_process: process.to_string(),
+            match_cmdline: cmdline.to_string(),
+        }
+    }
+
+    fn process(comm: Option<&str>, cmdline: Option<&str>) -> ProcessSnapshot {
+        ProcessSnapshot {
+            pid: 42,
+            comm: comm.map(str::to_string),
+            cmdline: cmdline.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn profile_match_requires_all_configured_fields() {
+        let cfg = profile("game", "--profile edge");
+        assert!(profile_matches(
+            &process(Some("game"), Some("/usr/bin/game --profile edge")),
+            &cfg
+        ));
+        assert!(!profile_matches(
+            &process(Some("game"), Some("/usr/bin/game --profile default")),
+            &cfg
+        ));
+        assert!(!profile_matches(
+            &process(Some("launcher"), Some("/usr/bin/game --profile edge")),
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn profile_match_rejects_missing_process_data() {
+        assert!(!profile_matches(&process(None, None), &profile("game", "")));
+        assert!(!profile_matches(&process(None, None), &profile("", "game")));
+    }
+
+    #[test]
+    fn empty_profile_does_not_match() {
+        assert!(!profile_matches(
+            &process(Some("game"), Some("game")),
+            &profile("", "")
+        ));
+    }
+
+    #[test]
+    fn daemon_monitor_detects_config_write() {
+        for name in ["control", "pid", "connected"] {
+            assert!(is_runtime_file(std::ffi::OsStr::new(name)));
+        }
+        assert!(!is_runtime_file(std::ffi::OsStr::new("unrelated")));
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("edgemap-inotify-{}-{unique}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let config_path = dir.join("edgemap.toml");
+        std::fs::write(&config_path, "config = \"default.toml\"\n").unwrap();
+
+        let mut monitor = DaemonMonitor::new(&config_path).unwrap();
+        assert_ne!(monitor.run_watch.is_some(), monitor.runtime_watch.is_some());
+        std::fs::write(&config_path, "config = \"changed.toml\"\n").unwrap();
+        let wake = monitor.wait(Instant::now() + Duration::from_secs(1)).unwrap();
+
+        assert!(wake.config_changed);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

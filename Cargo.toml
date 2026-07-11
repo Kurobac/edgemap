@@ -6,7 +6,7 @@ default-run = "dseuhid"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-nix = { version = "0.29", features = ["ioctl", "event", "poll", "fs", "signal"] }
+nix = { version = "0.29", features = ["ioctl", "event", "poll", "fs", "signal", "inotify"] }
 log = "0.4"
 env_logger = "0.11"
 libc = "0.2.186"

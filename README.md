@@ -68,7 +68,7 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Macro | Timed key sequences, hold (loop) and single (one-shot) modes |
 | Keyboard target | Remap, combo, macro, and split-touchpad output to 107 uinput keyboard keys |
 | Profile auto-switch | Match running processes (comm/cmdline), auto-switch remap config |
-| Hot reload | Mtime-based (edgemap) or FIFO command |
+| Hot reload | inotify-based (`edgemap.toml`) or FIFO command |
 | Native HID behavior | DS5 USB target keeps source backing where possible; BT physical output wraps USB target output into the DS5 BT main-output envelope |
 | Regular DualSense | DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported over USB and Bluetooth source hidraw |
 | DSE→DS virtualization | `output_device = "dualsense"` makes Edge appear as regular DS for game compatibility |

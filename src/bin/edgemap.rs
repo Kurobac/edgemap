@@ -10,18 +10,22 @@ mod keyboard;
 #[path = "../config.rs"]
 #[allow(dead_code)]
 mod config;
+#[path = "../shutdown.rs"]
+#[allow(dead_code)]
+mod shutdown;
 
 use std::env;
 use std::io::{self, Write};
 use std::os::fd::AsFd;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
 use serde::Deserialize;
+
+use shutdown::{unblock_shutdown_signals_in_child, ShutdownSignal};
 
 const FIFO_PATH: &str = "/run/dseuhid/control";
 const DSEUHID_RUNTIME_DIR: &str = "/run/dseuhid";
@@ -124,17 +128,12 @@ fn resolve_config_path(raw: &str, base_dir: &Path) -> Result<String, String> {
     resolve_config_path_with_home(raw, base_dir, home.as_deref())
 }
 
-static DAEMON_RUNNING: AtomicBool = AtomicBool::new(true);
-
-extern "C" fn handle_daemon_signal(_sig: libc::c_int) {
-    DAEMON_RUNNING.store(false, Ordering::SeqCst);
-}
-
 #[derive(Default)]
 struct DaemonWake {
     config_changed: bool,
     runtime_changed: bool,
     profile_due: bool,
+    shutdown: bool,
 }
 
 struct DaemonMonitor {
@@ -257,10 +256,17 @@ impl DaemonMonitor {
         Ok(())
     }
 
-    fn wait(&mut self, deadline: Instant) -> Result<DaemonWake, String> {
+    fn wait(
+        &mut self,
+        deadline: Instant,
+        shutdown: &ShutdownSignal,
+    ) -> Result<DaemonWake, String> {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as u32;
-        let mut fds = [PollFd::new(self.inotify.as_fd(), PollFlags::POLLIN)];
+        let mut fds = [
+            PollFd::new(self.inotify.as_fd(), PollFlags::POLLIN),
+            PollFd::new(shutdown.as_fd(), PollFlags::POLLIN),
+        ];
         match poll(
             &mut fds,
             PollTimeout::try_from(timeout_ms).unwrap_or(PollTimeout::MAX),
@@ -277,6 +283,26 @@ impl DaemonMonitor {
         }
 
         let mut wake = DaemonWake::default();
+        let inotify_events = fds[0].revents().unwrap_or(PollFlags::empty());
+        let shutdown_events = fds[1].revents().unwrap_or(PollFlags::empty());
+        let failure = PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL;
+        if inotify_events.intersects(failure) {
+            return Err("inotify poll failure".to_string());
+        }
+        if shutdown_events.intersects(failure) {
+            return Err("shutdown signalfd poll failure".to_string());
+        }
+        if shutdown_events.contains(PollFlags::POLLIN) {
+            shutdown
+                .consume()
+                .map_err(|e| format!("cannot read shutdown signal: {e}"))?;
+            wake.shutdown = true;
+            return Ok(wake);
+        }
+        if !inotify_events.contains(PollFlags::POLLIN) {
+            wake.profile_due = Instant::now() >= deadline;
+            return Ok(wake);
+        }
         let events = self
             .inotify
             .read_events()
@@ -321,14 +347,17 @@ impl DaemonMonitor {
 
 fn wait_for_daemon_activity(
     monitor: &mut DaemonMonitor,
+    shutdown: &ShutdownSignal,
     next_profile_scan: &mut Instant,
     config_changed: &mut bool,
     runtime_changed: &mut bool,
     profile_due: &mut bool,
+    shutdown_requested: &mut bool,
 ) -> Result<(), String> {
-    let wake = monitor.wait(*next_profile_scan)?;
+    let wake = monitor.wait(*next_profile_scan, shutdown)?;
     *config_changed |= wake.config_changed;
     *runtime_changed |= wake.runtime_changed;
+    *shutdown_requested |= wake.shutdown;
     if wake.profile_due {
         *profile_due = true;
         *next_profile_scan = Instant::now() + PROFILE_INTERVAL;
@@ -337,11 +366,13 @@ fn wait_for_daemon_activity(
 }
 
 fn send_notification(summary: &str, body: &str) {
-    let _ = std::process::Command::new("notify-send")
+    let mut command = std::process::Command::new("notify-send");
+    command
         .args(["-a", "edgemap", summary, body])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+        .stderr(std::process::Stdio::null());
+    unblock_shutdown_signals_in_child(&mut command);
+    let _ = command.spawn();
 }
 
 fn check_dseuhid_alive() -> bool {
@@ -857,12 +888,15 @@ fn cmd_daemon(args: &[String]) -> ! {
         }
     };
 
-    // signal handlers
+    let shutdown = ShutdownSignal::new().unwrap_or_else(|e| {
+        log::error!("cannot initialize signal handling: {e}");
+        std::process::exit(1);
+    });
+
+    // SIGPIPE keeps its existing default behavior; SIGINT/SIGTERM use signalfd.
     unsafe {
         let handler = libc::SIG_DFL;
         let _ = libc::signal(libc::SIGPIPE, handler);
-        libc::signal(libc::SIGINT, handle_daemon_signal as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, handle_daemon_signal as *const () as libc::sighandler_t);
     }
 
     log::info!("daemon started");
@@ -888,9 +922,10 @@ fn cmd_daemon(args: &[String]) -> ! {
     let mut config_changed = false;
     let mut runtime_changed = true;
     let mut profile_due = true;
+    let mut shutdown_requested = false;
     let mut next_profile_scan = Instant::now() + PROFILE_INTERVAL;
 
-    while DAEMON_RUNNING.load(Ordering::SeqCst) {
+    while !shutdown_requested {
         if config_changed {
             config_changed = false;
             match load_edgemap_config(&config_path) {
@@ -949,10 +984,12 @@ fn cmd_daemon(args: &[String]) -> ! {
         if !daemon_alive || last_uhid_state.as_deref() != Some(STATE_CONNECTED) {
             if let Err(e) = wait_for_daemon_activity(
                 &mut monitor,
+                &shutdown,
                 &mut next_profile_scan,
                 &mut config_changed,
                 &mut runtime_changed,
                 &mut profile_due,
+                &mut shutdown_requested,
             ) {
                 log::error!("{e}");
                 break;
@@ -963,10 +1000,12 @@ fn cmd_daemon(args: &[String]) -> ! {
         if !profile_due {
             if let Err(e) = wait_for_daemon_activity(
                 &mut monitor,
+                &shutdown,
                 &mut next_profile_scan,
                 &mut config_changed,
                 &mut runtime_changed,
                 &mut profile_due,
+                &mut shutdown_requested,
             ) {
                 log::error!("{e}");
                 break;
@@ -991,10 +1030,12 @@ fn cmd_daemon(args: &[String]) -> ! {
                     log::error!("cannot resolve profile config: {e}");
                     if let Err(wait_error) = wait_for_daemon_activity(
                         &mut monitor,
+                        &shutdown,
                         &mut next_profile_scan,
                         &mut config_changed,
                         &mut runtime_changed,
                         &mut profile_due,
+                        &mut shutdown_requested,
                     ) {
                         log::error!("{wait_error}");
                         break;
@@ -1033,10 +1074,12 @@ fn cmd_daemon(args: &[String]) -> ! {
                         log::warn!("default config also invalid, keeping previous");
                         if let Err(wait_error) = wait_for_daemon_activity(
                             &mut monitor,
+                            &shutdown,
                             &mut next_profile_scan,
                             &mut config_changed,
                             &mut runtime_changed,
                             &mut profile_due,
+                            &mut shutdown_requested,
                         ) {
                             log::error!("{wait_error}");
                             break;
@@ -1048,10 +1091,12 @@ fn cmd_daemon(args: &[String]) -> ! {
                     log::warn!("default config invalid, keeping previous");
                     if let Err(wait_error) = wait_for_daemon_activity(
                         &mut monitor,
+                        &shutdown,
                         &mut next_profile_scan,
                         &mut config_changed,
                         &mut runtime_changed,
                         &mut profile_due,
+                        &mut shutdown_requested,
                     ) {
                         log::error!("{wait_error}");
                         break;
@@ -1076,10 +1121,12 @@ fn cmd_daemon(args: &[String]) -> ! {
         }
         if let Err(e) = wait_for_daemon_activity(
             &mut monitor,
+            &shutdown,
             &mut next_profile_scan,
             &mut config_changed,
             &mut runtime_changed,
             &mut profile_due,
+            &mut shutdown_requested,
         ) {
             log::error!("{e}");
             break;
@@ -1236,12 +1283,22 @@ mod path_tests {
         let config_path = dir.join("edgemap.toml");
         std::fs::write(&config_path, "config = \"default.toml\"\n").unwrap();
 
+        let shutdown = ShutdownSignal::new().unwrap();
         let mut monitor = DaemonMonitor::new(&config_path).unwrap();
         assert_ne!(monitor.run_watch.is_some(), monitor.runtime_watch.is_some());
         std::fs::write(&config_path, "config = \"changed.toml\"\n").unwrap();
-        let wake = monitor.wait(Instant::now() + Duration::from_secs(1)).unwrap();
+        let wake = monitor
+            .wait(Instant::now() + Duration::from_secs(1), &shutdown)
+            .unwrap();
 
         assert!(wake.config_changed);
+
+        let result = unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGTERM) };
+        assert_eq!(result, 0);
+        let wake = monitor
+            .wait(Instant::now() + Duration::from_secs(1), &shutdown)
+            .unwrap();
+        assert!(wake.shutdown);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -6,7 +6,7 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 201 tests total (116 dseuhid + 85 edgemap)
+cargo test                # 202 tests total (116 dseuhid + 86 edgemap)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
@@ -41,8 +41,8 @@ makepkg -si              # build + install via PKGBUILD
 | `src/uhid.rs` | Raw UHID wrapper (create2, input2, get/set report reply), complete-write checks, UHID event size validation |
 | `src/keyboard.rs` | uinput keyboard device: `KeyboardDevice` (open/create, press/release, flush_held, Drop destroy), 107 keycode constants, `resolve_keycode()` name→code mapping |
 | `src/descriptor.rs` | Built-in target HID descriptors: `DS_USB_DESCRIPTOR`, `DS_EDGE_USB_DESCRIPTOR` (BT Edge auto target identity), and `DS4_USB_DESCRIPTOR` (used when `output_device = "dualshock4"`) |
-| `src/shutdown.rs` | signalfd-based SIGINT/SIGTERM handling shared by dseuhid wait paths; poll/epoll integration, interruptible retry delays, and child-process signal-mask reset |
-| `src/bin/edgemap.rs` | User-side CLI (`validate`, `create-config`, `reload`, `switch-config`), no root. Daemon mode (`d`/`daemon`): auto-create configs under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`), profile auto-switch by 3-second process snapshots, inotify-based config/runtime-state monitoring, `notify-send` desktop notifications. Communicates via FIFO. |
+| `src/shutdown.rs` | signalfd-based SIGINT/SIGTERM handling shared by both daemons; poll/epoll integration, interruptible retry delays, and child-process signal-mask reset |
+| `src/bin/edgemap.rs` | User-side CLI (`validate`, `create-config`, `reload`, `switch-config`), no root. Daemon mode (`d`/`daemon`): auto-create configs under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`), profile auto-switch by 3-second process snapshots, inotify/signalfd-based config/runtime/shutdown monitoring, `notify-send` desktop notifications. Communicates via FIFO. |
 | `edgemap-gui-v6.py` | PyQt6 config editor: two-column layout, button remap, turbo, combo/macro popup editors, macro manager, profile quick-switch, toolbar with KDE-native icons. |
 
 ## Three-layer pipeline (L1 → L2 → L3)

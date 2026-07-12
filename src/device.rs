@@ -1,13 +1,16 @@
 use std::fs;
 use std::io;
 use std::io::Write;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use log::{debug, info, warn};
+use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
+
+use crate::shutdown::{unblock_shutdown_signals_in_child, ShutdownSignal};
 
 const HIDRAW_DEV_DIR: &str = "/dev";
 const HIDRAW_PREFIX: &str = "hidraw";
@@ -21,9 +24,14 @@ pub struct HidrawMonitor {
     watch: WatchDescriptor,
 }
 
+pub enum HidrawWait {
+    Devices(Vec<PathBuf>),
+    Shutdown,
+}
+
 impl HidrawMonitor {
     pub fn new() -> io::Result<Self> {
-        let inotify = Inotify::init(InitFlags::IN_CLOEXEC)?;
+        let inotify = Inotify::init(InitFlags::IN_CLOEXEC | InitFlags::IN_NONBLOCK)?;
         let watch = inotify
             .add_watch(
                 HIDRAW_DEV_DIR,
@@ -32,7 +40,37 @@ impl HidrawMonitor {
         Ok(Self { inotify, watch })
     }
 
-    pub fn wait(&self) -> io::Result<Vec<PathBuf>> {
+    pub fn wait(&self, shutdown: &ShutdownSignal) -> io::Result<HidrawWait> {
+        loop {
+            let mut fds = [
+                PollFd::new(self.inotify.as_fd(), PollFlags::POLLIN),
+                PollFd::new(shutdown.as_fd(), PollFlags::POLLIN),
+            ];
+            match poll(&mut fds, PollTimeout::NONE) {
+                Ok(_) => {}
+                Err(nix::errno::Errno::EINTR) => continue,
+                Err(error) => return Err(error.into()),
+            }
+            let inotify_events = fds[0].revents().unwrap_or(PollFlags::empty());
+            let shutdown_events = fds[1].revents().unwrap_or(PollFlags::empty());
+            let failure = PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL;
+            if inotify_events.intersects(failure) {
+                return Err(io::Error::other("hidraw inotify poll failure"));
+            }
+            if shutdown_events.intersects(failure) {
+                return Err(io::Error::other("shutdown signalfd poll failure"));
+            }
+            if shutdown_events.contains(PollFlags::POLLIN) {
+                shutdown.consume()?;
+                return Ok(HidrawWait::Shutdown);
+            }
+            if inotify_events.contains(PollFlags::POLLIN) {
+                return self.read_paths().map(HidrawWait::Devices);
+            }
+        }
+    }
+
+    fn read_paths(&self) -> io::Result<Vec<PathBuf>> {
         let events = self.inotify.read_events()?;
         let mut paths = Vec::new();
         for event in events {
@@ -319,9 +357,10 @@ impl HidrawDevice {
     }
 
     fn read_acl(path: &Path) -> io::Result<String> {
-        let output = std::process::Command::new("getfacl")
-            .args(["--absolute-names", &path.to_string_lossy()])
-            .output()?;
+        let mut command = std::process::Command::new("getfacl");
+        command.args(["--absolute-names", &path.to_string_lossy()]);
+        unblock_shutdown_signals_in_child(&mut command);
+        let output = command.output()?;
         if !output.status.success() {
             return Err(io::Error::other(format!(
                 "getfacl failed with {}",
@@ -332,10 +371,10 @@ impl HidrawDevice {
     }
 
     fn clear_acl(path: &Path) {
-        match std::process::Command::new("setfacl")
-            .args(["-b", &path.to_string_lossy()])
-            .output()
-        {
+        let mut command = std::process::Command::new("setfacl");
+        command.args(["-b", &path.to_string_lossy()]);
+        unblock_shutdown_signals_in_child(&mut command);
+        match command.output() {
             Ok(output) if output.status.success() => {}
             Ok(output) => warn!("Failed to clear ACL on {:?}: {}", path, output.status),
             Err(e) => warn!("Failed to clear ACL on {:?}: {e}", path),
@@ -485,10 +524,13 @@ impl HidrawDevice {
         }
 
         if !acl_batch.is_empty() {
-            let child = std::process::Command::new("setfacl")
+            let mut command = std::process::Command::new("setfacl");
+            command
+                .arg("-P")
                 .arg("--restore=-")
-                .stdin(std::process::Stdio::piped())
-                .spawn();
+                .stdin(std::process::Stdio::piped());
+            unblock_shutdown_signals_in_child(&mut command);
+            let child = command.spawn();
             match child {
                 Ok(mut child) => {
                     if let Some(mut stdin) = child.stdin.take() {
@@ -496,7 +538,11 @@ impl HidrawDevice {
                             log::warn!("Failed to write ACL data to setfacl: {e}");
                         }
                     }
-                    let _ = child.wait();
+                    match child.wait() {
+                        Ok(status) if status.success() => {}
+                        Ok(status) => log::warn!("setfacl restore failed with {status}"),
+                        Err(e) => log::warn!("Failed to wait for setfacl restore: {e}"),
+                    }
                 }
                 Err(e) => log::warn!("Failed to spawn setfacl: {e}"),
             }

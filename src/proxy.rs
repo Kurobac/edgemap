@@ -6,13 +6,13 @@ use std::sync::{Arc, RwLock};
 
 use log::{debug, error, info, trace, warn};
 use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
-use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::os::fd::BorrowedFd;
 
 use crate::codec::{CodecError, CodecPipeline, PhysicalCodec, PhysicalOutputState, SourceCodec, TargetCodec};
 use crate::device::{HidrawDevice, SonyDeviceKind};
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::Button;
+use crate::shutdown::ShutdownSignal;
 use crate::uhid::UhidDevice;
 use std::time::{Duration, Instant};
 
@@ -388,29 +388,7 @@ pub enum ExitReason {
     ConfigChanged,
 }
 
-static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static DISCONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-pub fn is_running() -> bool {
-    RUNNING.load(std::sync::atomic::Ordering::SeqCst)
-}
-
-pub fn setup_signal_handler() {
-    unsafe {
-        let handler = SigHandler::SigAction(handle_signal);
-        let action = SigAction::new(handler, SaFlags::empty(), SigSet::empty());
-        let _ = sigaction(Signal::SIGINT, &action);
-        let _ = sigaction(Signal::SIGTERM, &action);
-    }
-}
-
-extern "C" fn handle_signal(
-    _sig: libc::c_int,
-    _info: *mut libc::siginfo_t,
-    _ctx: *mut libc::c_void,
-) {
-    RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
-}
 
 pub struct Proxy {
     hidraw: HidrawDevice,
@@ -577,7 +555,7 @@ impl Proxy {
         self.last_output = Some(output.clone());
     }
 
-    pub fn run(&mut self) -> ExitReason {
+    pub fn run(&mut self, shutdown: &ShutdownSignal) -> ExitReason {
         DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
 
         let ep_fd = match Epoll::new(EpollCreateFlags::empty()) {
@@ -622,13 +600,19 @@ impl Proxy {
             warn!("Failed to add FIFO to epoll: {e} (control pipe unavailable)");
         }
 
+        let shutdown_event = EpollEvent::new(EpollFlags::EPOLLIN, 4);
+        if let Err(e) = ep_fd.add(shutdown.as_fd(), shutdown_event) {
+            error!("Failed to add shutdown signal to epoll: {e}");
+            return ExitReason::UserShutdown;
+        }
+
         info!("Proxy running. Press Ctrl+C to stop.");
 
         let mut seq: u8 = 0;
         let mut events = [EpollEvent::empty(); 8];
+        let mut shutdown_requested = false;
 
-        'run: while RUNNING.load(std::sync::atomic::Ordering::SeqCst)
-            && !DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
+        'run: while !DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
             let timeout = self.repeat_input
                 .as_ref()
                 .map_or(16u16, RepeatInput::timeout_ms);
@@ -649,6 +633,12 @@ impl Proxy {
                             }
                         } else if fd_num == 3 {
                             self.handle_fifo_command();
+                        } else if fd_num == 4 {
+                            if let Err(e) = shutdown.consume() {
+                                error!("Failed to read shutdown signal: {e}");
+                            }
+                            shutdown_requested = true;
+                            break 'run;
                         }
                     }
                 }
@@ -671,7 +661,7 @@ impl Proxy {
 
         info!("Proxy stopped.");
 
-        if !RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+        if shutdown_requested {
             ExitReason::UserShutdown
         } else if self.recreate_uhid {
             ExitReason::ConfigChanged
@@ -971,8 +961,7 @@ impl Proxy {
                 }
                 Err(e) => {
                     error!("hidraw read error: {e}");
-                    RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
-                    break;
+                    return Err(e);
                 }
             }
         }

@@ -6,6 +6,7 @@ mod keyboard;
 mod mapping;
 mod proxy;
 mod report;
+mod shutdown;
 mod uhid;
 
 use log::{debug, error, info, warn};
@@ -119,6 +120,16 @@ fn dup_fifo_fd(fifo_fd: &std::fs::File) -> std::fs::File {
     unsafe { std::fs::File::from_raw_fd(fd) }
 }
 
+fn shutdown_during_retry_delay(shutdown: &ShutdownSignal) -> bool {
+    match shutdown.wait_timeout(Duration::from_secs(2)) {
+        Ok(requested) => requested,
+        Err(e) => {
+            error!("Failed while waiting for retry delay: {e}");
+            true
+        }
+    }
+}
+
 fn parse_config_path() -> Option<String> {
     let args: Vec<String> = env::args().collect();
     let mut i = 1;
@@ -156,8 +167,9 @@ fn print_usage() {
     eprintln!("Without a command, starts the UHID proxy daemon (requires root).");
 }
 
-use device::{find_dualsense, probe_dualsense, HidrawMonitor};
+use device::{find_dualsense, probe_dualsense, HidrawMonitor, HidrawWait};
 use proxy::Proxy;
+use shutdown::ShutdownSignal;
 use uhid::UhidDevice;
 
 fn main() {
@@ -200,7 +212,10 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
     let mut config_path = parse_config_path();
 
     info!("DualSense UHID proxy starting");
-    proxy::setup_signal_handler();
+    let shutdown = ShutdownSignal::new().unwrap_or_else(|e| {
+        error!("Failed to initialize signal handling: {e}");
+        std::process::exit(1);
+    });
 
     // check for existing instance
     if let Ok(pid_str) = std::fs::read_to_string(PID_PATH) {
@@ -218,10 +233,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         let dev_info = {
             let mut hidraw_monitor: Option<HidrawMonitor> = None;
             'wait_for_device: loop {
-                if !proxy::is_running() {
-                    break 'outer;
-                }
-
                 if hidraw_monitor.is_none() {
                     if let Some(device) = find_dualsense() {
                         break device;
@@ -242,9 +253,9 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                     }
                 }
 
-                let paths = match hidraw_monitor.as_ref().unwrap().wait() {
-                    Ok(paths) => paths,
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                let paths = match hidraw_monitor.as_ref().unwrap().wait(&shutdown) {
+                    Ok(HidrawWait::Devices(paths)) => paths,
+                    Ok(HidrawWait::Shutdown) => break 'outer,
                     Err(e) => {
                         error!("Failed to wait for hidraw device events: {e}");
                         break 'outer;
@@ -289,7 +300,9 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             Ok(d) => d,
             Err(e) => {
                 error!("Failed to open hidraw device: {e}");
-                std::thread::sleep(Duration::from_secs(2));
+                if shutdown_during_retry_delay(&shutdown) {
+                    break 'outer;
+                }
                 continue;
             }
         };
@@ -299,7 +312,9 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             Err(e) => {
                 error!("Failed to open /dev/uhid: {e}");
                 error!("Make sure the uhid kernel module is loaded (modprobe uhid)");
-                std::thread::sleep(Duration::from_secs(2));
+                if shutdown_during_retry_delay(&shutdown) {
+                    break 'outer;
+                }
                 continue;
             }
         };
@@ -419,7 +434,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         };
 
         let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache.into_inner(), codec_pipeline, dev_info.kind, output_device, keyboard, dup_fifo_fd(&fifo_fd));
-        match proxy.run() {
+        match proxy.run(&shutdown) {
             proxy::ExitReason::ConfigChanged => {
                 config_path = Some(proxy.config_path().to_string());
                 info!("output_device changed in config, recreating virtual device...");
@@ -432,7 +447,9 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                     log::warn!("failed to write needs-config state: {e}");
                 }
                 info!("Device disconnected, waiting for reconnect...");
-                std::thread::sleep(Duration::from_secs(2));
+                if shutdown_during_retry_delay(&shutdown) {
+                    break 'outer;
+                }
             }
             proxy::ExitReason::UserShutdown => {
                 info!("Shutting down.");

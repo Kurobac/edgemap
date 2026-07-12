@@ -1,27 +1,27 @@
 use std::fs;
 use std::io;
 use std::io::Write;
-use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use log::{debug, info, warn};
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
+use udev::{Device as UdevDevice, Enumerator, EventType, MonitorBuilder, MonitorSocket};
 
 use crate::shutdown::{unblock_shutdown_signals_in_child, ShutdownSignal};
 
-const HIDRAW_DEV_DIR: &str = "/dev";
 const HIDRAW_PREFIX: &str = "hidraw";
 
-fn is_hidraw_name(name: &std::ffi::OsStr) -> bool {
-    name.to_str().is_some_and(|name| name.starts_with(HIDRAW_PREFIX))
+fn is_hidraw_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(HIDRAW_PREFIX))
 }
 
 pub struct HidrawMonitor {
-    inotify: Inotify,
-    watch: WatchDescriptor,
+    socket: MonitorSocket,
 }
 
 pub enum HidrawWait {
@@ -29,21 +29,58 @@ pub enum HidrawWait {
     Shutdown,
 }
 
+pub enum InputNodesWait {
+    Ready,
+    Removed,
+    Shutdown,
+}
+
+enum InputNodesState {
+    Ready,
+    Pending,
+    Removed,
+}
+
 impl HidrawMonitor {
     pub fn new() -> io::Result<Self> {
-        let inotify = Inotify::init(InitFlags::IN_CLOEXEC | InitFlags::IN_NONBLOCK)?;
-        let watch = inotify
-            .add_watch(
-                HIDRAW_DEV_DIR,
-                AddWatchFlags::IN_CREATE | AddWatchFlags::IN_MOVED_TO,
-            )?;
-        Ok(Self { inotify, watch })
+        let socket = MonitorBuilder::new()?
+            .match_subsystem("hidraw")?
+            .match_subsystem("input")?
+            .listen()?;
+        Ok(Self { socket })
     }
 
     pub fn wait(&self, shutdown: &ShutdownSignal) -> io::Result<HidrawWait> {
+        if !self.wait_for_event(shutdown)? {
+            return Ok(HidrawWait::Shutdown);
+        }
+        Ok(HidrawWait::Devices(self.read_paths()))
+    }
+
+    pub fn wait_for_input_nodes(
+        &self,
+        hidraw_path: &Path,
+        shutdown: &ShutdownSignal,
+    ) -> io::Result<InputNodesWait> {
         loop {
+            match input_nodes_state(hidraw_path)? {
+                InputNodesState::Ready => return Ok(InputNodesWait::Ready),
+                InputNodesState::Removed => return Ok(InputNodesWait::Removed),
+                InputNodesState::Pending => {}
+            }
+
+            if !self.wait_for_event(shutdown)? {
+                return Ok(InputNodesWait::Shutdown);
+            }
+            self.socket.iter().for_each(drop);
+        }
+    }
+
+    fn wait_for_event(&self, shutdown: &ShutdownSignal) -> io::Result<bool> {
+        loop {
+            let monitor_fd = unsafe { BorrowedFd::borrow_raw(self.socket.as_raw_fd()) };
             let mut fds = [
-                PollFd::new(self.inotify.as_fd(), PollFlags::POLLIN),
+                PollFd::new(monitor_fd, PollFlags::POLLIN),
                 PollFd::new(shutdown.as_fd(), PollFlags::POLLIN),
             ];
             match poll(&mut fds, PollTimeout::NONE) {
@@ -51,40 +88,36 @@ impl HidrawMonitor {
                 Err(nix::errno::Errno::EINTR) => continue,
                 Err(error) => return Err(error.into()),
             }
-            let inotify_events = fds[0].revents().unwrap_or(PollFlags::empty());
+            let monitor_events = fds[0].revents().unwrap_or(PollFlags::empty());
             let shutdown_events = fds[1].revents().unwrap_or(PollFlags::empty());
             let failure = PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL;
-            if inotify_events.intersects(failure) {
-                return Err(io::Error::other("hidraw inotify poll failure"));
+            if monitor_events.intersects(failure) {
+                return Err(io::Error::other("udev device monitor poll failure"));
             }
             if shutdown_events.intersects(failure) {
                 return Err(io::Error::other("shutdown signalfd poll failure"));
             }
             if shutdown_events.contains(PollFlags::POLLIN) {
                 shutdown.consume()?;
-                return Ok(HidrawWait::Shutdown);
+                return Ok(false);
             }
-            if inotify_events.contains(PollFlags::POLLIN) {
-                return self.read_paths().map(HidrawWait::Devices);
+            if monitor_events.contains(PollFlags::POLLIN) {
+                return Ok(true);
             }
         }
     }
 
-    fn read_paths(&self) -> io::Result<Vec<PathBuf>> {
-        let events = self.inotify.read_events()?;
+    fn read_paths(&self) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        for event in events {
-            if event.mask.contains(AddWatchFlags::IN_Q_OVERFLOW) {
-                return Err(io::Error::other("hidraw inotify event queue overflowed"));
-            }
-            if event.wd != self.watch {
+        for event in self.socket.iter() {
+            if event.event_type() != EventType::Add || !event.is_initialized() {
                 continue;
             }
-            if let Some(name) = event.name.filter(|name| is_hidraw_name(name)) {
-                paths.push(Path::new(HIDRAW_DEV_DIR).join(name));
+            if let Some(path) = event.devnode().filter(|path| is_hidraw_path(path)) {
+                paths.push(path.to_path_buf());
             }
         }
-        Ok(paths)
+        paths
     }
 }
 
@@ -403,40 +436,11 @@ impl HidrawDevice {
         let mut hidden: Vec<String> = Vec::new();
 
         if let Some(ref sysfs) = self.sysfs_path {
-            let input_dir = sysfs.join("device/input");
-            if !input_dir.exists() {
-                debug!("No input directory at {:?}", input_dir);
-                return Ok(());
-            }
-
-            match fs::read_dir(&input_dir) {
-                Ok(entries) => for input_entry in entries.flatten() {
-                    let input_path = input_entry.path();
-                    if !input_path.is_dir()
-                        || !input_path
-                            .file_name()
-                            .is_some_and(|n| n.to_string_lossy().starts_with("input"))
-                    {
-                        continue;
-                    }
-
-                    match fs::read_dir(&input_path) {
-                        Ok(ev_entries) => for ev_entry in ev_entries.flatten() {
-                            let ev_path = ev_entry.path();
-                            let ev_name =
-                                ev_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            if ev_name.starts_with("event") || ev_name.starts_with("js") {
-                                let dev_path = PathBuf::from("/dev/input").join(ev_name);
-                                if dev_path.exists() {
-                                    Self::restrict_node(&dev_path, &mut self.restored_nodes)?;
-                                    hidden.push(ev_name.to_string());
-                                }
-                            }
-                        },
-                        Err(e) => warn!("Failed to read input child directory {:?}: {e}", input_path),
-                    }
-                },
-                Err(e) => warn!("Failed to read input directory {:?}: {e}", input_dir),
+            for node in associated_input_nodes(sysfs)? {
+                if let Some(dev_path) = node.dev_path.filter(|path| path.exists()) {
+                    Self::restrict_node(&dev_path, &mut self.restored_nodes)?;
+                    hidden.push(node.name);
+                }
             }
         }
 
@@ -462,7 +466,7 @@ impl HidrawDevice {
     }
 
     pub fn re_restrict_self(&mut self) {
-        let mut restricted = 0;
+        let mut restricted = Vec::new();
         for node in &mut self.restored_nodes {
             let mode = match fs::metadata(&node.path) {
                 Ok(metadata) => metadata.permissions().mode(),
@@ -490,13 +494,19 @@ impl HidrawDevice {
 
             Self::clear_acl(&node.path);
             match fs::set_permissions(&node.path, fs::Permissions::from_mode(0o000)) {
-                Ok(()) => restricted += 1,
+                Ok(()) => restricted.push(node.path.clone()),
                 Err(e) => warn!("Failed to re-restrict {:?}: {e}", node.path),
             }
         }
 
-        if restricted > 0 {
-            info!("re-restricted {restricted} device nodes after external permission reset");
+        if !restricted.is_empty() {
+            info!(
+                "re-restricted {} device nodes after external permission reset",
+                restricted.len()
+            );
+            for path in restricted {
+                debug!("  re-restricted {}", path.display());
+            }
         }
     }
 
@@ -566,17 +576,18 @@ fn is_physical_device(hidraw_name: &str) -> bool {
     true
 }
 
-pub fn find_dualsense() -> Option<DeviceInfo> {
-    let dir = match fs::read_dir(HIDRAW_DEV_DIR) {
-        Ok(d) => d,
-        Err(_) => return None,
-    };
+pub fn find_dualsense() -> io::Result<Option<DeviceInfo>> {
+    let mut enumerator = Enumerator::new()?;
+    enumerator.match_subsystem("hidraw")?;
+    enumerator.match_is_initialized()?;
 
     let mut found: Option<DeviceInfo> = None;
 
-    for entry in dir.flatten() {
-        let raw_path = entry.path();
-        let info = match probe_dualsense(&raw_path) {
+    for device in enumerator.scan_devices()? {
+        let Some(raw_path) = device.devnode() else {
+            continue;
+        };
+        let info = match probe_dualsense(raw_path) {
             Ok(Some(info)) => info,
             Ok(None) | Err(_) => continue,
         };
@@ -593,14 +604,14 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
         found = Some(info);
     }
 
-    found
+    Ok(found)
 }
 
 pub fn probe_dualsense(path: &Path) -> io::Result<Option<DeviceInfo>> {
-    let name = match path.file_name().and_then(|name| name.to_str()) {
-        Some(name) if name.starts_with(HIDRAW_PREFIX) => name,
-        _ => return Ok(None),
-    };
+    if !is_hidraw_path(path) {
+        return Ok(None);
+    }
+    let name = path.file_name().unwrap().to_str().unwrap();
 
     let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
     let mut devinfo = HidrawDevinfo::default();
@@ -647,6 +658,67 @@ fn find_sysfs_hidraw(hidraw_path: &Path) -> Option<PathBuf> {
     }
 }
 
+struct AssociatedInputNode {
+    name: String,
+    dev_path: Option<PathBuf>,
+    initialized: bool,
+}
+
+fn associated_input_nodes(hidraw_sysfs: &Path) -> io::Result<Vec<AssociatedInputNode>> {
+    let hid_parent = fs::canonicalize(hidraw_sysfs.join("device"))?;
+    let parent = UdevDevice::from_syspath(&hid_parent)?;
+    let mut enumerator = Enumerator::new()?;
+    enumerator.match_parent(&parent)?;
+    enumerator.match_subsystem("input")?;
+
+    let mut nodes = Vec::new();
+    for device in enumerator.scan_devices()? {
+        let Some(name) = device.sysname().to_str() else {
+            continue;
+        };
+        if !name.starts_with("event") && !name.starts_with("js") {
+            continue;
+        }
+        nodes.push(AssociatedInputNode {
+            name: name.to_string(),
+            dev_path: device.devnode().map(Path::to_path_buf),
+            initialized: device.is_initialized(),
+        });
+    }
+    Ok(nodes)
+}
+
+fn input_nodes_state(hidraw_path: &Path) -> io::Result<InputNodesState> {
+    if !hidraw_path.exists() {
+        return Ok(InputNodesState::Removed);
+    }
+    let Some(sysfs) = find_sysfs_hidraw(hidraw_path) else {
+        return Ok(InputNodesState::Removed);
+    };
+    let nodes = match associated_input_nodes(&sysfs) {
+        Ok(nodes) => nodes,
+        Err(_) if !hidraw_path.exists() => return Ok(InputNodesState::Removed),
+        Err(error) => return Err(error),
+    };
+    if nodes.is_empty() {
+        debug!(
+            "waiting for associated input nodes to appear for {}",
+            hidraw_path.display()
+        );
+        return Ok(InputNodesState::Pending);
+    }
+    let pending: Vec<_> = nodes
+        .iter()
+        .filter(|node| !node.initialized)
+        .map(|node| node.name.as_str())
+        .collect();
+    if !pending.is_empty() {
+        debug!("waiting for udev to initialize input nodes: {}", pending.join(", "));
+        return Ok(InputNodesState::Pending);
+    }
+    Ok(InputNodesState::Ready)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,8 +727,8 @@ mod tests {
     fn test_find_sysfs_hidraw() {
         let path = Path::new("/dev/hidraw0");
         let _sysfs = find_sysfs_hidraw(path);
-        assert!(is_hidraw_name(std::ffi::OsStr::new("hidraw12")));
-        assert!(!is_hidraw_name(std::ffi::OsStr::new("uhid")));
+        assert!(is_hidraw_path(Path::new("/dev/hidraw12")));
+        assert!(!is_hidraw_path(Path::new("/dev/uhid")));
     }
 
     #[test]

@@ -5,6 +5,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@main
+      - run: sudo apt-get update && sudo apt-get install -y libudev-dev
       - run: cargo build
       - run: cargo test
 
@@ -14,7 +15,7 @@ jobs:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@main
-      - run: sudo apt-get update && sudo apt-get install -y libegl1
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libudev-dev
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

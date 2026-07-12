@@ -162,6 +162,7 @@ target repeat is disabled by default and can be enabled with
 ## Requirements
 
 - Linux with `uhid` kernel module
+- `libudev` for initialized hidraw device discovery and hotplug monitoring
 - `acl` utilities (`getfacl` and `setfacl`) for hiding/restoring physical device nodes
 - Kernel: tested 7.0, should work 6.7+, may work 5.12+
 - DualSense (0x0CE6) or DualSense Edge (0x0DF2) controller over USB or Bluetooth source hidraw

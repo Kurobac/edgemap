@@ -167,7 +167,9 @@ fn print_usage() {
     eprintln!("Without a command, starts the UHID proxy daemon (requires root).");
 }
 
-use device::{find_dualsense, probe_dualsense, HidrawMonitor, HidrawWait};
+use device::{
+    find_dualsense, probe_dualsense, HidrawMonitor, HidrawWait, InputNodesWait,
+};
 use proxy::Proxy;
 use shutdown::ShutdownSignal;
 use uhid::UhidDevice;
@@ -231,29 +233,50 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
     'outer: loop {
         let dev_info = {
-            let mut hidraw_monitor: Option<HidrawMonitor> = None;
+            let hidraw_monitor = match HidrawMonitor::new() {
+                Ok(monitor) => monitor,
+                Err(e) => {
+                    error!("Failed to monitor hidraw/input devices through udev: {e}");
+                    break 'outer;
+                }
+            };
+            let mut found = match find_dualsense() {
+                Ok(device) => device,
+                Err(e) => {
+                    error!("Failed to enumerate hidraw devices through udev: {e}");
+                    break 'outer;
+                }
+            };
+            if found.is_none() {
+                info!("Waiting for DualSense device...");
+            }
+
             'wait_for_device: loop {
-                if hidraw_monitor.is_none() {
-                    if let Some(device) = find_dualsense() {
-                        break device;
-                    }
-                    info!("Waiting for DualSense device...");
-                    let monitor = match HidrawMonitor::new() {
-                        Ok(monitor) => monitor,
+                if let Some(device) = found.take() {
+                    match hidraw_monitor.wait_for_input_nodes(&device.path, &shutdown) {
+                        Ok(InputNodesWait::Ready) => break 'wait_for_device device,
+                        Ok(InputNodesWait::Removed) => {
+                            found = match find_dualsense() {
+                                Ok(device) => device,
+                                Err(e) => {
+                                    error!("Failed to enumerate hidraw devices through udev: {e}");
+                                    break 'outer;
+                                }
+                            };
+                            if found.is_some() {
+                                continue;
+                            }
+                            info!("Waiting for DualSense device...");
+                        }
+                        Ok(InputNodesWait::Shutdown) => break 'outer,
                         Err(e) => {
-                            error!("Failed to monitor /dev for hidraw devices: {e}");
+                            error!("Failed while waiting for input nodes to initialize: {e}");
                             break 'outer;
                         }
-                    };
-                    hidraw_monitor = Some(monitor);
-
-                    // Close the race between the initial scan and installing the watch.
-                    if let Some(device) = find_dualsense() {
-                        break device;
                     }
                 }
 
-                let paths = match hidraw_monitor.as_ref().unwrap().wait(&shutdown) {
+                let paths = match hidraw_monitor.wait(&shutdown) {
                     Ok(HidrawWait::Devices(paths)) => paths,
                     Ok(HidrawWait::Shutdown) => break 'outer,
                     Err(e) => {
@@ -261,7 +284,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                         break 'outer;
                     }
                 };
-                let mut found = None;
                 for path in paths {
                     match probe_dualsense(&path) {
                         Ok(Some(device)) if found.is_none() => found = Some(device),
@@ -280,9 +302,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                             warn!("Failed to probe new hidraw device {}: {e}", path.display())
                         }
                     }
-                }
-                if let Some(device) = found {
-                    break 'wait_for_device device;
                 }
             }
         };

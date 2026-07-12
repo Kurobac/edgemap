@@ -7,9 +7,48 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use log::{debug, info, warn};
+use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
 
 const HIDRAW_DEV_DIR: &str = "/dev";
 const HIDRAW_PREFIX: &str = "hidraw";
+
+fn is_hidraw_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| name.starts_with(HIDRAW_PREFIX))
+}
+
+pub struct HidrawMonitor {
+    inotify: Inotify,
+    watch: WatchDescriptor,
+}
+
+impl HidrawMonitor {
+    pub fn new() -> io::Result<Self> {
+        let inotify = Inotify::init(InitFlags::IN_CLOEXEC)?;
+        let watch = inotify
+            .add_watch(
+                HIDRAW_DEV_DIR,
+                AddWatchFlags::IN_CREATE | AddWatchFlags::IN_MOVED_TO,
+            )?;
+        Ok(Self { inotify, watch })
+    }
+
+    pub fn wait(&self) -> io::Result<Vec<PathBuf>> {
+        let events = self.inotify.read_events()?;
+        let mut paths = Vec::new();
+        for event in events {
+            if event.mask.contains(AddWatchFlags::IN_Q_OVERFLOW) {
+                return Err(io::Error::other("hidraw inotify event queue overflowed"));
+            }
+            if event.wd != self.watch {
+                continue;
+            }
+            if let Some(name) = event.name.filter(|name| is_hidraw_name(name)) {
+                paths.push(Path::new(HIDRAW_DEV_DIR).join(name));
+            }
+        }
+        Ok(paths)
+    }
+}
 
 pub const SONY_VID: u16 = 0x054C;
 pub const DS5_PID: u16 = 0x0CE6;
@@ -490,64 +529,65 @@ pub fn find_dualsense() -> Option<DeviceInfo> {
     let mut found: Option<DeviceInfo> = None;
 
     for entry in dir.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if !name_str.starts_with(HIDRAW_PREFIX) {
-            continue;
-        }
-
         let raw_path = entry.path();
-
-        let file = match fs::OpenOptions::new().read(true).write(true).open(&raw_path) {
-            Ok(f) => f,
-            Err(_) => continue,
+        let info = match probe_dualsense(&raw_path) {
+            Ok(Some(info)) => info,
+            Ok(None) | Err(_) => continue,
         };
-
-        let fd = file.as_raw_fd();
-        let mut devinfo = HidrawDevinfo::default();
-        if hidraw_get_raw_info(fd, &mut devinfo).is_err() {
-            continue;
-        }
-
-        if devinfo.vendor != SONY_VID {
-            continue;
-        }
-        let kind = match SonyDeviceKind::from_pid(devinfo.product) {
-            Some(k) => k,
-            None => continue,
-        };
-
-        let transport = match SourceTransport::from_bustype(devinfo.bustype) {
-            Some(t) => t,
-            None => {
-                debug!("skipping unsupported DualSense {} (bustype={})", name_str, devinfo.bustype);
-                continue;
-            }
-        };
-
-        if !is_physical_device(&name_str) {
-            continue;
-        }
 
         if let Some(ref existing) = found {
             warn!(
                 "multiple DualSense devices found (at {} and {}); using the first, additional devices are not supported",
                 existing.path.display(),
-                raw_path.display()
+                info.path.display()
             );
             continue;
         }
 
-        found = Some(DeviceInfo {
-            path: raw_path.clone(),
-            vid: devinfo.vendor,
-            pid: devinfo.product,
-            kind,
-            transport,
-        });
+        found = Some(info);
     }
 
     found
+}
+
+pub fn probe_dualsense(path: &Path) -> io::Result<Option<DeviceInfo>> {
+    let name = match path.file_name().and_then(|name| name.to_str()) {
+        Some(name) if name.starts_with(HIDRAW_PREFIX) => name,
+        _ => return Ok(None),
+    };
+
+    let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+    let mut devinfo = HidrawDevinfo::default();
+    hidraw_get_raw_info(file.as_raw_fd(), &mut devinfo)?;
+
+    if devinfo.vendor != SONY_VID {
+        return Ok(None);
+    }
+    let kind = match SonyDeviceKind::from_pid(devinfo.product) {
+        Some(kind) => kind,
+        None => return Ok(None),
+    };
+    let transport = match SourceTransport::from_bustype(devinfo.bustype) {
+        Some(transport) => transport,
+        None => {
+            debug!(
+                "skipping unsupported DualSense {name} (bustype={})",
+                devinfo.bustype
+            );
+            return Ok(None);
+        }
+    };
+    if !is_physical_device(name) {
+        return Ok(None);
+    }
+
+    Ok(Some(DeviceInfo {
+        path: path.to_path_buf(),
+        vid: devinfo.vendor,
+        pid: devinfo.product,
+        kind,
+        transport,
+    }))
 }
 
 fn find_sysfs_hidraw(hidraw_path: &Path) -> Option<PathBuf> {
@@ -569,5 +609,14 @@ mod tests {
     fn test_find_sysfs_hidraw() {
         let path = Path::new("/dev/hidraw0");
         let _sysfs = find_sysfs_hidraw(path);
+        assert!(is_hidraw_name(std::ffi::OsStr::new("hidraw12")));
+        assert!(!is_hidraw_name(std::ffi::OsStr::new("uhid")));
+    }
+
+    #[test]
+    fn probe_ignores_non_hidraw_paths_without_opening_them() {
+        assert!(probe_dualsense(Path::new("/dev/not-a-hidraw-node"))
+            .unwrap()
+            .is_none());
     }
 }

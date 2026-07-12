@@ -6,7 +6,7 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 199 tests total (114 dseuhid + 85 edgemap)
+cargo test                # 200 tests total (115 dseuhid + 85 edgemap)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
@@ -37,7 +37,7 @@ makepkg -si              # build + install via PKGBUILD
 | `src/mapping.rs` | `MappingConfig` (remap rules, blocked_buttons, combo/macro configs), `Target` enum, `apply()` two-phase remap with snapshot isolation |
 | `src/config.rs` | TOML parse → `validate()` (37 rules) → `to_mapping_config()`. Combo, macro, turbo, remap all fully wired. `default_content()` for auto-created config. |
 | `src/report.rs` | DS5/DS4 USB wire-format helpers, `GamepadState`, `Button` enum. Not a transport-neutral HID model. |
-| `src/device.rs` | `find_dualsense()` — DSE Edge (0DF2) and regular DS (0CE6), USB or Bluetooth source hidraw, skip UHID virtuals. Reads HID report descriptor from physical device via HIDIOCGRDESC; read failure aborts open. Node hiding via `chmod 000` + batch `setfacl --restore=-`. |
+| `src/device.rs` | Initial hidraw scan plus inotify-based `/dev` discovery for DSE Edge (0DF2) and regular DS (0CE6), USB or Bluetooth source, skipping UHID virtuals. Reads HID report descriptor from physical device via HIDIOCGRDESC; read failure aborts open. Node hiding via `chmod 000` + batch `setfacl --restore=-`. |
 | `src/uhid.rs` | Raw UHID wrapper (create2, input2, get/set report reply), complete-write checks, UHID event size validation |
 | `src/keyboard.rs` | uinput keyboard device: `KeyboardDevice` (open/create, press/release, flush_held, Drop destroy), 107 keycode constants, `resolve_keycode()` name→code mapping |
 | `src/descriptor.rs` | Built-in target HID descriptors: `DS_USB_DESCRIPTOR`, `DS_EDGE_USB_DESCRIPTOR` (BT Edge auto target identity), and `DS4_USB_DESCRIPTOR` (used when `output_device = "dualshock4"`) |

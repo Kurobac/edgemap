@@ -104,7 +104,7 @@ fn print_usage() {
     eprintln!("Without a command, starts the UHID proxy daemon (requires root).");
 }
 
-use device::find_dualsense;
+use device::{find_dualsense, probe_dualsense, HidrawMonitor};
 use proxy::Proxy;
 use uhid::UhidDevice;
 
@@ -167,33 +167,75 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
     }
 
     'outer: loop {
-        let mut logged_waiting = false;
-        let dev_info = loop {
-            if !proxy::is_running() {
-                break 'outer;
-            }
-            match find_dualsense() {
-                Some(d) => {
-                    let info_msg = format!(
-                        "found {} via {} ({:04x}:{:04x}) at {}",
-                        d.device_name(),
-                        d.transport.name(),
-                        d.vid,
-                        d.pid,
-                        d.path.display()
-                    );
-                    info!("{info_msg}");
-                    break d;
+        let dev_info = {
+            let mut hidraw_monitor: Option<HidrawMonitor> = None;
+            'wait_for_device: loop {
+                if !proxy::is_running() {
+                    break 'outer;
                 }
-                None => {
-                    if !logged_waiting {
-                        info!("Waiting for DualSense device...");
-                        logged_waiting = true;
+
+                if hidraw_monitor.is_none() {
+                    if let Some(device) = find_dualsense() {
+                        break device;
                     }
-                    std::thread::sleep(Duration::from_secs(1));
+                    info!("Waiting for DualSense device...");
+                    let monitor = match HidrawMonitor::new() {
+                        Ok(monitor) => monitor,
+                        Err(e) => {
+                            error!("Failed to monitor /dev for hidraw devices: {e}");
+                            break 'outer;
+                        }
+                    };
+                    hidraw_monitor = Some(monitor);
+
+                    // Close the race between the initial scan and installing the watch.
+                    if let Some(device) = find_dualsense() {
+                        break device;
+                    }
+                }
+
+                let paths = match hidraw_monitor.as_ref().unwrap().wait() {
+                    Ok(paths) => paths,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => {
+                        error!("Failed to wait for hidraw device events: {e}");
+                        break 'outer;
+                    }
+                };
+                let mut found = None;
+                for path in paths {
+                    match probe_dualsense(&path) {
+                        Ok(Some(device)) if found.is_none() => found = Some(device),
+                        Ok(Some(device)) => warn!(
+                            "multiple DualSense devices found (at {} and {}); using the first, additional devices are not supported",
+                            found.as_ref().unwrap().path.display(),
+                            device.path.display()
+                        ),
+                        Ok(None) => {}
+                        Err(e)
+                            if matches!(
+                                e.raw_os_error(),
+                                Some(libc::ENOENT | libc::ENODEV | libc::ENXIO)
+                            ) => {}
+                        Err(e) => {
+                            warn!("Failed to probe new hidraw device {}: {e}", path.display())
+                        }
+                    }
+                }
+                if let Some(device) = found {
+                    break 'wait_for_device device;
                 }
             }
         };
+
+        info!(
+            "found {} via {} ({:04x}:{:04x}) at {}",
+            dev_info.device_name(),
+            dev_info.transport.name(),
+            dev_info.vid,
+            dev_info.pid,
+            dev_info.path.display()
+        );
 
         let mut hidraw = match device::HidrawDevice::open(&dev_info.path) {
             Ok(d) => d,

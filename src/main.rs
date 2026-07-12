@@ -17,19 +17,57 @@ use std::time::Duration;
 
 static FIFO_DIR: &str = "/run/dseuhid";
 static FIFO_PATH: &str = "/run/dseuhid/control";
+static FIFO_TEMP_PATH: &str = "/run/dseuhid/.control.tmp";
 static PID_PATH: &str = "/run/dseuhid/pid";
+static CONNECTED_PATH: &str = "/run/dseuhid/connected";
+static NEEDS_CONFIG_PATH: &str = "/run/dseuhid/needs-config";
 
-fn setup_fifo() -> std::fs::File {
+fn write_runtime_state(path: &str, content: &[u8]) -> std::io::Result<()> {
+    let path = std::path::Path::new(path);
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other(format!("invalid runtime state path: {path:?}")))?;
+    let temp_path = path.with_file_name(format!(".{}.tmp", file_name.to_string_lossy()));
+
+    std::fs::write(&temp_path, content)?;
+    if let Err(error) = std::fs::rename(&temp_path, path) {
+        let _ = std::fs::remove_file(temp_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(crate) fn write_connected_state(connected: bool) -> std::io::Result<()> {
+    let content: &[u8] = if connected {
+        b"connected\n"
+    } else {
+        b"disconnected\n"
+    };
+    write_runtime_state(CONNECTED_PATH, content)
+}
+
+pub(crate) fn write_needs_config(needs_config: bool) -> std::io::Result<()> {
+    let content: &[u8] = if needs_config { b"true\n" } else { b"false\n" };
+    write_runtime_state(NEEDS_CONFIG_PATH, content)
+}
+
+fn setup_fifo(needs_config: bool) -> std::fs::File {
     std::fs::create_dir_all(FIFO_DIR).unwrap_or_else(|e| {
         eprintln!("error: cannot create {}: {e}", FIFO_DIR);
         std::process::exit(1);
     });
-    // Remove stale FIFO from previous unclean exit, then create
+    // Build the control endpoint under a hidden name. Publishing it last makes
+    // the visible FIFO a readiness marker for the complete runtime state.
     let _ = std::fs::remove_file(FIFO_PATH);
-    let c_path = std::ffi::CString::new(FIFO_PATH).expect("FIFO_PATH contains null byte");
+    let _ = std::fs::remove_file(FIFO_TEMP_PATH);
+    let c_path =
+        std::ffi::CString::new(FIFO_TEMP_PATH).expect("FIFO_TEMP_PATH contains null byte");
     let r = unsafe { libc::mkfifo(c_path.as_ptr(), 0o666) };
     if r != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
-        eprintln!("error: cannot create FIFO at {FIFO_PATH}: {}", std::io::Error::last_os_error());
+        eprintln!(
+            "error: cannot create FIFO at {FIFO_TEMP_PATH}: {}",
+            std::io::Error::last_os_error()
+        );
         std::process::exit(1);
     }
     if unsafe { libc::chmod(c_path.as_ptr(), 0o666) } != 0 {
@@ -39,21 +77,35 @@ fn setup_fifo() -> std::fs::File {
         .read(true)
         .write(true)
         .custom_flags(libc::O_NONBLOCK)
-        .open(FIFO_PATH)
+        .open(FIFO_TEMP_PATH)
         .unwrap_or_else(|e| {
             eprintln!("error: cannot open FIFO: {e}");
             std::process::exit(1);
         });
+    write_connected_state(false).unwrap_or_else(|e| {
+        eprintln!("error: cannot initialize connected state: {e}");
+        std::process::exit(1);
+    });
+    write_needs_config(needs_config).unwrap_or_else(|e| {
+        eprintln!("error: cannot initialize needs-config state: {e}");
+        std::process::exit(1);
+    });
     if let Err(e) = std::fs::write(PID_PATH, std::process::id().to_string()) {
         log::warn!("failed to write PID file: {e}");
     }
+    std::fs::rename(FIFO_TEMP_PATH, FIFO_PATH).unwrap_or_else(|e| {
+        eprintln!("error: cannot publish FIFO at {FIFO_PATH}: {e}");
+        std::process::exit(1);
+    });
     file
 }
 
 fn teardown_fifo() {
     let _ = std::fs::remove_file(FIFO_PATH);
+    let _ = std::fs::remove_file(FIFO_TEMP_PATH);
     let _ = std::fs::remove_file(PID_PATH);
-    let _ = std::fs::remove_file("/run/dseuhid/connected");
+    let _ = std::fs::remove_file(CONNECTED_PATH);
+    let _ = std::fs::remove_file(NEEDS_CONFIG_PATH);
 }
 
 fn dup_fifo_fd(fifo_fd: &std::fs::File) -> std::fs::File {
@@ -160,11 +212,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         }
     }
 
-    let fifo_fd = setup_fifo();
-
-    if let Err(e) = std::fs::write("/run/dseuhid/connected", b"disconnected") {
-        log::warn!("failed to write connected file: {e}");
-    }
+    let fifo_fd = setup_fifo(config_path.is_none());
 
     'outer: loop {
         let dev_info = {
@@ -309,7 +357,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
         info!("Created virtual HID device: {} (output: {})", target_identity.name, target_identity.label);
 
-        if let Err(e) = std::fs::write("/run/dseuhid/connected", b"connected") {
+        if let Err(e) = write_connected_state(true) {
             log::warn!("failed to write connected file: {e}");
         }
 
@@ -379,6 +427,10 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             proxy::ExitReason::DeviceGone => {
                 config_path = None;
                 proxy.forget_restore_on_physical_disconnect();
+                drop(proxy);
+                if let Err(e) = write_needs_config(true) {
+                    log::warn!("failed to write needs-config state: {e}");
+                }
                 info!("Device disconnected, waiting for reconnect...");
                 std::thread::sleep(Duration::from_secs(2));
             }

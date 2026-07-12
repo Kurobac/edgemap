@@ -25,12 +25,12 @@ use serde::Deserialize;
 
 const FIFO_PATH: &str = "/run/dseuhid/control";
 const DSEUHID_RUNTIME_DIR: &str = "/run/dseuhid";
-const PID_PATH: &str = "/run/dseuhid/pid";
 const CONNECTED_PATH: &str = "/run/dseuhid/connected";
+const NEEDS_CONFIG_PATH: &str = "/run/dseuhid/needs-config";
 const RUN_DIR: &str = "/run";
 const CONTROL_FILE_NAME: &str = "control";
-const PID_FILE_NAME: &str = "pid";
 const CONNECTED_FILE_NAME: &str = "connected";
+const NEEDS_CONFIG_FILE_NAME: &str = "needs-config";
 const STATE_CONNECTED: &str = "connected";
 const STATE_DISCONNECTED: &str = "disconnected";
 const EDGEMAP_CONFIG_FILE: &str = "edgemap.toml";
@@ -166,7 +166,27 @@ fn watch_parent(path: &Path) -> &Path {
 }
 
 fn is_runtime_file(name: &std::ffi::OsStr) -> bool {
-    name == CONTROL_FILE_NAME || name == PID_FILE_NAME || name == CONNECTED_FILE_NAME
+    name == CONTROL_FILE_NAME
+        || name == CONNECTED_FILE_NAME
+        || name == NEEDS_CONFIG_FILE_NAME
+}
+
+fn parse_needs_config(content: &str) -> Result<bool, String> {
+    match content.trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => Err(format!("invalid needs-config state: {value:?}")),
+    }
+}
+
+fn read_needs_config() -> Result<bool, String> {
+    let content = std::fs::read_to_string(NEEDS_CONFIG_PATH)
+        .map_err(|e| format!("cannot read {NEEDS_CONFIG_PATH}: {e}"))?;
+    parse_needs_config(&content)
+}
+
+fn needs_config_became_true(previous: Option<bool>, current: bool) -> bool {
+    current && previous != Some(true)
 }
 
 impl DaemonMonitor {
@@ -863,8 +883,8 @@ fn cmd_daemon(args: &[String]) -> ! {
     }
 
     let mut current_config = String::new();
-    let mut last_pid: Option<i32> = None;
     let mut last_uhid_state: Option<String> = None;
+    let mut last_needs_config: Option<bool> = None;
     let mut config_changed = false;
     let mut runtime_changed = true;
     let mut profile_due = true;
@@ -886,29 +906,27 @@ fn cmd_daemon(args: &[String]) -> ! {
 
         if runtime_changed {
             runtime_changed = false;
+            let was_daemon_alive = daemon_alive;
             daemon_alive = check_dseuhid_alive();
             if !daemon_alive {
                 if last_uhid_state.as_deref() == Some(STATE_CONNECTED) {
                     log::info!("UHID device stopped");
-                    send_notification("edgemap", "UHID device stopped");
                 }
-                if !current_config.is_empty() {
+                if was_daemon_alive && !current_config.is_empty() {
                     log::warn!("dseuhid disconnected");
                 }
-                current_config.clear();
-                last_pid = None;
+                last_needs_config = None;
                 last_uhid_state = Some(STATE_DISCONNECTED.to_string());
             } else {
-                // detect dseuhid restart via PID change (systemctl restart is <1s)
-                if let Ok(pid_str) = std::fs::read_to_string(PID_PATH) {
-                    if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                        if last_pid != Some(pid) {
+                match read_needs_config() {
+                    Ok(needs_config) => {
+                        if needs_config_became_true(last_needs_config, needs_config) {
                             current_config.clear();
                             profile_due = true;
-                            last_uhid_state = None;
-                            last_pid = Some(pid);
                         }
+                        last_needs_config = Some(needs_config);
                     }
+                    Err(e) => log::error!("{e}"),
                 }
 
                 // detect UHID virtual device state via /run/dseuhid/connected
@@ -919,13 +937,9 @@ fn cmd_daemon(args: &[String]) -> ! {
                 if uhid_state != STATE_CONNECTED {
                     if last_uhid_state.as_deref() == Some(STATE_CONNECTED) {
                         log::info!("UHID device stopped");
-                        send_notification("edgemap", "UHID device stopped");
                     }
                 } else if last_uhid_state.as_deref() != Some(STATE_CONNECTED) {
                     log::info!("UHID device ready");
-                    send_notification("edgemap", "UHID device ready");
-                    current_config.clear();
-                    profile_due = true;
                 }
                 last_uhid_state = Some(uhid_state);
             }
@@ -1200,10 +1214,18 @@ mod path_tests {
 
     #[test]
     fn daemon_monitor_detects_config_write() {
-        for name in ["control", "pid", "connected"] {
+        for name in ["control", "connected", "needs-config"] {
             assert!(is_runtime_file(std::ffi::OsStr::new(name)));
         }
         assert!(!is_runtime_file(std::ffi::OsStr::new("unrelated")));
+        assert_eq!(parse_needs_config("true\n"), Ok(true));
+        assert_eq!(parse_needs_config("false\n"), Ok(false));
+        assert!(parse_needs_config("").is_err());
+        assert!(parse_needs_config("yes").is_err());
+        assert!(needs_config_became_true(None, true));
+        assert!(needs_config_became_true(Some(false), true));
+        assert!(!needs_config_became_true(Some(true), true));
+        assert!(!needs_config_became_true(Some(true), false));
 
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

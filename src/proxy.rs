@@ -528,6 +528,9 @@ impl Proxy {
         self.config_path = path;
         self.last_snapshot = None;
         self.last_output = None;
+        if let Err(e) = crate::write_needs_config(false) {
+            warn!("failed to write needs-config state: {e}");
+        }
         info!("Config reloaded from {}", self.config_path);
         if new_output_device != self.output_device_config {
             info!("output_device changed ({} → {}), will recreate virtual device", self.output_device_config, new_output_device);

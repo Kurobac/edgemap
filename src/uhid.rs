@@ -356,7 +356,7 @@ impl UhidDevice {
 
 impl Drop for UhidDevice {
     fn drop(&mut self) {
-        if let Err(e) = std::fs::write("/run/dseuhid/connected", b"disconnected") {
+        if let Err(e) = crate::write_connected_state(false) {
             log::warn!("failed to write connected file: {e}");
         }
         let _ = self.destroy();

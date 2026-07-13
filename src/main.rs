@@ -462,6 +462,11 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 // hidraw + uhid auto-dropped — permissions restored, UHID destroyed
                 break 'outer;
             }
+            proxy::ExitReason::FatalError => {
+                error!("Fatal proxy error, shutting down.");
+                // Exit through normal scope cleanup so permissions and UHID are restored.
+                break 'outer;
+            }
         }
     }
 

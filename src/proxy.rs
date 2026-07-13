@@ -386,6 +386,7 @@ pub enum ExitReason {
     UserShutdown,
     DeviceGone,
     ConfigChanged,
+    FatalError,
 }
 
 static DISCONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -555,7 +556,7 @@ impl Proxy {
             Ok(fd) => fd,
             Err(e) => {
                 error!("Failed to create epoll: {e}");
-                return ExitReason::UserShutdown;
+                return ExitReason::FatalError;
             }
         };
 
@@ -572,7 +573,7 @@ impl Proxy {
         );
         if let Err(e) = ep_fd.add(hidraw_bfd, hidraw_event) {
             error!("Failed to add hidraw to epoll: {e}");
-            return ExitReason::UserShutdown;
+            return ExitReason::FatalError;
         }
 
         let uhid_event = EpollEvent::new(
@@ -581,19 +582,19 @@ impl Proxy {
         );
         if let Err(e) = ep_fd.add(uhid_bfd, uhid_event) {
             error!("Failed to add uhid to epoll: {e}");
-            return ExitReason::UserShutdown;
+            return ExitReason::FatalError;
         }
 
         let control_event = EpollEvent::new(EpollFlags::EPOLLIN, 3);
         if let Err(e) = ep_fd.add(control.as_fd(), control_event) {
             error!("Failed to add control socket to epoll: {e}");
-            return ExitReason::UserShutdown;
+            return ExitReason::FatalError;
         }
 
         let shutdown_event = EpollEvent::new(EpollFlags::EPOLLIN, 4);
         if let Err(e) = ep_fd.add(shutdown.as_fd(), shutdown_event) {
             error!("Failed to add shutdown signal to epoll: {e}");
-            return ExitReason::UserShutdown;
+            return ExitReason::FatalError;
         }
 
         let mut control_state = control.state();
@@ -630,10 +631,13 @@ impl Proxy {
                                 break 'run;
                             }
                         } else if fd_num == 4 {
-                            if let Err(e) = shutdown.consume() {
-                                error!("Failed to read shutdown signal: {e}");
+                            match shutdown.consume() {
+                                Ok(true) => shutdown_requested = true,
+                                Ok(false) => {
+                                    error!("shutdown signalfd was readable without a signal")
+                                }
+                                Err(e) => error!("Failed to read shutdown signal: {e}"),
                             }
-                            shutdown_requested = true;
                             break 'run;
                         }
                     }
@@ -664,7 +668,7 @@ impl Proxy {
         } else if DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
             ExitReason::DeviceGone
         } else {
-            ExitReason::UserShutdown
+            ExitReason::FatalError
         }
     }
 

@@ -20,7 +20,6 @@ mod control;
 use std::env;
 use std::io::{self, Write};
 use std::os::fd::AsFd;
-use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -136,9 +135,13 @@ struct DaemonWake {
 
 struct DaemonMonitor {
     inotify: Inotify,
-    config_watch: WatchDescriptor,
+    config_watch: Option<WatchDescriptor>,
+    config_parent_watch: Option<WatchDescriptor>,
     run_watch: Option<WatchDescriptor>,
     runtime_watch: Option<WatchDescriptor>,
+    config_dir: PathBuf,
+    config_parent_dir: PathBuf,
+    config_dir_name: std::ffi::OsString,
     config_name: std::ffi::OsString,
 }
 
@@ -154,6 +157,10 @@ fn daemon_watch_flags() -> AddWatchFlags {
 
 fn run_discovery_flags() -> AddWatchFlags {
     AddWatchFlags::IN_CREATE | AddWatchFlags::IN_MOVED_TO
+}
+
+fn config_discovery_flags() -> AddWatchFlags {
+    run_discovery_flags() | AddWatchFlags::IN_DELETE_SELF | AddWatchFlags::IN_MOVE_SELF
 }
 
 fn watch_parent(path: &Path) -> &Path {
@@ -175,9 +182,14 @@ impl DaemonMonitor {
         let inotify = Inotify::init(InitFlags::IN_CLOEXEC | InitFlags::IN_NONBLOCK)
             .map_err(|e| format!("cannot initialize inotify: {e}"))?;
         let watch_flags = daemon_watch_flags();
-        let config_dir = watch_parent(config_path);
+        let config_dir = watch_parent(config_path).to_path_buf();
+        let config_parent_dir = watch_parent(&config_dir).to_path_buf();
+        let config_dir_name = config_dir
+            .file_name()
+            .ok_or_else(|| format!("cannot rediscover config directory {}", config_dir.display()))?
+            .to_os_string();
         let config_watch = inotify
-            .add_watch(config_dir, watch_flags)
+            .add_watch(&config_dir, watch_flags)
             .map_err(|e| format!("cannot watch {}: {e}", config_dir.display()))?;
         let runtime_exists = Path::new(DSEUHID_RUNTIME_DIR).is_dir();
         let runtime_watch = if runtime_exists {
@@ -204,11 +216,58 @@ impl DaemonMonitor {
             .to_os_string();
         Ok(Self {
             inotify,
-            config_watch,
+            config_watch: Some(config_watch),
+            config_parent_watch: None,
             run_watch,
             runtime_watch,
+            config_dir,
+            config_parent_dir,
+            config_dir_name,
             config_name,
         })
+    }
+
+    fn ensure_config_watch(&mut self) -> Result<(), String> {
+        if self.config_watch.is_some() {
+            return Ok(());
+        }
+
+        if self.config_dir.is_dir() {
+            self.config_watch = Some(
+                self.inotify
+                    .add_watch(&self.config_dir, daemon_watch_flags())
+                    .map_err(|e| format!("cannot watch {}: {e}", self.config_dir.display()))?,
+            );
+            if let Some(parent_watch) = self.config_parent_watch.take() {
+                self.inotify.rm_watch(parent_watch).map_err(|e| {
+                    format!(
+                        "cannot stop watching {}: {e}",
+                        self.config_parent_dir.display()
+                    )
+                })?;
+            }
+            return Ok(());
+        }
+
+        if self.config_parent_watch.is_none() {
+            self.config_parent_watch = Some(
+                self.inotify
+                    .add_watch(&self.config_parent_dir, config_discovery_flags())
+                    .map_err(|e| {
+                        format!(
+                            "cannot watch {} for config directory recovery: {e}",
+                            self.config_parent_dir.display()
+                        )
+                    })?,
+            );
+
+            // Close the race between observing the missing directory and
+            // installing its temporary parent watch.
+            if self.config_dir.is_dir() {
+                return self.ensure_config_watch();
+            }
+        }
+        Ok(())
     }
 
     fn ensure_runtime_watch(&mut self) -> Result<(), String> {
@@ -310,10 +369,38 @@ impl DaemonMonitor {
                 wake.runtime_changed = true;
                 continue;
             }
-            if event.wd == self.config_watch
+            if self.config_watch == Some(event.wd)
                 && event.name.as_deref() == Some(self.config_name.as_os_str())
             {
                 wake.config_changed = true;
+            }
+            if self.config_watch == Some(event.wd)
+                && event.mask.intersects(
+                    AddWatchFlags::IN_DELETE_SELF
+                        | AddWatchFlags::IN_MOVE_SELF
+                        | AddWatchFlags::IN_IGNORED,
+                )
+            {
+                wake.config_changed = true;
+                self.config_watch = None;
+            }
+            if self.config_parent_watch == Some(event.wd)
+                && event.name.as_deref() == Some(self.config_dir_name.as_os_str())
+            {
+                wake.config_changed = true;
+                self.ensure_config_watch()?;
+            }
+            if self.config_parent_watch == Some(event.wd)
+                && event.mask.intersects(
+                    AddWatchFlags::IN_DELETE_SELF
+                        | AddWatchFlags::IN_MOVE_SELF
+                        | AddWatchFlags::IN_IGNORED,
+                )
+            {
+                return Err(format!(
+                    "config parent directory watch lost: {}",
+                    self.config_parent_dir.display()
+                ));
             }
             if self.run_watch == Some(event.wd)
                 && event.name.as_deref() == Some(std::ffi::OsStr::new("dseuhid"))
@@ -337,6 +424,7 @@ impl DaemonMonitor {
                 self.runtime_watch = None;
             }
         }
+        self.ensure_config_watch()?;
         self.ensure_runtime_watch()?;
         self.ensure_run_watch()?;
         wake.profile_due = Instant::now() >= deadline;
@@ -525,14 +613,6 @@ fn wait_for_control_packet(
 
 fn connect_control() -> Result<(control::ControlClient, control::ControlState), String> {
     let path = Path::new(CONTROL_SOCKET_PATH);
-    match path.metadata() {
-        Ok(meta) => {
-            if !meta.file_type().is_socket() {
-                return Err(format!("{CONTROL_SOCKET_PATH} is not a Unix socket"));
-            }
-        }
-        Err(e) => return Err(format!("cannot access {CONTROL_SOCKET_PATH}: {e}")),
-    }
     let client = control::ControlClient::connect(path)
         .map_err(|e| format!("cannot connect to {CONTROL_SOCKET_PATH}: {e}"))?;
     let deadline = Instant::now() + CONTROL_TIMEOUT;
@@ -1428,6 +1508,84 @@ mod path_tests {
             .unwrap();
         assert!(wake.shutdown);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn daemon_monitor_recovers_after_config_directory_recreation() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "edgemap-config-watch-{}-{unique}",
+            std::process::id()
+        ));
+        let config_dir = root.join("edgemap");
+        let config_path = config_dir.join("edgemap.toml");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(&config_path, "config = \"default.toml\"\n").unwrap();
+
+        let shutdown = ShutdownSignal::new().unwrap();
+        let mut monitor = DaemonMonitor::new(&config_path).unwrap();
+        assert!(monitor.config_watch.is_some());
+        assert!(monitor.config_parent_watch.is_none());
+
+        std::fs::remove_file(&config_path).unwrap();
+        std::fs::remove_dir(&config_dir).unwrap();
+        let wake = monitor
+            .wait(Instant::now() + Duration::from_secs(1), &shutdown, None)
+            .unwrap();
+        assert!(wake.config_changed);
+        assert!(monitor.config_watch.is_none());
+        assert!(monitor.config_parent_watch.is_some());
+
+        std::fs::create_dir(&config_dir).unwrap();
+        std::fs::write(&config_path, "config = \"restored.toml\"\n").unwrap();
+        let wake = monitor
+            .wait(Instant::now() + Duration::from_secs(1), &shutdown, None)
+            .unwrap();
+        assert!(wake.config_changed);
+        assert!(monitor.config_watch.is_some());
+        assert!(monitor.config_parent_watch.is_none());
+
+        drop(monitor);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn daemon_monitor_fails_if_config_parent_disappears() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "edgemap-config-parent-{}-{unique}",
+            std::process::id()
+        ));
+        let config_dir = root.join("edgemap");
+        let config_path = config_dir.join("edgemap.toml");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(&config_path, "config = \"default.toml\"\n").unwrap();
+
+        let shutdown = ShutdownSignal::new().unwrap();
+        let mut monitor = DaemonMonitor::new(&config_path).unwrap();
+        std::fs::remove_file(&config_path).unwrap();
+        std::fs::remove_dir(&config_dir).unwrap();
+        monitor
+            .wait(Instant::now() + Duration::from_secs(1), &shutdown, None)
+            .unwrap();
+        assert!(monitor.config_parent_watch.is_some());
+
+        std::fs::remove_dir(&root).unwrap();
+        let error = match monitor.wait(
+            Instant::now() + Duration::from_secs(1),
+            &shutdown,
+            None,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("config parent removal should fail the monitor"),
+        };
+        assert!(error.contains("config parent directory watch lost"));
     }
 
     #[test]

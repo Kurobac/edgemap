@@ -617,12 +617,16 @@ impl Drop for HidrawDevice {
 
 fn is_physical_device(hidraw_name: &str) -> bool {
     if let Ok(uevent) = fs::read_to_string(format!("/sys/class/hidraw/{hidraw_name}/device/uevent")) {
-        if uevent.contains("DRIVER=uhid") {
+        if is_uhid_uevent(&uevent) {
             debug!("skipping virtual UHID device {hidraw_name}");
             return false;
         }
     }
     true
+}
+
+fn is_uhid_uevent(uevent: &str) -> bool {
+    uevent.lines().any(|line| line == "DRIVER=uhid")
 }
 
 pub fn find_dualsense() -> io::Result<Option<DeviceInfo>> {
@@ -661,6 +665,9 @@ pub fn probe_dualsense(path: &Path) -> io::Result<Option<DeviceInfo>> {
         return Ok(None);
     }
     let name = path.file_name().unwrap().to_str().unwrap();
+    if !is_physical_device(name) {
+        return Ok(None);
+    }
 
     let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
     let mut devinfo = HidrawDevinfo::default();
@@ -683,10 +690,6 @@ pub fn probe_dualsense(path: &Path) -> io::Result<Option<DeviceInfo>> {
             return Ok(None);
         }
     };
-    if !is_physical_device(name) {
-        return Ok(None);
-    }
-
     Ok(Some(DeviceInfo {
         path: path.to_path_buf(),
         vid: devinfo.vendor,
@@ -788,6 +791,13 @@ mod tests {
         let _sysfs = find_sysfs_hidraw(path);
         assert!(is_hidraw_path(Path::new("/dev/hidraw12")));
         assert!(!is_hidraw_path(Path::new("/dev/uhid")));
+    }
+
+    #[test]
+    fn uhid_driver_detection_requires_exact_uevent_line() {
+        assert!(is_uhid_uevent("DRIVER=uhid\nHID_ID=0003:0000054C:00000DF2\n"));
+        assert!(!is_uhid_uevent("PARENT_DRIVER=uhid\n"));
+        assert!(!is_uhid_uevent("DRIVER=uhid-extra\n"));
     }
 
     #[test]

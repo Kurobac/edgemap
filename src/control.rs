@@ -418,8 +418,16 @@ pub struct DaemonLock {
 
 impl DaemonLock {
     pub fn acquire(runtime_dir: &Path) -> io::Result<Self> {
+        Self::acquire_named(runtime_dir, LOCK_FILE_NAME, "dseuhid")
+    }
+
+    pub fn acquire_named(
+        runtime_dir: &Path,
+        file_name: &str,
+        process_name: &str,
+    ) -> io::Result<Self> {
         std::fs::create_dir_all(runtime_dir)?;
-        let path = runtime_dir.join(LOCK_FILE_NAME);
+        let path = runtime_dir.join(file_name);
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -436,9 +444,11 @@ impl DaemonLock {
                 let _ = file.read_to_string(&mut owner);
                 let owner = owner.trim();
                 let detail = if owner.is_empty() {
-                    "another dseuhid instance holds the daemon lock".to_string()
+                    format!("another {process_name} instance holds the daemon lock")
                 } else {
-                    format!("another dseuhid instance holds the daemon lock (PID {owner})")
+                    format!(
+                        "another {process_name} instance holds the daemon lock (PID {owner})"
+                    )
                 };
                 return Err(io::Error::new(io::ErrorKind::AlreadyExists, detail));
             }
@@ -478,6 +488,9 @@ mod tests {
         drop(first);
         let second = DaemonLock::acquire(&dir).unwrap();
         drop(second);
+        let named = DaemonLock::acquire_named(&dir, "edgemap.lock", "edgemap daemon").unwrap();
+        assert!(dir.join("edgemap.lock").exists());
+        drop(named);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -877,10 +877,6 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
         valid_profiles.push((name.clone(), p_path));
     }
 
-    if !profiles.is_empty() {
-        log::info!("{} profile(s) loaded, {} valid", profiles.len(), valid_profiles.len());
-    }
-
     Ok(DaemonState {
         base_config,
         base_config_raw,
@@ -923,20 +919,19 @@ fn cmd_daemon(args: &[String]) -> ! {
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let pid_path = edgemap_state_dir()
-        .unwrap_or_else(|e| {
-            log::error!("{e}");
-            std::process::exit(1);
-        })
-        .join("edgemap.pid");
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
-        if let Ok(pid) = pid_str.trim().parse::<i32>() {
-            if unsafe { libc::kill(pid, 0) } == 0 {
-                log::error!("another edgemap daemon is already running (PID {pid})");
-                std::process::exit(1);
-            }
-        }
-    }
+    let state_dir = edgemap_state_dir().unwrap_or_else(|e| {
+        log::error!("{e}");
+        std::process::exit(1);
+    });
+    let _daemon_lock = control::DaemonLock::acquire_named(
+        &state_dir,
+        "edgemap.lock",
+        "edgemap daemon",
+    )
+    .unwrap_or_else(|e| {
+        log::error!("cannot acquire edgemap daemon lock: {e}");
+        std::process::exit(1);
+    });
 
     let dir = edgemap_config_path.parent().unwrap_or(Path::new("."));
 
@@ -984,10 +979,6 @@ fn cmd_daemon(args: &[String]) -> ! {
 
     log::info!("daemon started");
     log::info!("config: {}", config_path.display());
-    if let Some(parent) = pid_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::write(&pid_path, std::process::id().to_string()).ok();
 
     let mut monitor = DaemonMonitor::new(&config_path).unwrap_or_else(|e| {
         log::error!("{e}");
@@ -1254,7 +1245,6 @@ fn cmd_daemon(args: &[String]) -> ! {
     }
 
     log::info!("daemon stopped");
-    let _ = std::fs::remove_file(&pid_path);
     std::process::exit(0);
 }
 

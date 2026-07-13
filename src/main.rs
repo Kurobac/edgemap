@@ -156,6 +156,16 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
     }
 
     let mut config_path = parse_config_path();
+    if let Some(path) = config_path.as_deref() {
+        let cfg = config::Config::load(path).unwrap_or_else(|e| {
+            error!("Failed to load startup config: {e}");
+            std::process::exit(1);
+        });
+        config::validate(&cfg).unwrap_or_else(|e| {
+            error!("Startup config validation failed: {e}");
+            std::process::exit(1);
+        });
+    }
 
     info!("DualSense UHID proxy starting");
     let shutdown = ShutdownSignal::new().unwrap_or_else(|e| {
@@ -282,6 +292,17 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             dev_info.path.display()
         );
 
+        let output_device = match config_path.as_deref() {
+            Some(path) => match config::Config::load(path) {
+                Ok(cfg) => cfg.output_device,
+                Err(e) => {
+                    error!("Failed to read output_device from config: {e}");
+                    break 'outer;
+                }
+            },
+            None => "auto".to_string(),
+        };
+
         let mut hidraw = match device::HidrawDevice::open(&dev_info.path) {
             Ok(d) => d,
             Err(e) => {
@@ -304,11 +325,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 continue;
             }
         };
-
-        let output_device = config_path.as_ref()
-            .and_then(|p| config::Config::load(p).ok())
-            .map(|c| c.output_device)
-            .unwrap_or_else(|| "auto".to_string());
 
         let codec_pipeline = codec::CodecPipeline::from_device_and_output(
             dev_info.kind,

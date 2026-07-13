@@ -6,7 +6,7 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 211 tests total (121 dseuhid + 90 edgemap)
+cargo test                # 215 tests total (123 dseuhid + 92 edgemap)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help

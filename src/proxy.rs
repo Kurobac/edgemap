@@ -505,6 +505,7 @@ impl Proxy {
             info!("output_device changed ({} → {}), will recreate virtual device", self.output_device_config, new_output_device);
             self.recreate_uhid = true;
         }
+        self.output_device_config = new_output_device;
         // rebuild turbo runtimes from the new mapping
         self.turbo_runtimes = self.mapping.read().unwrap().turbo_configs.iter()
             .map(TurboRuntime::from_config)
@@ -550,7 +551,7 @@ impl Proxy {
     pub fn run(&mut self, shutdown: &ShutdownSignal, control: &mut ControlServer) -> ExitReason {
         DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
 
-        let ep_fd = match Epoll::new(EpollCreateFlags::empty()) {
+        let ep_fd = match Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC) {
             Ok(fd) => fd,
             Err(e) => {
                 error!("Failed to create epoll: {e}");
@@ -682,14 +683,14 @@ impl Proxy {
             };
             match result {
                 Ok(()) => {
-                    control.reply_ok(pending.client, &request)?;
+                    control.reply_ok(pending.client, &request);
                     let mut state = control.state();
                     state.needs_config = false;
                     control.set_state(state);
                 }
                 Err((code, message)) => {
                     error!("control request failed: {message}; keeping previous config");
-                    control.reply_error(pending.client, code, &message)?;
+                    control.reply_error(pending.client, code, &message);
                 }
             }
         }

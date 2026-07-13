@@ -463,22 +463,38 @@ impl HidrawDevice {
 
     pub fn restrict_evdev_nodes(&mut self) -> io::Result<()> {
         let mut hidden: Vec<String> = Vec::new();
-
-        if let Some(ref sysfs) = self.sysfs_path {
-            for node in associated_input_nodes(sysfs)? {
-                if let Some(dev_path) = node.dev_path.filter(|path| path.exists()) {
-                    Self::restrict_node(&dev_path, &mut self.restored_nodes)?;
-                    hidden.push(node.name);
-                }
-            }
-        }
+        let mut failures: Vec<String> = Vec::new();
 
         if let Some(ref sysfs) = self.sysfs_path {
             let devname = sysfs.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let hidraw_path = PathBuf::from("/dev").join(devname);
             if hidraw_path.exists() {
-                Self::restrict_node(&hidraw_path, &mut self.restored_nodes)?;
-                hidden.push(devname.to_string());
+                match Self::restrict_node(&hidraw_path, &mut self.restored_nodes) {
+                    Ok(()) => hidden.push(devname.to_string()),
+                    Err(error) => failures.push(format!(
+                        "failed to restrict {}: {error}",
+                        hidraw_path.display()
+                    )),
+                }
+            }
+
+            match associated_input_nodes(sysfs) {
+                Ok(nodes) => {
+                    for node in nodes {
+                        if let Some(dev_path) = node.dev_path.filter(|path| path.exists()) {
+                            match Self::restrict_node(&dev_path, &mut self.restored_nodes) {
+                                Ok(()) => hidden.push(node.name),
+                                Err(error) => failures.push(format!(
+                                    "failed to restrict {}: {error}",
+                                    dev_path.display()
+                                )),
+                            }
+                        }
+                    }
+                }
+                Err(error) => failures.push(format!(
+                    "failed to enumerate associated input nodes: {error}"
+                )),
             }
         }
 
@@ -487,7 +503,11 @@ impl HidrawDevice {
             debug!("  restricted {name}");
         }
 
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(io::Error::other(failures.join("; ")))
+        }
     }
 
     pub fn clear_restored_paths(&mut self) {
@@ -693,6 +713,16 @@ struct AssociatedInputNode {
     initialized: bool,
 }
 
+impl AssociatedInputNode {
+    fn is_ready(&self) -> bool {
+        self.initialized
+            && self
+                .dev_path
+                .as_ref()
+                .is_some_and(|path| path.exists())
+    }
+}
+
 fn associated_input_nodes(hidraw_sysfs: &Path) -> io::Result<Vec<AssociatedInputNode>> {
     let hid_parent = fs::canonicalize(hidraw_sysfs.join("device"))?;
     let parent = UdevDevice::from_syspath(&hid_parent)?;
@@ -738,7 +768,7 @@ fn input_nodes_state(hidraw_path: &Path) -> io::Result<InputNodesState> {
     }
     let pending: Vec<_> = nodes
         .iter()
-        .filter(|node| !node.initialized)
+        .filter(|node| !node.is_ready())
         .map(|node| node.name.as_str())
         .collect();
     if !pending.is_empty() {
@@ -765,5 +795,32 @@ mod tests {
         assert!(probe_dualsense(Path::new("/dev/not-a-hidraw-node"))
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn associated_input_node_requires_initialized_existing_devnode() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "dseuhid-input-node-{}-{unique}",
+            std::process::id(),
+        ));
+        let mut node = AssociatedInputNode {
+            name: "event-test".to_string(),
+            dev_path: None,
+            initialized: true,
+        };
+        assert!(!node.is_ready());
+
+        node.dev_path = Some(path.clone());
+        assert!(!node.is_ready());
+        std::fs::write(&path, []).unwrap();
+        assert!(node.is_ready());
+
+        node.initialized = false;
+        assert!(!node.is_ready());
+        std::fs::remove_file(path).unwrap();
     }
 }

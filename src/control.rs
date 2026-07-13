@@ -297,21 +297,21 @@ impl ControlServer {
             match recv_packet(fd) {
                 Ok(RecvPacket::Data(packet)) => {
                     if std::str::from_utf8(&packet).is_err() {
-                        let _ = self.reply_error(fd, "protocol", "request is not UTF-8");
+                        self.reply_error(fd, "protocol", "request is not UTF-8");
                         remove.push(fd);
                         continue;
                     }
                     match parse_request(&packet) {
                         Ok(request) => requests.push(PendingRequest { client: fd, request }),
                         Err(message) => {
-                            let _ = self.reply_error(fd, "protocol", &message);
+                            self.reply_error(fd, "protocol", &message);
                         }
                     }
                 }
                 Ok(RecvPacket::Closed) => remove.push(fd),
                 Ok(RecvPacket::WouldBlock) => {}
                 Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                    let _ = self.reply_error(fd, "protocol", &error.to_string());
+                    self.reply_error(fd, "protocol", &error.to_string());
                     remove.push(fd);
                 }
                 Err(_) => remove.push(fd),
@@ -324,21 +324,20 @@ impl ControlServer {
         Ok(requests)
     }
 
-    pub fn reply_ok(&mut self, client: RawFd, request: &ControlRequest) -> io::Result<()> {
-        let result = send_packet(client, request.ok_packet());
-        if result.is_err() {
-            self.clients.remove(&client);
-        }
-        result
+    pub fn reply_ok(&mut self, client: RawFd, request: &ControlRequest) {
+        self.reply(client, request.ok_packet());
     }
 
-    pub fn reply_error(&mut self, client: RawFd, code: &str, message: &str) -> io::Result<()> {
+    pub fn reply_error(&mut self, client: RawFd, code: &str, message: &str) {
         let packet = format!("error {code} {message}");
-        let result = send_packet(client, packet.as_bytes());
-        if result.is_err() {
+        self.reply(client, packet.as_bytes());
+    }
+
+    fn reply(&mut self, client: RawFd, packet: &[u8]) {
+        if let Err(error) = send_packet(client, packet) {
+            log::debug!("disconnecting control client {client}: reply failed: {error}");
             self.clients.remove(&client);
         }
-        result
     }
 
     fn accept_clients(&mut self) -> io::Result<()> {
@@ -551,14 +550,12 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let pending = requests.pop().unwrap();
         assert_eq!(pending.request, ControlRequest::Reload);
-        server.reply_ok(pending.client, &pending.request).unwrap();
+        server.reply_ok(pending.client, &pending.request);
         assert_eq!(client.receive().unwrap(), Some(ServerPacket::OkReload));
 
         client.send_request(&ControlRequest::Reload).unwrap();
         let pending = server.drain_requests().unwrap().pop().unwrap();
-        server
-            .reply_error(pending.client, "not-ready", "UHID proxy is not ready")
-            .unwrap();
+        server.reply_error(pending.client, "not-ready", "UHID proxy is not ready");
         assert_eq!(
             client.receive().unwrap(),
             Some(ServerPacket::Error {
@@ -597,6 +594,32 @@ mod tests {
         drop(second);
         drop(server);
         assert!(!dir.join(SOCKET_FILE_NAME).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn disconnected_client_does_not_break_control_server() {
+        let dir = temp_dir("disconnected-client");
+        let initial = ControlState {
+            uhid_ready: true,
+            needs_config: false,
+        };
+        let mut server = ControlServer::bind(&dir, initial).unwrap();
+        let client = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
+        assert!(server.drain_requests().unwrap().is_empty());
+        assert_eq!(client.receive().unwrap(), Some(ServerPacket::Hello(initial)));
+
+        client.send_request(&ControlRequest::Reload).unwrap();
+        let pending = server.drain_requests().unwrap().pop().unwrap();
+        drop(client);
+        server.reply_ok(pending.client, &pending.request);
+
+        let next = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
+        assert!(server.drain_requests().unwrap().is_empty());
+        assert_eq!(next.receive().unwrap(), Some(ServerPacket::Hello(initial)));
+
+        drop(next);
+        drop(server);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

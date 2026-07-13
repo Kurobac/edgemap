@@ -305,7 +305,10 @@ impl DaemonMonitor {
             .map_err(|e| format!("cannot read inotify events: {e}"))?;
         for event in events {
             if event.mask.contains(AddWatchFlags::IN_Q_OVERFLOW) {
-                return Err("inotify event queue overflowed".to_string());
+                log::warn!("inotify event queue overflowed, resynchronizing daemon state");
+                wake.config_changed = true;
+                wake.runtime_changed = true;
+                continue;
             }
             if event.wd == self.config_watch
                 && event.name.as_deref() == Some(self.config_name.as_os_str())
@@ -369,7 +372,26 @@ fn send_notification(summary: &str, body: &str) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     unblock_shutdown_signals_in_child(&mut command);
-    let _ = command.spawn();
+    match command.spawn() {
+        Ok(child) => {
+            if let Err(error) = reap_child(child) {
+                log::warn!("cannot start notify-send child reaper: {error}");
+            }
+        }
+        Err(error) => log::debug!("cannot start notify-send: {error}"),
+    }
+}
+
+fn reap_child(
+    mut child: std::process::Child,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("edgemap-child-reaper".to_string())
+        .spawn(move || {
+            if let Err(error) = child.wait() {
+                log::debug!("cannot reap notify-send child: {error}");
+            }
+        })
 }
 
 fn drain_control_state(
@@ -1406,5 +1428,11 @@ mod path_tests {
             .unwrap();
         assert!(wake.shutdown);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn child_reaper_waits_for_process_exit() {
+        let child = std::process::Command::new("true").spawn().unwrap();
+        reap_child(child).unwrap().join().unwrap();
     }
 }

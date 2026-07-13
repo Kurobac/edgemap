@@ -26,7 +26,7 @@ fn reject_inactive_control(control: &mut control::ControlServer) -> std::io::Res
             pending.client,
             "not-ready",
             "UHID proxy is not ready",
-        )?;
+        );
     }
     Ok(())
 }
@@ -292,16 +292,59 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             dev_info.path.display()
         );
 
-        let output_device = match config_path.as_deref() {
-            Some(path) => match config::Config::load(path) {
-                Ok(cfg) => cfg.output_device,
+        let loaded_config = match config_path.as_deref() {
+            Some(path) => {
+                info!("Loading config from {path}");
+                match config::Config::load(path) {
+                    Ok(cfg) => match config::validate(&cfg) {
+                        Ok(()) => Some(cfg),
+                        Err(e) => {
+                            error!("Config validation failed: {e}");
+                            break 'outer;
+                        }
+                    },
+                    Err(e) => {
+                        error!("Failed to load config: {e}");
+                        break 'outer;
+                    }
+                }
+            }
+            None => None,
+        };
+        let output_device = loaded_config
+            .as_ref()
+            .map_or_else(|| "auto".to_string(), |cfg| cfg.output_device.clone());
+        let codec_pipeline = codec::CodecPipeline::from_device_and_output(
+            dev_info.kind,
+            dev_info.transport,
+            &output_device,
+        );
+        let mapping = match loaded_config.as_ref() {
+            Some(cfg) => match cfg.to_mapping_config() {
+                Ok(mapping) => {
+                    for name in config::ALL_BUTTON_NAMES {
+                        if !cfg.buttons.contains_key(*name) {
+                            warn!("{name}: not configured, passthrough");
+                        }
+                    }
+                    proxy::warn_ignored_edge_passthroughs(
+                        cfg,
+                        dev_info.kind,
+                        codec_pipeline.target,
+                    );
+                    mapping
+                }
                 Err(e) => {
-                    error!("Failed to read output_device from config: {e}");
+                    error!("Failed to build mapping: {e}");
                     break 'outer;
                 }
             },
-            None => "auto".to_string(),
+            None => {
+                info!("No config specified, running in passthrough mode");
+                mapping::MappingConfig::default()
+            }
         };
+        let mapping = Arc::new(RwLock::new(mapping));
 
         let mut hidraw = match device::HidrawDevice::open(&dev_info.path) {
             Ok(d) => d,
@@ -325,12 +368,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 continue;
             }
         };
-
-        let codec_pipeline = codec::CodecPipeline::from_device_and_output(
-            dev_info.kind,
-            dev_info.transport,
-            &output_device,
-        );
 
         let mut report_cache = codec::FeatureReportCache::new();
         // Physical transport decides which real-device reports are safe to read.
@@ -379,44 +416,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         }
 
         info!("Proxy starting");
-
-        let mapping = match &config_path {
-            Some(path) => {
-                info!("Loading config from {path}");
-                match config::Config::load(path) {
-                    Ok(cfg) => match config::validate(&cfg) {
-                        Err(e) => {
-                            error!("Config validation failed: {e}");
-                            std::process::exit(1);
-                        }
-                        Ok(()) => match cfg.to_mapping_config() {
-                            Ok(m) => {
-                                for name in config::ALL_BUTTON_NAMES {
-                                    if !cfg.buttons.contains_key(*name) {
-                                        warn!("{name}: not configured, passthrough");
-                                    }
-                                }
-                                proxy::warn_ignored_edge_passthroughs(&cfg, dev_info.kind, codec_pipeline.target);
-                                m
-                            }
-                            Err(e) => {
-                                error!("Failed to build mapping: {e}");
-                                std::process::exit(1);
-                            }
-                        },
-                    },
-                    Err(e) => {
-                        error!("Failed to load config: {e}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            None => {
-                info!("No config specified, running in passthrough mode");
-                mapping::MappingConfig::default()
-            }
-        };
-        let mapping = Arc::new(RwLock::new(mapping));
 
         let config_path_str = config_path.as_deref().unwrap_or("");
 

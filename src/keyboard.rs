@@ -205,18 +205,20 @@ impl KeyboardDevice {
         let fd = OwnedFd::from(file);
         let raw = fd.as_raw_fd();
 
-        if let Err(e) = set_bit(raw, UI_SET_EVBIT, 0x01) {
-            log::warn!("failed to enable uinput EV_KEY capability: {e}");
-        }
-        if let Err(e) = set_bit(raw, UI_SET_EVBIT, 0x00) {
-            log::warn!("failed to enable uinput EV_SYN capability: {e}");
-        }
+        set_bit(raw, UI_SET_EVBIT, 0x01).map_err(|e| {
+            io::Error::new(e.kind(), format!("failed to enable uinput EV_KEY capability: {e}"))
+        })?;
+        set_bit(raw, UI_SET_EVBIT, 0x00).map_err(|e| {
+            io::Error::new(e.kind(), format!("failed to enable uinput EV_SYN capability: {e}"))
+        })?;
 
         for code in ALL_KEYCODES {
-            if let Err(e) = set_bit(raw, UI_SET_KEYBIT, *code) {
-                log::warn!("failed to enable uinput key capability: code={code}, error={e}");
-                break;
-            }
+            set_bit(raw, UI_SET_KEYBIT, *code).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("failed to enable uinput key capability: code={code}, error={e}"),
+                )
+            })?;
         }
 
         unsafe { Self::create_device(raw)?; }

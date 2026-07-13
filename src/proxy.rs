@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::fmt;
 use std::io;
 use std::sync::{Arc, RwLock};
 
@@ -417,6 +418,14 @@ pub enum ExitReason {
     FatalError,
 }
 
+struct EscapedLogValue<'a>(&'a str);
+
+impl fmt::Display for EscapedLogValue<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:?}", self.0)
+    }
+}
+
 pub(crate) struct ProxyInit {
     pub(crate) hidraw: HidrawDevice,
     pub(crate) uhid: UhidDevice,
@@ -589,7 +598,7 @@ impl Proxy {
         let new_output_device = cfg.output_device.clone();
         let new_runtimes = MappingRuntimes::from_mapping(&new_mapping);
         *self.mapping.write().unwrap() = new_mapping;
-        info!("config reloaded: path={path}");
+        info!("config reloaded: path={}", EscapedLogValue(&path));
         self.config_path = Some(path);
         self.last_snapshot = None;
         self.last_output = None;
@@ -692,9 +701,8 @@ impl Proxy {
 
         let mut seq: u8 = 0;
         let mut events = [EpollEvent::empty(); 8];
-        let mut shutdown_requested = false;
 
-        'run: while !DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
+        let exit_reason = 'run: loop {
             let timeout = self.repeat_input
                 .as_ref()
                 .map_or(16u16, RepeatInput::timeout_ms);
@@ -702,62 +710,86 @@ impl Proxy {
                 Ok(n) => {
                     for ev in events.iter().take(n) {
                         let fd_num = ev.data();
+                        let failure = EpollFlags::EPOLLERR | EpollFlags::EPOLLHUP;
 
                         if fd_num == 1 {
+                            if ev.events().intersects(failure) {
+                                warn!("hidraw fd reported a poll failure");
+                                info!("controller disconnected");
+                                break 'run ExitReason::DeviceGone;
+                            }
                             if let Err(e) = self.handle_hidraw_input(&mut seq) {
                                 error!("hidraw event handler failed: {e}");
-                                break 'run;
+                                break 'run ExitReason::FatalError;
+                            }
+                            if DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
+                                break 'run ExitReason::DeviceGone;
                             }
                         } else if fd_num == 2 {
+                            if ev.events().intersects(failure) {
+                                error!("UHID fd reported a poll failure");
+                                break 'run ExitReason::FatalError;
+                            }
                             if let Err(e) = self.handle_uhid_event() {
                                 error!("UHID event handler failed: {e}");
-                                break 'run;
+                                break 'run ExitReason::FatalError;
+                            }
+                            if DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
+                                break 'run ExitReason::DeviceGone;
                             }
                         } else if fd_num == 3 {
+                            if ev.events().intersects(failure) {
+                                error!("control socket fd reported a poll failure");
+                                break 'run ExitReason::FatalError;
+                            }
                             if let Err(e) = self.handle_control_requests(control) {
                                 error!("control socket event handler failed: {e}");
-                                break 'run;
+                                break 'run ExitReason::FatalError;
+                            }
+                            if self.recreate_uhid {
+                                break 'run ExitReason::ConfigChanged;
                             }
                         } else if fd_num == 4 {
-                            match shutdown.consume() {
-                                Ok(true) => shutdown_requested = true,
-                                Ok(false) => {
-                                    error!("shutdown signal fd was readable but contained no signal")
-                                }
-                                Err(e) => error!("failed to read shutdown signal: {e}"),
+                            if ev.events().intersects(failure) {
+                                error!("shutdown signal fd reported a poll failure");
+                                break 'run ExitReason::FatalError;
                             }
-                            break 'run;
+                            break 'run match shutdown.consume() {
+                                Ok(true) => ExitReason::UserShutdown,
+                                Ok(false) => {
+                                    error!("shutdown signal fd was readable but contained no signal");
+                                    ExitReason::FatalError
+                                }
+                                Err(e) => {
+                                    error!("failed to read shutdown signal: {e}");
+                                    ExitReason::FatalError
+                                }
+                            };
+                        } else {
+                            error!("unknown epoll event token: token={fd_num}");
+                            break 'run ExitReason::FatalError;
                         }
                     }
                 }
                 Err(nix::errno::Errno::EINTR) => continue,
                 Err(e) => {
                     error!("epoll wait failed: {e}");
-                    break;
+                    break 'run ExitReason::FatalError;
                 }
             }
             if let Some(repeat) = self.repeat_input.as_mut() {
                 if let Err(e) = repeat.send_due(&self.uhid, &mut seq) {
                     error!("failed to send repeated input report: {e}");
-                    break;
+                    break 'run ExitReason::FatalError;
                 }
             }
             if self.recreate_uhid {
-                break;
+                break 'run ExitReason::ConfigChanged;
             }
-        }
+        };
 
         info!("proxy stopped");
-
-        if shutdown_requested {
-            ExitReason::UserShutdown
-        } else if self.recreate_uhid {
-            ExitReason::ConfigChanged
-        } else if DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
-            ExitReason::DeviceGone
-        } else {
-            ExitReason::FatalError
-        }
+        exit_reason
     }
 
     fn handle_control_requests(&mut self, control: &mut ControlServer) -> io::Result<()> {
@@ -769,7 +801,10 @@ impl Proxy {
                     self.reload_config()
                 }
                 ControlRequest::SwitchConfig(path) => {
-                    info!("control request received: action=switch-config, path={path}");
+                    info!(
+                        "control request received: action=switch-config, path={}",
+                        EscapedLogValue(path)
+                    );
                     self.reload_config_from(path.clone())
                 }
             };
@@ -802,6 +837,12 @@ impl Proxy {
         // Keep transport-specific input parsing out of the event loop.
         loop {
             match self.hidraw.read_input(&mut buf) {
+                Ok(0) => {
+                    warn!("failed to read input report: end of file");
+                    info!("controller disconnected");
+                    DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                    break;
+                }
                 Ok(n) if n >= input_report_size => {
                     *seq = seq.wrapping_add(1);
 
@@ -1072,7 +1113,10 @@ impl Proxy {
                             info!("virtual HID device started");
                         }
                         UhidEvent::Stop => {
-                            warn!("virtual HID device stopped by kernel");
+                            return Err(io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "virtual HID device stopped by kernel",
+                            ));
                         }
                         UhidEvent::Open => {
                             debug!("virtual HID device opened by client");
@@ -1271,6 +1315,14 @@ fn hex_prefix(data: &[u8], max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn untrusted_log_values_escape_control_characters() {
+        assert_eq!(
+            EscapedLogValue("/tmp/config\nforged\t\"entry\"").to_string(),
+            "\"/tmp/config\\nforged\\t\\\"entry\\\"\""
+        );
+    }
 
     #[test]
     fn repeat_mode_validation_accepts_only_named_modes() {

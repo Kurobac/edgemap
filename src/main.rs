@@ -20,6 +20,26 @@ use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 
 static RUNTIME_DIR: &str = "/run/dseuhid";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WaitOutcome {
+    Elapsed,
+    Shutdown,
+    Fatal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DaemonExit {
+    Shutdown,
+    Fatal,
+}
+
+fn is_controller_gone_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::ENOENT | libc::EIO | libc::ENODEV | libc::ENXIO)
+    )
+}
+
 fn reject_inactive_control(control: &mut control::ControlServer) -> std::io::Result<()> {
     for pending in control.drain_requests()? {
         control.reply_error(
@@ -34,7 +54,7 @@ fn reject_inactive_control(control: &mut control::ControlServer) -> std::io::Res
 fn shutdown_during_retry_delay(
     shutdown: &ShutdownSignal,
     control: &mut control::ControlServer,
-) -> bool {
+) -> WaitOutcome {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -45,7 +65,7 @@ fn shutdown_during_retry_delay(
                 PollFd::new(control.as_fd(), PollFlags::POLLIN),
             ];
             match poll(&mut fds, PollTimeout::from(timeout_ms)) {
-                Ok(0) => return false,
+                Ok(0) => return WaitOutcome::Elapsed,
                 Ok(_) => (
                     fds[0].revents().unwrap_or(PollFlags::empty()),
                     fds[1].revents().unwrap_or(PollFlags::empty()),
@@ -53,22 +73,32 @@ fn shutdown_during_retry_delay(
                 Err(nix::errno::Errno::EINTR) => continue,
                 Err(e) => {
                     error!("failed to poll during retry delay: {e}");
-                    return true;
+                    return WaitOutcome::Fatal;
                 }
             }
         };
         let failure = PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL;
         if shutdown_events.intersects(failure) || control_events.intersects(failure) {
             error!("poll reported a failure during retry delay");
-            return true;
+            return WaitOutcome::Fatal;
         }
         if shutdown_events.contains(PollFlags::POLLIN) {
-            return shutdown.consume().unwrap_or(true);
+            return match shutdown.consume() {
+                Ok(true) => WaitOutcome::Shutdown,
+                Ok(false) => {
+                    error!("shutdown signal fd was readable but contained no signal");
+                    WaitOutcome::Fatal
+                }
+                Err(e) => {
+                    error!("failed to read shutdown signal: {e}");
+                    WaitOutcome::Fatal
+                }
+            };
         }
         if control_events.contains(PollFlags::POLLIN) {
             if let Err(e) = reject_inactive_control(control) {
                 error!("failed to handle control request during retry delay: {e}");
-                return true;
+                return WaitOutcome::Fatal;
             }
         }
     }
@@ -206,20 +236,20 @@ fn main() {
         std::process::exit(1);
     });
 
-    'outer: loop {
+    let daemon_exit = 'outer: loop {
         let dev_info = {
             let hidraw_monitor = match HidrawMonitor::new() {
                 Ok(monitor) => monitor,
                 Err(e) => {
                     error!("failed to create udev monitor for hidraw/input devices: {e}");
-                    break 'outer;
+                    break 'outer DaemonExit::Fatal;
                 }
             };
             let mut found = match find_dualsense() {
                 Ok(device) => device,
                 Err(e) => {
                     error!("failed to enumerate hidraw devices through udev: {e}");
-                    break 'outer;
+                    break 'outer DaemonExit::Fatal;
                 }
             };
             if found.is_none() {
@@ -239,7 +269,7 @@ fn main() {
                                 Ok(device) => device,
                                 Err(e) => {
                                     error!("failed to enumerate hidraw devices through udev: {e}");
-                                    break 'outer;
+                                    break 'outer DaemonExit::Fatal;
                                 }
                             };
                             if found.is_some() {
@@ -250,14 +280,14 @@ fn main() {
                         Ok(InputNodesWait::Control) => {
                             if let Err(e) = reject_inactive_control(&mut control) {
                                 error!("failed to reject control request while proxy is inactive: {e}");
-                                break 'outer;
+                                break 'outer DaemonExit::Fatal;
                             }
                             found = Some(device);
                         }
-                        Ok(InputNodesWait::Shutdown) => break 'outer,
+                        Ok(InputNodesWait::Shutdown) => break 'outer DaemonExit::Shutdown,
                         Err(e) => {
                             error!("failed while waiting for associated input nodes: {e}");
-                            break 'outer;
+                            break 'outer DaemonExit::Fatal;
                         }
                     }
                 }
@@ -267,14 +297,14 @@ fn main() {
                     Ok(HidrawWait::Control) => {
                         if let Err(e) = reject_inactive_control(&mut control) {
                             error!("failed to reject control request while proxy is inactive: {e}");
-                            break 'outer;
+                            break 'outer DaemonExit::Fatal;
                         }
                         continue;
                     }
-                    Ok(HidrawWait::Shutdown) => break 'outer,
+                    Ok(HidrawWait::Shutdown) => break 'outer DaemonExit::Shutdown,
                     Err(e) => {
                         error!("failed to wait for hidraw device events: {e}");
-                        break 'outer;
+                        break 'outer DaemonExit::Fatal;
                     }
                 };
                 for path in paths {
@@ -322,12 +352,12 @@ fn main() {
                         Ok(()) => Some(cfg),
                         Err(e) => {
                             error!("config validation failed: {e}");
-                            break 'outer;
+                            break 'outer DaemonExit::Fatal;
                         }
                     },
                     Err(e) => {
                         error!("failed to load config: {e}");
-                        break 'outer;
+                        break 'outer DaemonExit::Fatal;
                     }
                 }
             }
@@ -358,7 +388,7 @@ fn main() {
                 }
                 Err(e) => {
                     error!("failed to build mapping: {e}");
-                    break 'outer;
+                    break 'outer DaemonExit::Fatal;
                 }
             },
             None => {
@@ -370,12 +400,19 @@ fn main() {
 
         let mut hidraw = match device::HidrawDevice::open(&dev_info.path) {
             Ok(d) => d,
-            Err(e) => {
-                error!("failed to open hidraw device: {e}");
-                if shutdown_during_retry_delay(&shutdown, &mut control) {
-                    break 'outer;
+            Err(e) if is_controller_gone_error(&e) => {
+                warn!("failed to open controller: {e}");
+                info!("controller disconnected; waiting for reconnection");
+                match shutdown_during_retry_delay(&shutdown, &mut control) {
+                    WaitOutcome::Elapsed => {}
+                    WaitOutcome::Shutdown => break 'outer DaemonExit::Shutdown,
+                    WaitOutcome::Fatal => break 'outer DaemonExit::Fatal,
                 }
                 continue;
+            }
+            Err(e) => {
+                error!("failed to open hidraw device: {e}");
+                break 'outer DaemonExit::Fatal;
             }
         };
 
@@ -384,10 +421,7 @@ fn main() {
             Err(e) => {
                 error!("failed to open /dev/uhid: {e}");
                 error!("UHID kernel module may be unavailable; verify with: modprobe uhid");
-                if shutdown_during_retry_delay(&shutdown, &mut control) {
-                    break 'outer;
-                }
-                continue;
+                break 'outer DaemonExit::Fatal;
             }
         };
 
@@ -428,7 +462,7 @@ fn main() {
             target_identity.report_descriptor,
         ) {
             error!("failed to create virtual HID device: {e}");
-            continue;
+            break 'outer DaemonExit::Fatal;
         }
 
         info!("virtual HID device created: name={}, output={}", target_identity.name, target_identity.label);
@@ -452,7 +486,7 @@ fn main() {
 
         if let Err(e) = reject_inactive_control(&mut control) {
             error!("failed to reject control request while proxy is inactive: {e}");
-            break 'outer;
+            break 'outer DaemonExit::Fatal;
         }
         let mut proxy = Proxy::new(ProxyInit {
             hidraw,
@@ -483,25 +517,30 @@ fn main() {
                     needs_config: true,
                 });
                 info!("controller disconnected; waiting for reconnection");
-                if shutdown_during_retry_delay(&shutdown, &mut control) {
-                    break 'outer;
+                match shutdown_during_retry_delay(&shutdown, &mut control) {
+                    WaitOutcome::Elapsed => {}
+                    WaitOutcome::Shutdown => break 'outer DaemonExit::Shutdown,
+                    WaitOutcome::Fatal => break 'outer DaemonExit::Fatal,
                 }
             }
             proxy::ExitReason::UserShutdown => {
                 info!("dseuhid daemon stopping");
                 // hidraw + uhid auto-dropped — permissions restored, UHID destroyed
-                break 'outer;
+                break 'outer DaemonExit::Shutdown;
             }
             proxy::ExitReason::FatalError => {
                 error!("fatal proxy error; dseuhid daemon stopping");
                 // Exit through normal scope cleanup so permissions and UHID are restored.
-                break 'outer;
+                break 'outer DaemonExit::Fatal;
             }
         }
-    }
+    };
 
     drop(control);
     info!("dseuhid daemon stopped");
+    if daemon_exit == DaemonExit::Fatal {
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]
@@ -514,6 +553,16 @@ mod main_tests {
         assert!(usage.contains("Usage: dseuhid [OPTIONS] [COMMAND]"));
         assert!(usage.contains("--config-path <PATH>"));
         assert!(!usage.contains("<path>"));
+    }
+
+    #[test]
+    fn controller_open_retries_only_device_gone_errors() {
+        for errno in [libc::ENOENT, libc::EIO, libc::ENODEV, libc::ENXIO] {
+            assert!(is_controller_gone_error(&std::io::Error::from_raw_os_error(errno)));
+        }
+        for errno in [libc::EACCES, libc::EINVAL, libc::EBADF] {
+            assert!(!is_controller_gone_error(&std::io::Error::from_raw_os_error(errno)));
+        }
     }
 
     #[test]

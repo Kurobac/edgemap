@@ -97,7 +97,10 @@ fn invalid_event(message: impl Into<String>) -> io::Error {
 
 fn parse_uhid_event(buf: &[u8]) -> io::Result<Option<UhidEvent>> {
     if buf.len() < 4 {
-        return Ok(None);
+        return Err(invalid_event(format!(
+            "short UHID event header: {} bytes",
+            buf.len()
+        )));
     }
 
     let ev_type = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
@@ -344,6 +347,12 @@ impl UhidDevice {
             }
             return Err(err);
         }
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "UHID device reached end of file",
+            ));
+        }
 
         let ev = match parse_uhid_event(&buf[..n as usize])? {
             Some(ev) => ev,
@@ -372,6 +381,27 @@ mod tests {
 
     fn event_type_bytes(event_type: UhidEventType) -> [u8; 4] {
         event_type.to_u32_le()
+    }
+
+    #[test]
+    fn parse_rejects_short_event_header() {
+        for size in 0..4 {
+            let err = parse_uhid_event(&vec![0u8; size]).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        }
+    }
+
+    #[test]
+    fn recv_event_rejects_end_of_file() {
+        let (read_fd, write_fd) = nix::unistd::pipe().unwrap();
+        drop(write_fd);
+        let device = UhidDevice {
+            fd: read_fd,
+            created: false,
+        };
+
+        let err = device.recv_event().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
 
     #[test]

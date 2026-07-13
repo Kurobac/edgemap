@@ -24,3 +24,7 @@ echo "sudo systemctl daemon-reload"
 echo "sudo systemctl enable --now dseuhid"
 echo "systemctl --user daemon-reload"
 echo "systemctl --user enable --now edgemap"
+echo
+echo "After upgrading both binaries, restart both services:"
+echo "sudo systemctl restart dseuhid"
+echo "systemctl --user restart edgemap"

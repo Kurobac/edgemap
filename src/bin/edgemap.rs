@@ -13,11 +13,14 @@ mod config;
 #[path = "../shutdown.rs"]
 #[allow(dead_code)]
 mod shutdown;
+#[path = "../control.rs"]
+#[allow(dead_code)]
+mod control;
 
 use std::env;
 use std::io::{self, Write};
 use std::os::fd::AsFd;
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -27,19 +30,14 @@ use serde::Deserialize;
 
 use shutdown::{unblock_shutdown_signals_in_child, ShutdownSignal};
 
-const FIFO_PATH: &str = "/run/dseuhid/control";
+const CONTROL_SOCKET_PATH: &str = "/run/dseuhid/control.sock";
 const DSEUHID_RUNTIME_DIR: &str = "/run/dseuhid";
-const CONNECTED_PATH: &str = "/run/dseuhid/connected";
-const NEEDS_CONFIG_PATH: &str = "/run/dseuhid/needs-config";
 const RUN_DIR: &str = "/run";
-const CONTROL_FILE_NAME: &str = "control";
-const CONNECTED_FILE_NAME: &str = "connected";
-const NEEDS_CONFIG_FILE_NAME: &str = "needs-config";
-const STATE_CONNECTED: &str = "connected";
-const STATE_DISCONNECTED: &str = "disconnected";
+const CONTROL_FILE_NAME: &str = "control.sock";
 const EDGEMAP_CONFIG_FILE: &str = "edgemap.toml";
 const DEFAULT_CONFIG_FILE: &str = "default.toml";
 const PROFILE_INTERVAL: Duration = Duration::from_secs(3);
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Deserialize)]
 struct ProfileConfig {
@@ -166,22 +164,6 @@ fn watch_parent(path: &Path) -> &Path {
 
 fn is_runtime_file(name: &std::ffi::OsStr) -> bool {
     name == CONTROL_FILE_NAME
-        || name == CONNECTED_FILE_NAME
-        || name == NEEDS_CONFIG_FILE_NAME
-}
-
-fn parse_needs_config(content: &str) -> Result<bool, String> {
-    match content.trim() {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        value => Err(format!("invalid needs-config state: {value:?}")),
-    }
-}
-
-fn read_needs_config() -> Result<bool, String> {
-    let content = std::fs::read_to_string(NEEDS_CONFIG_PATH)
-        .map_err(|e| format!("cannot read {NEEDS_CONFIG_PATH}: {e}"))?;
-    parse_needs_config(&content)
 }
 
 fn needs_config_became_true(previous: Option<bool>, current: bool) -> bool {
@@ -260,13 +242,20 @@ impl DaemonMonitor {
         &mut self,
         deadline: Instant,
         shutdown: &ShutdownSignal,
+        control_client: Option<&control::ControlClient>,
     ) -> Result<DaemonWake, String> {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as u32;
-        let mut fds = [
+        let mut fds = vec![
             PollFd::new(self.inotify.as_fd(), PollFlags::POLLIN),
             PollFd::new(shutdown.as_fd(), PollFlags::POLLIN),
         ];
+        if let Some(client) = control_client {
+            fds.push(PollFd::new(
+                client.as_fd(),
+                PollFlags::POLLIN | PollFlags::POLLERR | PollFlags::POLLHUP,
+            ));
+        }
         match poll(
             &mut fds,
             PollTimeout::try_from(timeout_ms).unwrap_or(PollTimeout::MAX),
@@ -285,12 +274,19 @@ impl DaemonMonitor {
         let mut wake = DaemonWake::default();
         let inotify_events = fds[0].revents().unwrap_or(PollFlags::empty());
         let shutdown_events = fds[1].revents().unwrap_or(PollFlags::empty());
+        let control_events = fds
+            .get(2)
+            .and_then(|fd| fd.revents())
+            .unwrap_or(PollFlags::empty());
         let failure = PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL;
         if inotify_events.intersects(failure) {
             return Err("inotify poll failure".to_string());
         }
         if shutdown_events.intersects(failure) {
             return Err("shutdown signalfd poll failure".to_string());
+        }
+        if control_events.intersects(failure) || control_events.contains(PollFlags::POLLIN) {
+            wake.runtime_changed = true;
         }
         if shutdown_events.contains(PollFlags::POLLIN) {
             shutdown
@@ -348,13 +344,14 @@ impl DaemonMonitor {
 fn wait_for_daemon_activity(
     monitor: &mut DaemonMonitor,
     shutdown: &ShutdownSignal,
+    control_client: Option<&control::ControlClient>,
     next_profile_scan: &mut Instant,
     config_changed: &mut bool,
     runtime_changed: &mut bool,
     profile_due: &mut bool,
     shutdown_requested: &mut bool,
 ) -> Result<(), String> {
-    let wake = monitor.wait(*next_profile_scan, shutdown)?;
+    let wake = monitor.wait(*next_profile_scan, shutdown, control_client)?;
     *config_changed |= wake.config_changed;
     *runtime_changed |= wake.runtime_changed;
     *shutdown_requested |= wake.shutdown;
@@ -375,52 +372,171 @@ fn send_notification(summary: &str, body: &str) {
     let _ = command.spawn();
 }
 
-fn check_dseuhid_alive() -> bool {
-    let path = Path::new(FIFO_PATH);
-    match path.metadata() {
-        Ok(meta) => {
-            if !meta.file_type().is_fifo() {
-                return false;
-            }
+fn drain_control_state(
+    client: &control::ControlClient,
+) -> Result<Option<control::ControlState>, String> {
+    let mut latest = None;
+    loop {
+        match client.receive().map_err(|e| e.to_string())? {
+            Some(control::ServerPacket::State(state)) => latest = Some(state),
+            Some(packet) => return Err(format!("unexpected control packet: {packet:?}")),
+            None => return Ok(latest),
         }
-        Err(_) => return false,
     }
-    std::fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(FIFO_PATH)
-        .is_ok()
 }
 
-fn try_send_fifo_command(cmd: &[u8]) -> bool {
-    let path = Path::new(FIFO_PATH);
-    match path.metadata() {
-        Ok(meta) => {
-            if !meta.file_type().is_fifo() {
-                return false;
+enum DaemonRequestError {
+    Shutdown,
+    Failed(String),
+}
+
+fn send_daemon_control_request(
+    client: &control::ControlClient,
+    request: &control::ControlRequest,
+    shutdown: &ShutdownSignal,
+    state: &mut control::ControlState,
+) -> Result<(), DaemonRequestError> {
+    client
+        .send_request(request)
+        .map_err(|e| DaemonRequestError::Failed(e.to_string()))?;
+    let deadline = Instant::now() + CONTROL_TIMEOUT;
+    loop {
+        if let Some(packet) = client
+            .receive()
+            .map_err(|e| DaemonRequestError::Failed(e.to_string()))?
+        {
+            match packet {
+                control::ServerPacket::State(new_state) => *state = new_state,
+                control::ServerPacket::OkReload
+                    if matches!(request, control::ControlRequest::Reload) => return Ok(()),
+                control::ServerPacket::OkSwitchConfig
+                    if matches!(request, control::ControlRequest::SwitchConfig(_)) => {
+                        return Ok(())
+                    }
+                control::ServerPacket::Error { code, message } => {
+                    return Err(DaemonRequestError::Failed(format!("{code}: {message}")))
+                }
+                packet => {
+                    return Err(DaemonRequestError::Failed(format!(
+                        "unexpected control response: {packet:?}"
+                    )))
+                }
             }
         }
-        Err(_) => {
-            return false;
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(DaemonRequestError::Failed(
+                "timed out waiting for dseuhid control response".to_string(),
+            ));
+        }
+        let timeout_ms = remaining.as_millis().min(u16::MAX as u128) as u16;
+        let mut fds = [
+            PollFd::new(
+                client.as_fd(),
+                PollFlags::POLLIN | PollFlags::POLLERR | PollFlags::POLLHUP,
+            ),
+            PollFd::new(shutdown.as_fd(), PollFlags::POLLIN),
+        ];
+        match poll(&mut fds, PollTimeout::from(timeout_ms)) {
+            Ok(0) => {
+                return Err(DaemonRequestError::Failed(
+                    "timed out waiting for dseuhid control response".to_string(),
+                ))
+            }
+            Ok(_) => {
+                let socket_events = fds[0].revents().unwrap_or(PollFlags::empty());
+                let shutdown_events = fds[1].revents().unwrap_or(PollFlags::empty());
+                if shutdown_events.contains(PollFlags::POLLIN) {
+                    let _ = shutdown.consume();
+                    return Err(DaemonRequestError::Shutdown);
+                }
+                if socket_events.intersects(
+                    PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL,
+                ) {
+                    return Err(DaemonRequestError::Failed(
+                        "dseuhid control socket disconnected".to_string(),
+                    ));
+                }
+            }
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(e) => {
+                return Err(DaemonRequestError::Failed(format!(
+                    "control socket poll failed: {e}"
+                )))
+            }
         }
     }
-    let mut file = match std::fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(FIFO_PATH)
-    {
-        Ok(f) => f,
-        Err(_) => {
-            return false;
+}
+
+fn wait_for_control_packet(
+    client: &control::ControlClient,
+    deadline: Instant,
+) -> Result<control::ServerPacket, String> {
+    loop {
+        if let Some(packet) = client.receive().map_err(|e| e.to_string())? {
+            return Ok(packet);
         }
-    };
-    if file.write_all(cmd).is_err() {
-        return false;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("timed out waiting for dseuhid control response".to_string());
+        }
+        let timeout_ms = remaining.as_millis().min(u16::MAX as u128) as u16;
+        let mut fds = [PollFd::new(
+            client.as_fd(),
+            PollFlags::POLLIN | PollFlags::POLLERR | PollFlags::POLLHUP,
+        )];
+        match poll(&mut fds, PollTimeout::from(timeout_ms)) {
+            Ok(0) => return Err("timed out waiting for dseuhid control response".to_string()),
+            Ok(_) => {
+                let events = fds[0].revents().unwrap_or(PollFlags::empty());
+                if events.intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL)
+                {
+                    return Err("dseuhid control socket disconnected".to_string());
+                }
+            }
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(e) => return Err(format!("control socket poll failed: {e}")),
+        }
     }
-    if file.write_all(b"\n").is_err() {
-        return false;
+}
+
+fn connect_control() -> Result<(control::ControlClient, control::ControlState), String> {
+    let path = Path::new(CONTROL_SOCKET_PATH);
+    match path.metadata() {
+        Ok(meta) => {
+            if !meta.file_type().is_socket() {
+                return Err(format!("{CONTROL_SOCKET_PATH} is not a Unix socket"));
+            }
+        }
+        Err(e) => return Err(format!("cannot access {CONTROL_SOCKET_PATH}: {e}")),
     }
-    true
+    let client = control::ControlClient::connect(path)
+        .map_err(|e| format!("cannot connect to {CONTROL_SOCKET_PATH}: {e}"))?;
+    let deadline = Instant::now() + CONTROL_TIMEOUT;
+    match wait_for_control_packet(&client, deadline)? {
+        control::ServerPacket::Hello(state) => Ok((client, state)),
+        packet => Err(format!("expected control hello, received {packet:?}")),
+    }
+}
+
+fn send_control_request(request: &control::ControlRequest) -> Result<control::ControlState, String> {
+    let (client, mut state) = connect_control()?;
+    client.send_request(request).map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + CONTROL_TIMEOUT;
+    loop {
+        match wait_for_control_packet(&client, deadline)? {
+            control::ServerPacket::State(new_state) => state = new_state,
+            control::ServerPacket::OkReload
+                if matches!(request, control::ControlRequest::Reload) => return Ok(state),
+            control::ServerPacket::OkSwitchConfig
+                if matches!(request, control::ControlRequest::SwitchConfig(_)) => return Ok(state),
+            control::ServerPacket::Error { code, message } => {
+                return Err(format!("{code}: {message}"));
+            }
+            packet => return Err(format!("unexpected control response: {packet:?}")),
+        }
+    }
 }
 
 fn read_comm(pid: u32) -> Option<String> {
@@ -625,49 +741,17 @@ fn cmd_create_config(args: &[String]) -> ! {
     std::process::exit(0);
 }
 
-fn send_fifo_command(cmd: &[u8]) -> ! {
-    let path = Path::new(FIFO_PATH);
-    match path.metadata() {
-        Ok(meta) => {
-            if !meta.file_type().is_fifo() {
-                eprintln!("error: {} is not a FIFO (is dseuhid running?)", FIFO_PATH);
-                std::process::exit(1);
-            }
+fn send_control_command(request: control::ControlRequest) -> ! {
+    match send_control_request(&request) {
+        Ok(_) => {
+            eprintln!("Command applied by dseuhid");
+            std::process::exit(0);
         }
-        Err(_) => {
-            eprintln!("error: {} does not exist (is dseuhid running?)", FIFO_PATH);
-            std::process::exit(1);
-        }
-    }
-
-    let file = match std::fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(FIFO_PATH)
-    {
-        Ok(f) => f,
         Err(e) => {
-            let errno = e.raw_os_error();
-            if errno == Some(libc::ENXIO) {
-                eprintln!("error: no reader on {} (is dseuhid running?)", FIFO_PATH);
-            } else {
-                eprintln!("error: cannot open {}: {e}", FIFO_PATH);
-            }
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
-    };
-
-    let mut file = file;
-    if let Err(e) = file.write_all(cmd) {
-        eprintln!("error: cannot write to {}: {e}", FIFO_PATH);
-        std::process::exit(1);
     }
-    if let Err(e) = file.write_all(b"\n") {
-        eprintln!("error: cannot write to {}: {e}", FIFO_PATH);
-        std::process::exit(1);
-    }
-    eprintln!("Command sent to dseuhid");
-    std::process::exit(0);
 }
 
 fn cmd_reload(args: &[String]) -> ! {
@@ -676,7 +760,7 @@ fn cmd_reload(args: &[String]) -> ! {
         eprintln!("usage: edgemap reload");
         std::process::exit(1);
     }
-    send_fifo_command(b"reload")
+    send_control_command(control::ControlRequest::Reload)
 }
 
 fn cmd_switch_config(args: &[String]) -> ! {
@@ -725,8 +809,7 @@ fn cmd_switch_config(args: &[String]) -> ! {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
-    let cmd = format!("switch-config {}", path_str);
-    send_fifo_command(cmd.as_bytes())
+    send_control_command(control::ControlRequest::SwitchConfig(path_str))
 }
 
 struct DaemonState {
@@ -911,14 +994,10 @@ fn cmd_daemon(args: &[String]) -> ! {
         std::process::exit(1);
     });
 
-    let mut daemon_alive = check_dseuhid_alive();
-    if !daemon_alive {
-        log::warn!("dseuhid not running, waiting...");
-    }
-
     let mut current_config = String::new();
-    let mut last_uhid_state: Option<String> = None;
-    let mut last_needs_config: Option<bool> = None;
+    let mut control_client: Option<control::ControlClient> = None;
+    let mut control_state: Option<control::ControlState> = None;
+    let mut warned_not_running = false;
     let mut config_changed = false;
     let mut runtime_changed = true;
     let mut profile_due = true;
@@ -941,50 +1020,69 @@ fn cmd_daemon(args: &[String]) -> ! {
 
         if runtime_changed {
             runtime_changed = false;
-            let was_daemon_alive = daemon_alive;
-            daemon_alive = check_dseuhid_alive();
-            if !daemon_alive {
-                if last_uhid_state.as_deref() == Some(STATE_CONNECTED) {
+            let previous_state = control_state;
+            let was_alive = control_client.is_some();
+            let mut disconnect_reason = None;
+
+            if let Some(client) = control_client.as_ref() {
+                match drain_control_state(client) {
+                    Ok(Some(state)) => control_state = Some(state),
+                    Ok(None) => {}
+                    Err(e) => {
+                        disconnect_reason = Some(e);
+                        control_client = None;
+                        control_state = None;
+                    }
+                }
+            } else {
+                match connect_control() {
+                    Ok((client, state)) => {
+                        control_client = Some(client);
+                        control_state = Some(state);
+                        warned_not_running = false;
+                    }
+                    Err(e) => {
+                        if !warned_not_running {
+                            log::warn!("dseuhid not running, waiting: {e}");
+                            warned_not_running = true;
+                        }
+                    }
+                }
+            }
+
+            if control_client.is_none() {
+                if previous_state.is_some_and(|state| state.uhid_ready) {
                     log::info!("UHID device stopped");
                 }
-                if was_daemon_alive && !current_config.is_empty() {
-                    log::warn!("dseuhid disconnected");
+                if was_alive {
+                    log::warn!(
+                        "dseuhid disconnected: {}",
+                        disconnect_reason.as_deref().unwrap_or("control socket closed")
+                    );
                 }
-                last_needs_config = None;
-                last_uhid_state = Some(STATE_DISCONNECTED.to_string());
-            } else {
-                match read_needs_config() {
-                    Ok(needs_config) => {
-                        if needs_config_became_true(last_needs_config, needs_config) {
-                            current_config.clear();
-                            profile_due = true;
-                        }
-                        last_needs_config = Some(needs_config);
-                    }
-                    Err(e) => log::error!("{e}"),
+            } else if let Some(state) = control_state {
+                if !was_alive {
+                    log::info!("dseuhid connected");
                 }
-
-                // detect UHID virtual device state via /run/dseuhid/connected
-                let uhid_state = std::fs::read_to_string(CONNECTED_PATH)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                if uhid_state != STATE_CONNECTED {
-                    if last_uhid_state.as_deref() == Some(STATE_CONNECTED) {
-                        log::info!("UHID device stopped");
-                    }
-                } else if last_uhid_state.as_deref() != Some(STATE_CONNECTED) {
+                let previous_ready = previous_state.is_some_and(|old| old.uhid_ready);
+                if state.uhid_ready && !previous_ready {
                     log::info!("UHID device ready");
+                } else if !state.uhid_ready && previous_ready {
+                    log::info!("UHID device stopped");
                 }
-                last_uhid_state = Some(uhid_state);
+                let previous_needs = previous_state.map(|old| old.needs_config);
+                if needs_config_became_true(previous_needs, state.needs_config) {
+                    current_config.clear();
+                    profile_due = true;
+                }
             }
         }
 
-        // A disconnected daemon or UHID device waits for an explicit runtime event.
-        if !daemon_alive || last_uhid_state.as_deref() != Some(STATE_CONNECTED) {
+        if !control_state.is_some_and(|state| state.uhid_ready) {
             if let Err(e) = wait_for_daemon_activity(
                 &mut monitor,
                 &shutdown,
+                control_client.as_ref(),
                 &mut next_profile_scan,
                 &mut config_changed,
                 &mut runtime_changed,
@@ -1001,6 +1099,7 @@ fn cmd_daemon(args: &[String]) -> ! {
             if let Err(e) = wait_for_daemon_activity(
                 &mut monitor,
                 &shutdown,
+                control_client.as_ref(),
                 &mut next_profile_scan,
                 &mut config_changed,
                 &mut runtime_changed,
@@ -1031,6 +1130,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                     if let Err(wait_error) = wait_for_daemon_activity(
                         &mut monitor,
                         &shutdown,
+                        control_client.as_ref(),
                         &mut next_profile_scan,
                         &mut config_changed,
                         &mut runtime_changed,
@@ -1075,6 +1175,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                         if let Err(wait_error) = wait_for_daemon_activity(
                             &mut monitor,
                             &shutdown,
+                            control_client.as_ref(),
                             &mut next_profile_scan,
                             &mut config_changed,
                             &mut runtime_changed,
@@ -1092,6 +1193,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                     if let Err(wait_error) = wait_for_daemon_activity(
                         &mut monitor,
                         &shutdown,
+                        control_client.as_ref(),
                         &mut next_profile_scan,
                         &mut config_changed,
                         &mut runtime_changed,
@@ -1105,23 +1207,41 @@ fn cmd_daemon(args: &[String]) -> ! {
                 }
             }
 
-            let cmd = format!("switch-config {}", target);
-            if try_send_fifo_command(cmd.as_bytes()) {
-                let label = state.profiles.iter()
-                    .find(|(_, pc)| {
-                        resolve_config_path(&pc.config, &state.dir).as_deref()
-                            == Ok(target.as_str())
-                    })
-                    .map(|(name, _)| format!("profile '{name}'"))
-                    .unwrap_or_else(|| "default config".to_string());
-                log::info!("applied {label}: {target}");
-                send_notification("edgemap", &format!("Switched to {label}"));
-                current_config = target;
+            let request = control::ControlRequest::SwitchConfig(target.clone());
+            let result = match (control_client.as_ref(), control_state.as_mut()) {
+                (Some(client), Some(control_state)) => {
+                    send_daemon_control_request(client, &request, &shutdown, control_state)
+                }
+                _ => Err(DaemonRequestError::Failed(
+                    "dseuhid control connection is unavailable".to_string(),
+                )),
+            };
+            match result {
+                Ok(()) => {
+                    let label = state.profiles.iter()
+                        .find(|(_, pc)| {
+                            resolve_config_path(&pc.config, &state.dir).as_deref()
+                                == Ok(target.as_str())
+                        })
+                        .map(|(name, _)| format!("profile '{name}'"))
+                        .unwrap_or_else(|| "default config".to_string());
+                    log::info!("applied {label}: {target}");
+                    send_notification("edgemap", &format!("Switched to {label}"));
+                    current_config = target;
+                }
+                Err(DaemonRequestError::Shutdown) => {
+                    break;
+                }
+                Err(DaemonRequestError::Failed(e)) => {
+                    log::warn!("dseuhid control request failed: {e}");
+                    runtime_changed = true;
+                }
             }
         }
         if let Err(e) = wait_for_daemon_activity(
             &mut monitor,
             &shutdown,
+            control_client.as_ref(),
             &mut next_profile_scan,
             &mut config_changed,
             &mut runtime_changed,
@@ -1261,14 +1381,10 @@ mod path_tests {
 
     #[test]
     fn daemon_monitor_detects_config_write() {
-        for name in ["control", "connected", "needs-config"] {
-            assert!(is_runtime_file(std::ffi::OsStr::new(name)));
-        }
+        assert!(is_runtime_file(std::ffi::OsStr::new("control.sock")));
+        assert!(!is_runtime_file(std::ffi::OsStr::new("connected")));
+        assert!(!is_runtime_file(std::ffi::OsStr::new("needs-config")));
         assert!(!is_runtime_file(std::ffi::OsStr::new("unrelated")));
-        assert_eq!(parse_needs_config("true\n"), Ok(true));
-        assert_eq!(parse_needs_config("false\n"), Ok(false));
-        assert!(parse_needs_config("").is_err());
-        assert!(parse_needs_config("yes").is_err());
         assert!(needs_config_became_true(None, true));
         assert!(needs_config_became_true(Some(false), true));
         assert!(!needs_config_became_true(Some(true), true));
@@ -1288,7 +1404,7 @@ mod path_tests {
         assert_ne!(monitor.run_watch.is_some(), monitor.runtime_watch.is_some());
         std::fs::write(&config_path, "config = \"changed.toml\"\n").unwrap();
         let wake = monitor
-            .wait(Instant::now() + Duration::from_secs(1), &shutdown)
+            .wait(Instant::now() + Duration::from_secs(1), &shutdown, None)
             .unwrap();
 
         assert!(wake.config_changed);
@@ -1296,7 +1412,7 @@ mod path_tests {
         let result = unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGTERM) };
         assert_eq!(result, 0);
         let wake = monitor
-            .wait(Instant::now() + Duration::from_secs(1), &shutdown)
+            .wait(Instant::now() + Duration::from_secs(1), &shutdown, None)
             .unwrap();
         assert!(wake.shutdown);
         std::fs::remove_dir_all(dir).unwrap();

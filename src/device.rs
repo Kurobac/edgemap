@@ -26,12 +26,20 @@ pub struct HidrawMonitor {
 
 pub enum HidrawWait {
     Devices(Vec<PathBuf>),
+    Control,
     Shutdown,
 }
 
 pub enum InputNodesWait {
     Ready,
     Removed,
+    Control,
+    Shutdown,
+}
+
+enum MonitorActivity {
+    Device,
+    Control,
     Shutdown,
 }
 
@@ -50,9 +58,15 @@ impl HidrawMonitor {
         Ok(Self { socket })
     }
 
-    pub fn wait(&self, shutdown: &ShutdownSignal) -> io::Result<HidrawWait> {
-        if !self.wait_for_event(shutdown)? {
-            return Ok(HidrawWait::Shutdown);
+    pub fn wait(
+        &self,
+        shutdown: &ShutdownSignal,
+        control: BorrowedFd<'_>,
+    ) -> io::Result<HidrawWait> {
+        match self.wait_for_event(shutdown, control)? {
+            MonitorActivity::Shutdown => return Ok(HidrawWait::Shutdown),
+            MonitorActivity::Control => return Ok(HidrawWait::Control),
+            MonitorActivity::Device => {}
         }
         Ok(HidrawWait::Devices(self.read_paths()))
     }
@@ -61,6 +75,7 @@ impl HidrawMonitor {
         &self,
         hidraw_path: &Path,
         shutdown: &ShutdownSignal,
+        control: BorrowedFd<'_>,
     ) -> io::Result<InputNodesWait> {
         loop {
             match input_nodes_state(hidraw_path)? {
@@ -69,19 +84,26 @@ impl HidrawMonitor {
                 InputNodesState::Pending => {}
             }
 
-            if !self.wait_for_event(shutdown)? {
-                return Ok(InputNodesWait::Shutdown);
+            match self.wait_for_event(shutdown, control)? {
+                MonitorActivity::Shutdown => return Ok(InputNodesWait::Shutdown),
+                MonitorActivity::Control => return Ok(InputNodesWait::Control),
+                MonitorActivity::Device => {}
             }
             self.socket.iter().for_each(drop);
         }
     }
 
-    fn wait_for_event(&self, shutdown: &ShutdownSignal) -> io::Result<bool> {
+    fn wait_for_event(
+        &self,
+        shutdown: &ShutdownSignal,
+        control: BorrowedFd<'_>,
+    ) -> io::Result<MonitorActivity> {
         loop {
             let monitor_fd = unsafe { BorrowedFd::borrow_raw(self.socket.as_raw_fd()) };
             let mut fds = [
                 PollFd::new(monitor_fd, PollFlags::POLLIN),
                 PollFd::new(shutdown.as_fd(), PollFlags::POLLIN),
+                PollFd::new(control, PollFlags::POLLIN),
             ];
             match poll(&mut fds, PollTimeout::NONE) {
                 Ok(_) => {}
@@ -90,6 +112,7 @@ impl HidrawMonitor {
             }
             let monitor_events = fds[0].revents().unwrap_or(PollFlags::empty());
             let shutdown_events = fds[1].revents().unwrap_or(PollFlags::empty());
+            let control_events = fds[2].revents().unwrap_or(PollFlags::empty());
             let failure = PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL;
             if monitor_events.intersects(failure) {
                 return Err(io::Error::other("udev device monitor poll failure"));
@@ -97,12 +120,18 @@ impl HidrawMonitor {
             if shutdown_events.intersects(failure) {
                 return Err(io::Error::other("shutdown signalfd poll failure"));
             }
+            if control_events.intersects(failure) {
+                return Err(io::Error::other("control epoll poll failure"));
+            }
             if shutdown_events.contains(PollFlags::POLLIN) {
                 shutdown.consume()?;
-                return Ok(false);
+                return Ok(MonitorActivity::Shutdown);
+            }
+            if control_events.contains(PollFlags::POLLIN) {
+                return Ok(MonitorActivity::Control);
             }
             if monitor_events.contains(PollFlags::POLLIN) {
-                return Ok(true);
+                return Ok(MonitorActivity::Device);
             }
         }
     }

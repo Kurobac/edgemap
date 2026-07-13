@@ -4,6 +4,8 @@ After=systemd-udevd.service
 
 [Service]
 Type=simple
+RuntimeDirectory=dseuhid
+RuntimeDirectoryMode=0755
 ExecStart=/usr/bin/dseuhid
 Environment=RUST_LOG=info
 ExecReload=/usr/bin/edgemap reload

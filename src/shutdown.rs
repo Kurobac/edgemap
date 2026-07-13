@@ -2,9 +2,7 @@ use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
-use std::time::{Duration, Instant};
 
-use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::sys::signal::{pthread_sigmask, SigSet, SigmaskHow, Signal};
 use nix::sys::signalfd::{SfdFlags, SignalFd};
 
@@ -46,37 +44,6 @@ impl ShutdownSignal {
         Ok(consumed)
     }
 
-    pub fn wait_timeout(&self, timeout: Duration) -> io::Result<bool> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as u32;
-            let mut fds = [PollFd::new(self.as_fd(), PollFlags::POLLIN)];
-            match poll(
-                &mut fds,
-                PollTimeout::try_from(timeout_ms).unwrap_or(PollTimeout::MAX),
-            ) {
-                Ok(0) => return Ok(false),
-                Ok(_) => {
-                    let events = fds[0].revents().unwrap_or(PollFlags::empty());
-                    if events.intersects(
-                        PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL,
-                    ) {
-                        return Err(io::Error::other("shutdown signalfd poll failure"));
-                    }
-                    if events.contains(PollFlags::POLLIN) {
-                        return self.consume();
-                    }
-                }
-                Err(nix::errno::Errno::EINTR) => {
-                    if Instant::now() >= deadline {
-                        return Ok(false);
-                    }
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
 }
 
 impl Drop for ShutdownSignal {
@@ -111,12 +78,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn timeout_and_thread_directed_shutdown_are_reported() {
+    fn thread_directed_shutdown_is_reported() {
         let shutdown = ShutdownSignal::new().unwrap();
-        assert!(!shutdown.wait_timeout(Duration::ZERO).unwrap());
+        assert!(!shutdown.consume().unwrap());
 
         let result = unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGTERM) };
         assert_eq!(result, 0);
-        assert!(shutdown.wait_timeout(Duration::from_secs(1)).unwrap());
+        assert!(shutdown.consume().unwrap());
     }
 }

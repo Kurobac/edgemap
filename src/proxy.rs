@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::{Arc, RwLock};
 
 use log::{debug, error, info, trace, warn};
@@ -9,6 +8,7 @@ use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use std::os::fd::BorrowedFd;
 
 use crate::codec::{CodecError, CodecPipeline, PhysicalCodec, PhysicalOutputState, SourceCodec, TargetCodec};
+use crate::control::{ControlRequest, ControlServer};
 use crate::device::{HidrawDevice, SonyDeviceKind};
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
 use crate::report::Button;
@@ -410,7 +410,6 @@ pub struct Proxy {
     turbo_runtimes: Vec<TurboRuntime>,
     combo_runtimes: Vec<ComboRuntime>,
     macro_runtimes: Vec<MacroRuntime>,
-    fifo_fd: OwnedFd,
 }
 
 struct CachedReport {
@@ -437,8 +436,7 @@ impl Proxy {
         })
     }
 
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, codec: CodecPipeline, source_kind: SonyDeviceKind, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice, fifo_file: std::fs::File) -> Self {
-        let fifo_fd = OwnedFd::from(fifo_file);
+    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, codec: CodecPipeline, source_kind: SonyDeviceKind, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice) -> Self {
         let repeat_input = RepeatInput::from_env(codec);
         let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
             let m = mapping.read().unwrap();
@@ -453,7 +451,7 @@ impl Proxy {
                 .collect();
             (turbos, combos, macros)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, repeat_input, physical_output_state: PhysicalOutputState::default(), physical_set_report_unsupported_warned: HashSet::new(), turbo_runtimes, combo_runtimes, macro_runtimes, fifo_fd }
+        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, repeat_input, physical_output_state: PhysicalOutputState::default(), physical_set_report_unsupported_warned: HashSet::new(), turbo_runtimes, combo_runtimes, macro_runtimes }
     }
 
     pub fn forget_restore_on_physical_disconnect(&mut self) {
@@ -464,26 +462,23 @@ impl Proxy {
         &self.config_path
     }
 
-    fn reload_config(&mut self) {
+    fn reload_config(&mut self) -> Result<(), (&'static str, String)> {
         if self.config_path.is_empty() {
-            info!("No config path set, skipping reload (running passthrough)");
-            return;
+            return Err(("no-config", "no config path is active".to_string()));
         }
         let path = self.config_path.clone();
-        self.reload_config_from(path);
+        self.reload_config_from(path)
     }
 
-    fn reload_config_from(&mut self, path: String) {
+    fn reload_config_from(&mut self, path: String) -> Result<(), (&'static str, String)> {
         let cfg = match crate::config::Config::load(&path) {
             Ok(cfg) => cfg,
             Err(e) => {
-                error!("Failed to load config on reload: {e}; keeping previous config");
-                return;
+                return Err(("load-failed", e));
             }
         };
         if let Err(e) = crate::config::validate(&cfg) {
-            error!("Config reload validation failed: {e}; keeping previous config");
-            return;
+            return Err(("validation-failed", e));
         }
         let new_mapping = match cfg.to_mapping_config() {
             Ok(m) => {
@@ -497,8 +492,7 @@ impl Proxy {
                 m
             }
             Err(e) => {
-                error!("Failed to build mapping on reload: {e}; keeping previous config");
-                return;
+                return Err(("mapping-failed", e));
             }
         };
         let new_output_device = cfg.output_device.clone();
@@ -506,9 +500,6 @@ impl Proxy {
         self.config_path = path;
         self.last_snapshot = None;
         self.last_output = None;
-        if let Err(e) = crate::write_needs_config(false) {
-            warn!("failed to write needs-config state: {e}");
-        }
         info!("Config reloaded from {}", self.config_path);
         if new_output_device != self.output_device_config {
             info!("output_device changed ({} → {}), will recreate virtual device", self.output_device_config, new_output_device);
@@ -526,6 +517,7 @@ impl Proxy {
         self.macro_runtimes = self.mapping.read().unwrap().macro_configs.iter()
             .map(MacroRuntime::from_macro_rule)
             .collect();
+        Ok(())
     }
 
     fn log_button_diff(&mut self, snapshot: &crate::report::GamepadState, output: &crate::report::GamepadState) {
@@ -555,7 +547,7 @@ impl Proxy {
         self.last_output = Some(output.clone());
     }
 
-    pub fn run(&mut self, shutdown: &ShutdownSignal) -> ExitReason {
+    pub fn run(&mut self, shutdown: &ShutdownSignal, control: &mut ControlServer) -> ExitReason {
         DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
 
         let ep_fd = match Epoll::new(EpollCreateFlags::empty()) {
@@ -591,13 +583,10 @@ impl Proxy {
             return ExitReason::UserShutdown;
         }
 
-        let fifo_bfd = unsafe { BorrowedFd::borrow_raw(self.fifo_fd.as_raw_fd()) };
-        let fifo_event = EpollEvent::new(
-            EpollFlags::EPOLLIN,
-            3,
-        );
-        if let Err(e) = ep_fd.add(fifo_bfd, fifo_event) {
-            warn!("Failed to add FIFO to epoll: {e} (control pipe unavailable)");
+        let control_event = EpollEvent::new(EpollFlags::EPOLLIN, 3);
+        if let Err(e) = ep_fd.add(control.as_fd(), control_event) {
+            error!("Failed to add control socket to epoll: {e}");
+            return ExitReason::UserShutdown;
         }
 
         let shutdown_event = EpollEvent::new(EpollFlags::EPOLLIN, 4);
@@ -606,6 +595,9 @@ impl Proxy {
             return ExitReason::UserShutdown;
         }
 
+        let mut control_state = control.state();
+        control_state.uhid_ready = true;
+        control.set_state(control_state);
         info!("Proxy running. Press Ctrl+C to stop.");
 
         let mut seq: u8 = 0;
@@ -632,7 +624,10 @@ impl Proxy {
                                 break 'run;
                             }
                         } else if fd_num == 3 {
-                            self.handle_fifo_command();
+                            if let Err(e) = self.handle_control_requests(control) {
+                                error!("control socket handler error: {e}");
+                                break 'run;
+                            }
                         } else if fd_num == 4 {
                             if let Err(e) = shutdown.consume() {
                                 error!("Failed to read shutdown signal: {e}");
@@ -672,37 +667,33 @@ impl Proxy {
         }
     }
 
-    fn handle_fifo_command(&mut self) {
-        let mut buf = [0u8; 4096];
-        loop {
-            let n = unsafe {
-                libc::read(
-                    self.fifo_fd.as_raw_fd(),
-                    buf.as_mut_ptr() as *mut libc::c_void,
-                    buf.len(),
-                )
-            };
-            if n <= 0 {
-                break;
-            }
-            let data = &buf[..n as usize];
-            for line in data.split(|b| *b == b'\n') {
-                let line = line.trim_ascii();
-                if line.is_empty() {
-                    continue;
+    fn handle_control_requests(&mut self, control: &mut ControlServer) -> io::Result<()> {
+        for pending in control.drain_requests()? {
+            let request = pending.request;
+            let result = match &request {
+                ControlRequest::Reload => {
+                    info!("control: reload requested");
+                    self.reload_config()
                 }
-                if line == b"reload" {
-                    info!("FIFO: reload requested");
-                    self.reload_config();
-                } else if let Some(path) = line.strip_prefix(b"switch-config ") {
-                    let path_str = String::from_utf8_lossy(path).trim().to_string();
-                    info!("FIFO: switch-config to {}", path_str);
-                    self.reload_config_from(path_str);
-                } else {
-                    debug!("FIFO: unknown command: {}", String::from_utf8_lossy(line));
+                ControlRequest::SwitchConfig(path) => {
+                    info!("control: switch-config to {path}");
+                    self.reload_config_from(path.clone())
+                }
+            };
+            match result {
+                Ok(()) => {
+                    control.reply_ok(pending.client, &request)?;
+                    let mut state = control.state();
+                    state.needs_config = false;
+                    control.set_state(state);
+                }
+                Err((code, message)) => {
+                    error!("control request failed: {message}; keeping previous config");
+                    control.reply_error(pending.client, code, &message)?;
                 }
             }
         }
+        Ok(())
     }
 
     fn handle_hidraw_input(&mut self, seq: &mut u8) -> io::Result<()> {

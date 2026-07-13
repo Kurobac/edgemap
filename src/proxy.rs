@@ -164,7 +164,7 @@ impl MacroRuntime {
                     crate::mapping::StepTarget::Gamepad(btn) => state.set_button(*btn, true),
                     crate::mapping::StepTarget::Keyboard(code) => keyboard_events.push((*code, true)),
                 }
-                debug!("macro '{}': +{elapsed}ms press {:?}", self.name, step.action);
+                debug!("macro step pressed: name={}, elapsed_ms={elapsed}, target={:?}", self.name, step.action);
             }
             if elapsed >= step.release_ms && step.pressed {
                 step.pressed = false;
@@ -173,7 +173,7 @@ impl MacroRuntime {
                     crate::mapping::StepTarget::Gamepad(btn) => state.set_button(*btn, false),
                     crate::mapping::StepTarget::Keyboard(code) => keyboard_events.push((*code, false)),
                 }
-                debug!("macro '{}': +{elapsed}ms release {:?}", self.name, step.action);
+                debug!("macro step released: name={}, elapsed_ms={elapsed}, target={:?}", self.name, step.action);
             } else if !step.done {
                 all_done = false;
             }
@@ -187,7 +187,7 @@ impl MacroRuntime {
         if all_done {
             match self.mode {
                 MacroMode::Hold => {
-                    debug!("macro '{}': loop, resetting", self.name);
+                    debug!("macro loop restarted: name={}", self.name);
                     self.step_start = now;
                     for step in &mut self.steps {
                         step.pressed = false;
@@ -195,7 +195,7 @@ impl MacroRuntime {
                     }
                 }
                 MacroMode::Single => {
-                    debug!("macro '{}': completed", self.name);
+                    debug!("macro completed: name={}", self.name);
                     self.deactivate(state, keyboard_events);
                 }
             }
@@ -242,28 +242,15 @@ impl RepeatInput {
 
         let (target, mode, hz) = match codec.target {
             TargetCodec::Ds5UsbAuto | TargetCodec::Ds5UsbForced => {
-                let mode = match env::var("DSEUHID_BT_DS5_USB_REPEAT_MODE").as_deref() {
-                    Ok("passthrough") => RepeatMode::Passthrough,
-                    Ok("seq_only") | Err(_) => RepeatMode::SeqOnly,
-                    Ok("seq_ts") => RepeatMode::SeqAndTimestamp,
-                    Ok(value) => {
-                        warn!("unknown DSEUHID_BT_DS5_USB_REPEAT_MODE={value}; disabling repeat");
-                        return None;
-                    }
-                };
-                let hz = parse_repeat_hz(
-                    "DSEUHID_BT_DS5_USB_REPEAT_HZ",
-                    env::var("DSEUHID_BT_DS5_USB_REPEAT_HZ").ok(),
-                    Some("1000"),
-                )?;
+                let mode = repeat_mode_from_env()
+                    .expect("repeat environment was validated at daemon startup");
+                let hz = repeat_hz_from_env("DSEUHID_BT_DS5_USB_REPEAT_HZ", Some(1000))
+                    .expect("repeat environment was validated at daemon startup")?;
                 (RepeatTarget::Ds5Usb, mode, hz)
             }
             TargetCodec::Ds4Usb => {
-                let hz = parse_repeat_hz(
-                    "DSEUHID_BT_DS4_USB_REPEAT_HZ",
-                    env::var("DSEUHID_BT_DS4_USB_REPEAT_HZ").ok(),
-                    None,
-                )?;
+                let hz = repeat_hz_from_env("DSEUHID_BT_DS4_USB_REPEAT_HZ", None)
+                    .expect("repeat environment was validated at daemon startup")?;
                 (RepeatTarget::Ds4Usb, RepeatMode::SeqOnly, hz)
             }
         };
@@ -281,8 +268,11 @@ impl RepeatInput {
             RepeatMode::SeqOnly => "seq_only",
             RepeatMode::SeqAndTimestamp => "seq_ts",
         };
-        info!(
-            "BT source -> {target_name} repeat enabled: {hz}Hz fixed-rate UHID output, mode={mode_name}, interval={}us, timestamp_delta={timestamp_delta}",
+        debug!(
+            "Bluetooth input repeat enabled: target={target_name}, rate_hz={hz}, mode={mode_name}"
+        );
+        debug!(
+            "Bluetooth input repeat timing: interval_us={}, timestamp_delta={timestamp_delta}",
             interval.as_micros()
         );
         Some(Self {
@@ -327,19 +317,54 @@ impl RepeatInput {
     }
 }
 
-fn parse_repeat_hz(env_name: &str, value: Option<String>, default: Option<&str>) -> Option<u64> {
-    let value = match (value, default) {
-        (Some(value), _) => value,
-        (None, Some(default)) => default.to_string(),
-        (None, None) => return None,
-    };
-    match value.parse::<u64>() {
-        Ok(hz) if (1..=2000).contains(&hz) => Some(hz),
-        _ => {
-            warn!("invalid {env_name}={value}, expected 1..=2000; disabling repeat");
-            None
-        }
+fn repeat_env(name: &str) -> Result<Option<String>, String> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(format!(
+            "invalid environment variable: name={name}, value is not valid Unicode"
+        )),
     }
+}
+
+fn parse_repeat_mode(value: &str) -> Result<RepeatMode, String> {
+    match value {
+        "passthrough" => Ok(RepeatMode::Passthrough),
+        "seq_only" => Ok(RepeatMode::SeqOnly),
+        "seq_ts" => Ok(RepeatMode::SeqAndTimestamp),
+        _ => Err(format!(
+            "invalid DSEUHID_BT_DS5_USB_REPEAT_MODE={value}; expected passthrough|seq_only|seq_ts"
+        )),
+    }
+}
+
+fn repeat_mode_from_env() -> Result<RepeatMode, String> {
+    repeat_env("DSEUHID_BT_DS5_USB_REPEAT_MODE")?
+        .as_deref()
+        .map_or(Ok(RepeatMode::SeqOnly), parse_repeat_mode)
+}
+
+fn parse_repeat_hz(env_name: &str, value: &str) -> Result<u64, String> {
+    match value.parse::<u64>() {
+        Ok(hz) if (1..=2000).contains(&hz) => Ok(hz),
+        _ => Err(format!(
+            "invalid {env_name}={value}; expected integer 1..=2000"
+        )),
+    }
+}
+
+fn repeat_hz_from_env(env_name: &str, default: Option<u64>) -> Result<Option<u64>, String> {
+    match repeat_env(env_name)? {
+        Some(value) => parse_repeat_hz(env_name, &value).map(Some),
+        None => Ok(default),
+    }
+}
+
+pub(crate) fn validate_repeat_env() -> Result<(), String> {
+    repeat_mode_from_env()?;
+    repeat_hz_from_env("DSEUHID_BT_DS5_USB_REPEAT_HZ", Some(1000))?;
+    repeat_hz_from_env("DSEUHID_BT_DS4_USB_REPEAT_HZ", None)?;
+    Ok(())
 }
 
 fn advance_repeat_report(
@@ -551,7 +576,7 @@ impl Proxy {
                 // warn for missing button sections
                 for name in crate::config::ALL_BUTTON_NAMES {
                     if !cfg.buttons.contains_key(*name) {
-                        warn!("{name}: not configured, passthrough");
+                        debug!("button not configured; using passthrough: button={name}");
                     }
                 }
                 warn_ignored_edge_passthroughs(&cfg, self.source_kind, self.codec.target);
@@ -564,12 +589,17 @@ impl Proxy {
         let new_output_device = cfg.output_device.clone();
         let new_runtimes = MappingRuntimes::from_mapping(&new_mapping);
         *self.mapping.write().unwrap() = new_mapping;
-        info!("Config reloaded from {path:?}");
+        info!("config reloaded: path={path}");
         self.config_path = Some(path);
         self.last_snapshot = None;
         self.last_output = None;
         if new_output_device != self.output_device_config {
-            info!("output_device changed ({} → {}), will recreate virtual device", self.output_device_config, new_output_device);
+            info!(
+                "output device changed: previous={}, current={}",
+                self.output_device_config,
+                new_output_device
+            );
+            info!("virtual HID device recreation requested");
             self.recreate_uhid = true;
         }
         self.output_device_config = new_output_device;
@@ -599,7 +629,8 @@ impl Proxy {
                 }
             }
             let out_display = if out_names.is_empty() { "[none]".to_string() } else { out_names.join(" ") };
-            debug!("in: {}  →  out: {}", phys_changes.join(" "), out_display);
+            debug!("controller button changes: buttons=[{}]", phys_changes.join(" "));
+            debug!("virtual buttons active: buttons=[{out_display}]");
         }
 
         self.last_snapshot = Some(snapshot.clone());
@@ -612,7 +643,7 @@ impl Proxy {
         let ep_fd = match Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC) {
             Ok(fd) => fd,
             Err(e) => {
-                error!("Failed to create epoll: {e}");
+                error!("failed to create epoll instance: {e}");
                 return ExitReason::FatalError;
             }
         };
@@ -629,7 +660,7 @@ impl Proxy {
             1,
         );
         if let Err(e) = ep_fd.add(hidraw_bfd, hidraw_event) {
-            error!("Failed to add hidraw to epoll: {e}");
+            error!("failed to register hidraw fd with epoll: {e}");
             return ExitReason::FatalError;
         }
 
@@ -638,26 +669,26 @@ impl Proxy {
             2,
         );
         if let Err(e) = ep_fd.add(uhid_bfd, uhid_event) {
-            error!("Failed to add uhid to epoll: {e}");
+            error!("failed to register UHID fd with epoll: {e}");
             return ExitReason::FatalError;
         }
 
         let control_event = EpollEvent::new(EpollFlags::EPOLLIN, 3);
         if let Err(e) = ep_fd.add(control.as_fd(), control_event) {
-            error!("Failed to add control socket to epoll: {e}");
+            error!("failed to register control socket with epoll: {e}");
             return ExitReason::FatalError;
         }
 
         let shutdown_event = EpollEvent::new(EpollFlags::EPOLLIN, 4);
         if let Err(e) = ep_fd.add(shutdown.as_fd(), shutdown_event) {
-            error!("Failed to add shutdown signal to epoll: {e}");
+            error!("failed to register shutdown signal fd with epoll: {e}");
             return ExitReason::FatalError;
         }
 
         let mut control_state = control.state();
         control_state.uhid_ready = true;
         control.set_state(control_state);
-        info!("Proxy running. Press Ctrl+C to stop.");
+        info!("proxy started");
 
         let mut seq: u8 = 0;
         let mut events = [EpollEvent::empty(); 8];
@@ -674,26 +705,26 @@ impl Proxy {
 
                         if fd_num == 1 {
                             if let Err(e) = self.handle_hidraw_input(&mut seq) {
-                                error!("hidraw handler error: {e}");
+                                error!("hidraw event handler failed: {e}");
                                 break 'run;
                             }
                         } else if fd_num == 2 {
                             if let Err(e) = self.handle_uhid_event() {
-                                error!("UHID handler error: {e}");
+                                error!("UHID event handler failed: {e}");
                                 break 'run;
                             }
                         } else if fd_num == 3 {
                             if let Err(e) = self.handle_control_requests(control) {
-                                error!("control socket handler error: {e}");
+                                error!("control socket event handler failed: {e}");
                                 break 'run;
                             }
                         } else if fd_num == 4 {
                             match shutdown.consume() {
                                 Ok(true) => shutdown_requested = true,
                                 Ok(false) => {
-                                    error!("shutdown signalfd was readable without a signal")
+                                    error!("shutdown signal fd was readable but contained no signal")
                                 }
-                                Err(e) => error!("Failed to read shutdown signal: {e}"),
+                                Err(e) => error!("failed to read shutdown signal: {e}"),
                             }
                             break 'run;
                         }
@@ -701,13 +732,13 @@ impl Proxy {
                 }
                 Err(nix::errno::Errno::EINTR) => continue,
                 Err(e) => {
-                    error!("epoll wait error: {e}");
+                    error!("epoll wait failed: {e}");
                     break;
                 }
             }
             if let Some(repeat) = self.repeat_input.as_mut() {
                 if let Err(e) = repeat.send_due(&self.uhid, &mut seq) {
-                    error!("repeat input send error: {e}");
+                    error!("failed to send repeated input report: {e}");
                     break;
                 }
             }
@@ -716,7 +747,7 @@ impl Proxy {
             }
         }
 
-        info!("Proxy stopped.");
+        info!("proxy stopped");
 
         if shutdown_requested {
             ExitReason::UserShutdown
@@ -734,11 +765,11 @@ impl Proxy {
             let request = pending.request;
             let result = match &request {
                 ControlRequest::Reload => {
-                    info!("control: reload requested");
+                    info!("control request received: action=reload");
                     self.reload_config()
                 }
                 ControlRequest::SwitchConfig(path) => {
-                    info!("control: switch-config to {path:?}");
+                    info!("control request received: action=switch-config, path={path}");
                     self.reload_config_from(path.clone())
                 }
             };
@@ -750,7 +781,7 @@ impl Proxy {
                     control.set_state(state);
                 }
                 Err((code, _detail)) => {
-                    error!("control request failed ({code}); keeping previous config");
+                    error!("control request failed; previous config retained: code={code}");
                     control.reply_error(
                         pending.client,
                         code,
@@ -808,27 +839,31 @@ impl Proxy {
                                 t.phase = true;
                                 t.press_time = Instant::now();
                                 state.set_button(t.src, true);
-                                debug!("turbo {:?}: press (one-shot)", t.src);
+                                debug!("turbo pressed: source={:?}, mode=one-shot", t.src);
                             } else if !pressed && t.active {
                                 t.active = false;
                                 t.turbo_active = false;
                                 state.set_button(t.src, false);
-                                debug!("turbo {:?}: released", t.src);
+                                debug!("turbo released: source={:?}", t.src);
                             } else if t.active && !t.turbo_active && t.delay_ms > 0 {
                                 if t.press_time.elapsed().as_millis() >= t.delay_ms as u128 {
                                     t.turbo_active = true;
                                     t.last_toggle = Instant::now();
-                                    debug!("turbo {:?}: delay expired, starting toggle (interval={}ms)", t.src, t.interval_ms);
+                                    debug!(
+                                        "turbo delay elapsed; toggling started: source={:?}, interval_ms={}",
+                                        t.src,
+                                        t.interval_ms
+                                    );
                                 }
                             } else if t.active && !t.turbo_active {
                                 t.turbo_active = true;
                                 t.last_toggle = Instant::now();
-                                debug!("turbo {:?}: starting toggle (interval={}ms)", t.src, t.interval_ms);
+                                debug!("turbo toggling started: source={:?}, interval_ms={}", t.src, t.interval_ms);
                             } else if t.active && t.turbo_active
                                 && t.last_toggle.elapsed().as_millis() >= t.interval_ms as u128 {
                                     t.phase = !t.phase;
                                     t.last_toggle = Instant::now();
-                                    debug!("turbo {:?}: toggle → {}", t.src, t.phase);
+                                    debug!("turbo phase changed: source={:?}, active={}", t.src, t.phase);
                                 }
                             if t.active {
                                 state.set_button(t.src, t.phase);
@@ -968,7 +1003,8 @@ impl Proxy {
                             .encode_input(&frame, *seq)
                             .expect("DS5 USB source should encode to selected USB target");
                         if self.codec.target == TargetCodec::Ds4Usb {
-                            trace!("ds4 raw[..32]: {:02x?}", &out[..32]);
+                            trace!("DS4 input bytes: range=0..16, data={:02x?}", &out[..16]);
+                            trace!("DS4 input bytes: range=16..32, data={:02x?}", &out[16..32]);
                         }
                         // per-frame output at trace level
                         {
@@ -978,13 +1014,13 @@ impl Proxy {
                                     btn_names.push(btn.name());
                                 }
                             }
-                            trace!("out: [{}]", btn_names.join(" "));
+                            trace!("virtual buttons active: buttons=[{}]", btn_names.join(" "));
                         }
                         self.log_button_diff(&physical_snapshot, &state);
                         out.to_vec()
                     } else {
                         warn!(
-                            "source input decode failed; dropping frame: source={:?}, size={}, report_id={}",
+                            "failed to decode source input report; frame dropped: source={:?}, size={}, report_id={}",
                             self.codec.source,
                             n,
                             report_id_label(&buf[..n])
@@ -1003,7 +1039,7 @@ impl Proxy {
                 }
                 Ok(n) => {
                     trace!(
-                        "short hidraw input report ignored: source={:?}, size={n}, expected>={}, report_id={}",
+                        "short source input report ignored: source={:?}, size={n}, minimum_size={}, report_id={}",
                         self.codec.source,
                         input_report_size,
                         report_id_label(&buf[..n])
@@ -1012,12 +1048,13 @@ impl Proxy {
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(ref e) if is_disconnect_io_error(e) => {
-                    warn!("hidraw input failed; controller disconnected? {e}");
+                    warn!("failed to read input report: {e}");
+                    info!("controller disconnected");
                     DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
                     break;
                 }
                 Err(e) => {
-                    error!("hidraw read error: {e}");
+                    error!("failed to read input report: {e}");
                     return Err(e);
                 }
             }
@@ -1032,21 +1069,21 @@ impl Proxy {
                     use crate::uhid::UhidEvent;
                     match event {
                         UhidEvent::Start => {
-                            info!("UHID device started");
+                            info!("virtual HID device started");
                         }
                         UhidEvent::Stop => {
-                            warn!("UHID device stopped");
+                            warn!("virtual HID device stopped by kernel");
                         }
                         UhidEvent::Open => {
-                            debug!("UHID device opened by client");
+                            debug!("virtual HID device opened by client");
                         }
                         UhidEvent::Close => {
-                            debug!("UHID device closed by client");
+                            debug!("virtual HID device closed by client");
                         }
                         UhidEvent::Output { rtype, ref data } => {
                             if rtype == 1 {
                                 trace!(
-                                    "UHID OUTPUT: size={}, report_id={}",
+                                    "UHID OUTPUT received: size={}, report_id={}",
                                     data.len(),
                                     report_id_label(data)
                                 );
@@ -1060,18 +1097,22 @@ impl Proxy {
                                     Ok(encoded) => {
                                         if let Err(e) = self.hidraw.write_output(&encoded) {
                                             if is_disconnect_io_error(&e) {
-                                                warn!("hidraw output failed; controller disconnected? {e}");
+                                                warn!("failed to write output report: {e}");
+                                                info!("controller disconnected");
                                                 DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
                                                 break;
                                             }
-                                            error!("Failed to forward output report: {e}");
+                                            error!("failed to write output report: {e}");
                                         }
                                     }
                                     Err(CodecError::InvalidReport) => {
                                         warn!(
-                                            "Dropping invalid target output report: target={:?}, physical={:?}, rtype={rtype}, size={}, report_id={}",
+                                            "invalid output report dropped: target={:?}, controller={:?}",
                                             self.codec.target,
-                                            self.codec.physical,
+                                            self.codec.physical
+                                        );
+                                        warn!(
+                                            "output report metadata: rtype={rtype}, size={}, report_id={}",
                                             data.len(),
                                             report_id_label(data)
                                         );
@@ -1079,42 +1120,42 @@ impl Proxy {
                                 }
                             } else {
                                 warn!(
-                                    "UHID Output with unexpected rtype={rtype}, size={}, report_id={}, ignoring",
+                                    "UHID OUTPUT ignored: unexpected rtype={rtype}, size={}, report_id={}",
                                     data.len(),
                                     report_id_label(data)
                                 );
                             }
                         }
                         UhidEvent::GetReport { id, rnum, rtype } => {
-                            trace!("UHID GET_REPORT: id={id}, rnum={rnum}, rtype={rtype}");
+                            trace!("UHID GET_REPORT received: id={id}, rnum={rnum}, rtype={rtype}");
                             match self.get_cached_report(rnum) {
                                 Some(report) => {
                                     match report.source {
                                         CachedReportSource::PhysicalCache => {
-                                            trace!("GET_REPORT rnum={rnum}: served from physical cache");
+                                            trace!("GET_REPORT served from cache: rnum={rnum}");
                                         }
                                         CachedReportSource::TargetFallback => {
-                                            trace!("GET_REPORT rnum={rnum}: served from target fallback");
+                                            trace!("GET_REPORT served from target response: rnum={rnum}");
                                         }
                                     }
                                     if let Err(e) = self.uhid.send_get_report_reply(id, 0, &report.data) {
-                                        warn!("Failed to send GET_REPORT reply: {e}");
+                                        warn!("failed to send GET_REPORT reply: {e}");
                                     }
                                 }
                                 None => {
-                                    warn!("GET_REPORT rnum={rnum}: not cached, returning error");
+                                    warn!("GET_REPORT unavailable; returning error: rnum={rnum}");
                                     if let Err(e) = self.uhid.send_get_report_reply(id, 1, &[]) {
-                                        warn!("Failed to send GET_REPORT reply: {e}");
+                                        warn!("failed to send GET_REPORT reply: {e}");
                                     }
                                 }
                             }
                         }
                         UhidEvent::Unknown(t) => {
-                            warn!("Unknown UHID event type: {t}");
+                            warn!("unknown UHID event type: type={t}");
                         }
                         UhidEvent::SetReport { id, rnum, rtype, ref data } => {
                             trace!(
-                                "UHID SET_REPORT id={id}, rnum={rnum}, rtype={rtype}, size={}, report_id={}",
+                                "UHID SET_REPORT received: id={id}, rnum={rnum}, rtype={rtype}, size={}, report_id={}",
                                 data.len(),
                                 report_id_label(data)
                             );
@@ -1133,7 +1174,7 @@ impl Proxy {
                                     )
                                 {
                                     if let Err(e) = self.hidraw.send_feature_report(&full_data) {
-                                        warn!("Failed to forward set_report rnum={rnum}: {e}");
+                                        warn!("failed to forward SET_REPORT: rnum={rnum}, error={e}");
                                         reply_err = 1;
                                         if is_disconnect_io_error(&e) {
                                             DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1143,15 +1184,15 @@ impl Proxy {
                                     && self.physical_set_report_unsupported_warned.insert(rnum)
                                 {
                                     debug!(
-                                        "physical Bluetooth SET_REPORT forwarding is not supported for this report yet; dropping rnum=0x{rnum:02x}, size={}, report_id={}, data={}",
+                                        "Bluetooth SET_REPORT dropped: unsupported, rnum=0x{rnum:02x}, size={}, report_id={}",
                                         data.len(),
-                                        report_id_label(data),
-                                        hex_prefix(data, 64)
+                                        report_id_label(data)
                                     );
+                                    debug!("Bluetooth SET_REPORT data: prefix_32={}", hex_prefix(data, 32));
                                 }
                             }
                             if let Err(e) = self.uhid.send_set_report_reply(id, reply_err) {
-                                warn!("Failed to send SET_REPORT reply: {e}");
+                                warn!("failed to send SET_REPORT reply: {e}");
                             }
                             if DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
                                 break;
@@ -1193,7 +1234,7 @@ pub(crate) fn warn_ignored_edge_passthroughs(
     for name in ["left_paddle", "right_paddle", "left_fn", "right_fn"] {
         let remap = cfg.buttons.get(name).and_then(|button| button.remap.as_deref());
         if remap.is_none() || remap == Some("passthrough") {
-            warn!("{name}: passthrough may be ignored by the target");
+            warn!("passthrough source may be ignored by target: source={name}");
         }
     }
 }
@@ -1230,6 +1271,35 @@ fn hex_prefix(data: &[u8], max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeat_mode_validation_accepts_only_named_modes() {
+        assert!(matches!(parse_repeat_mode("passthrough"), Ok(RepeatMode::Passthrough)));
+        assert!(matches!(parse_repeat_mode("seq_only"), Ok(RepeatMode::SeqOnly)));
+        assert!(matches!(parse_repeat_mode("seq_ts"), Ok(RepeatMode::SeqAndTimestamp)));
+        let error = match parse_repeat_mode("invalid") {
+            Err(error) => error,
+            Ok(_) => panic!("invalid repeat mode was accepted"),
+        };
+        assert_eq!(
+            error,
+            "invalid DSEUHID_BT_DS5_USB_REPEAT_MODE=invalid; expected passthrough|seq_only|seq_ts"
+        );
+    }
+
+    #[test]
+    fn repeat_rate_validation_enforces_inclusive_bounds() {
+        assert_eq!(parse_repeat_hz("TEST_REPEAT_HZ", "1"), Ok(1));
+        assert_eq!(parse_repeat_hz("TEST_REPEAT_HZ", "2000"), Ok(2000));
+        for value in ["0", "2001", "invalid"] {
+            assert_eq!(
+                parse_repeat_hz("TEST_REPEAT_HZ", value).unwrap_err(),
+                format!(
+                    "invalid TEST_REPEAT_HZ={value}; expected integer 1..=2000"
+                )
+            );
+        }
+    }
 
     #[test]
     fn ds5_repeat_advances_sequence_without_timestamp_in_seq_only_mode() {

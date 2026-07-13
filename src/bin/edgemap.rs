@@ -47,17 +47,26 @@ struct ProfileConfig {
     match_cmdline: String,
 }
 
-fn print_usage() {
-    eprintln!("edgemap — companion CLI for dseuhid");
-    eprintln!();
-    eprintln!("Usage: edgemap <command> [args]");
-    eprintln!();
-    eprintln!("Commands:");
-    eprintln!("  {:<28}Validate config file(s)", "v, validate [path]");
-    eprintln!("  {:<28}Create default config (stdout if no path)", "cc, create-config [path]");
-    eprintln!("  {:<28}Tell running daemon to reload config", "r, reload");
-    eprintln!("  {:<28}Tell daemon to load a different config", "sc, switch-config <path>");
-    eprintln!("  {:<28}Watch daemon and inject config (auto-start)", "d, daemon [--config <path>]");
+const USAGE: &str = concat!(
+    "edgemap — configuration CLI for dseuhid\n",
+    "\n",
+    "Usage: edgemap <COMMAND> [ARGS]\n",
+    "\n",
+    "Commands:\n",
+    "  v, validate [PATH]           Validate one config or all configs\n",
+    "  cc, create-config [PATH]     Create the default config; print it if PATH is omitted\n",
+    "  r, reload                    Reload the active config\n",
+    "  sc, switch-config <PATH>     Switch to another config\n",
+    "  d, daemon [--config <PATH>]  Watch dseuhid and manage config selection\n",
+    "  help                         Print help\n",
+);
+
+fn print_usage(to_stdout: bool) {
+    if to_stdout {
+        print!("{USAGE}");
+    } else {
+        eprint!("{USAGE}");
+    }
 }
 
 fn required_home() -> Result<String, String> {
@@ -180,23 +189,37 @@ fn needs_config_became_true(previous: Option<bool>, current: bool) -> bool {
 impl DaemonMonitor {
     fn new(config_path: &Path) -> Result<Self, String> {
         let inotify = Inotify::init(InitFlags::IN_CLOEXEC | InitFlags::IN_NONBLOCK)
-            .map_err(|e| format!("cannot initialize inotify: {e}"))?;
+            .map_err(|e| format!("failed to initialize inotify: {e}"))?;
         let watch_flags = daemon_watch_flags();
         let config_dir = watch_parent(config_path).to_path_buf();
         let config_parent_dir = watch_parent(&config_dir).to_path_buf();
         let config_dir_name = config_dir
             .file_name()
-            .ok_or_else(|| format!("cannot rediscover config directory {}", config_dir.display()))?
+            .ok_or_else(|| {
+                format!(
+                    "config directory cannot be rediscovered: path={}",
+                    config_dir.display()
+                )
+            })?
             .to_os_string();
         let config_watch = inotify
             .add_watch(&config_dir, watch_flags)
-            .map_err(|e| format!("cannot watch {}: {e}", config_dir.display()))?;
+            .map_err(|e| {
+                format!(
+                    "failed to watch path: path={}, error={e}",
+                    config_dir.display()
+                )
+            })?;
         let runtime_exists = Path::new(DSEUHID_RUNTIME_DIR).is_dir();
         let runtime_watch = if runtime_exists {
             Some(
                 inotify
                     .add_watch(DSEUHID_RUNTIME_DIR, watch_flags)
-                    .map_err(|e| format!("cannot watch {DSEUHID_RUNTIME_DIR}: {e}"))?,
+                    .map_err(|e| {
+                        format!(
+                            "failed to watch path: path={DSEUHID_RUNTIME_DIR}, error={e}"
+                        )
+                    })?,
             )
         } else {
             None
@@ -207,7 +230,9 @@ impl DaemonMonitor {
             Some(
                 inotify
                     .add_watch(RUN_DIR, run_discovery_flags())
-                    .map_err(|e| format!("cannot watch {RUN_DIR}: {e}"))?,
+                    .map_err(|e| {
+                        format!("failed to watch path: path={RUN_DIR}, error={e}")
+                    })?,
             )
         };
         let config_name = config_path
@@ -236,12 +261,17 @@ impl DaemonMonitor {
             self.config_watch = Some(
                 self.inotify
                     .add_watch(&self.config_dir, daemon_watch_flags())
-                    .map_err(|e| format!("cannot watch {}: {e}", self.config_dir.display()))?,
+                    .map_err(|e| {
+                        format!(
+                            "failed to watch path: path={}, error={e}",
+                            self.config_dir.display()
+                        )
+                    })?,
             );
             if let Some(parent_watch) = self.config_parent_watch.take() {
                 self.inotify.rm_watch(parent_watch).map_err(|e| {
                     format!(
-                        "cannot stop watching {}: {e}",
+                        "failed to remove path watch: path={}, error={e}",
                         self.config_parent_dir.display()
                     )
                 })?;
@@ -255,7 +285,7 @@ impl DaemonMonitor {
                     .add_watch(&self.config_parent_dir, config_discovery_flags())
                     .map_err(|e| {
                         format!(
-                            "cannot watch {} for config directory recovery: {e}",
+                            "failed to watch config parent: path={}, error={e}",
                             self.config_parent_dir.display()
                         )
                     })?,
@@ -275,12 +305,18 @@ impl DaemonMonitor {
             self.runtime_watch = Some(
                 self.inotify
                     .add_watch(DSEUHID_RUNTIME_DIR, daemon_watch_flags())
-                    .map_err(|e| format!("cannot watch {DSEUHID_RUNTIME_DIR}: {e}"))?,
+                    .map_err(|e| {
+                        format!(
+                            "failed to watch path: path={DSEUHID_RUNTIME_DIR}, error={e}"
+                        )
+                    })?,
             );
             if let Some(run_watch) = self.run_watch.take() {
                 self.inotify
                     .rm_watch(run_watch)
-                    .map_err(|e| format!("cannot stop watching {RUN_DIR}: {e}"))?;
+                    .map_err(|e| {
+                        format!("failed to remove path watch: path={RUN_DIR}, error={e}")
+                    })?;
             }
         }
         Ok(())
@@ -291,7 +327,9 @@ impl DaemonMonitor {
             self.run_watch = Some(
                 self.inotify
                     .add_watch(RUN_DIR, run_discovery_flags())
-                    .map_err(|e| format!("cannot watch {RUN_DIR}: {e}"))?,
+                    .map_err(|e| {
+                        format!("failed to watch path: path={RUN_DIR}, error={e}")
+                    })?,
             );
         }
         Ok(())
@@ -339,10 +377,10 @@ impl DaemonMonitor {
             .unwrap_or(PollFlags::empty());
         let failure = PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL;
         if inotify_events.intersects(failure) {
-            return Err("inotify poll failure".to_string());
+            return Err("inotify poll reported a failure".to_string());
         }
         if shutdown_events.intersects(failure) {
-            return Err("shutdown signalfd poll failure".to_string());
+            return Err("shutdown signal fd poll reported a failure".to_string());
         }
         if control_events.intersects(failure) || control_events.contains(PollFlags::POLLIN) {
             wake.runtime_changed = true;
@@ -350,7 +388,7 @@ impl DaemonMonitor {
         if shutdown_events.contains(PollFlags::POLLIN) {
             shutdown
                 .consume()
-                .map_err(|e| format!("cannot read shutdown signal: {e}"))?;
+                .map_err(|e| format!("failed to read shutdown signal: {e}"))?;
             wake.shutdown = true;
             return Ok(wake);
         }
@@ -361,10 +399,12 @@ impl DaemonMonitor {
         let events = self
             .inotify
             .read_events()
-            .map_err(|e| format!("cannot read inotify events: {e}"))?;
+            .map_err(|e| format!("failed to read inotify events: {e}"))?;
         for event in events {
             if event.mask.contains(AddWatchFlags::IN_Q_OVERFLOW) {
-                log::warn!("inotify event queue overflowed, resynchronizing daemon state");
+                log::warn!(
+                    "inotify event queue overflowed; daemon state resynchronization requested"
+                );
                 wake.config_changed = true;
                 wake.runtime_changed = true;
                 continue;
@@ -463,10 +503,10 @@ fn send_notification(summary: &str, body: &str) {
     match command.spawn() {
         Ok(child) => {
             if let Err(error) = reap_child(child) {
-                log::warn!("cannot start notify-send child reaper: {error}");
+                log::warn!("failed to start notify-send child reaper: {error}");
             }
         }
-        Err(error) => log::debug!("cannot start notify-send: {error}"),
+        Err(error) => log::debug!("failed to start notify-send: {error}"),
     }
 }
 
@@ -477,7 +517,7 @@ fn reap_child(
         .name("edgemap-child-reaper".to_string())
         .spawn(move || {
             if let Err(error) = child.wait() {
-                log::debug!("cannot reap notify-send child: {error}");
+                log::debug!("failed to reap notify-send child: {error}");
             }
         })
 }
@@ -723,7 +763,7 @@ fn find_matching_profile(
     for (profile_name, profile_cfg) in profiles {
         for process in &processes {
             if profile_matches(process, profile_cfg) {
-                log::debug!("profile '{}' matched by pid {}", profile_name, process.pid);
+                log::debug!("profile matched: name={profile_name}, pid={}", process.pid);
                 return resolve_config_path(&profile_cfg.config, config_dir).map(Some);
             }
         }
@@ -734,7 +774,7 @@ fn find_matching_profile(
 fn cmd_validate(args: &[String]) -> ! {
     if args.len() > 3 {
         eprintln!("error: too many arguments");
-        eprintln!("usage: edgemap validate [path]");
+        eprintln!("Usage: edgemap validate [PATH]");
         std::process::exit(1);
     }
 
@@ -750,9 +790,9 @@ fn cmd_validate(args: &[String]) -> ! {
         match config::validate(&cfg) {
             Ok(()) => {
                 if cfg.buttons.is_empty() {
-                    println!("OK: {path} is valid (passthrough only)");
+                    println!("Valid: {path} (passthrough only)");
                 } else {
-                    println!("OK: {path} is valid");
+                    println!("Valid: {path}");
                 }
                 std::process::exit(0);
             }
@@ -769,7 +809,7 @@ fn cmd_validate(args: &[String]) -> ! {
         std::process::exit(1);
     });
     if !dir.exists() {
-        println!("Config directory does not exist: {}", dir.display());
+        println!("No config directory: {}", dir.display());
         std::process::exit(0);
     }
     let mut ok = 0;
@@ -781,13 +821,16 @@ fn cmd_validate(args: &[String]) -> ! {
                 .is_some_and(|n| n.ends_with(".toml") && n != EDGEMAP_CONFIG_FILE)
         }).collect(),
         Err(e) => {
-            eprintln!("error: cannot read {}: {e}", dir.display());
+            eprintln!(
+                "error: failed to read config directory '{}': {e}",
+                dir.display()
+            );
             std::process::exit(1);
         }
     };
     entries.sort_by_key(|e| e.file_name());
 
-    println!("Checking {} ...", dir.display());
+    println!("Checking configs in {}", dir.display());
     for entry in entries {
         let path = entry.path();
         let display = entry.file_name().to_string_lossy().into_owned();
@@ -795,48 +838,56 @@ fn cmd_validate(args: &[String]) -> ! {
             Ok(cfg) => match config::validate(&cfg) {
                 Ok(()) => {
                     let note = if cfg.buttons.is_empty() { " (passthrough only)" } else { "" };
-                    println!("  {display} ... OK{note}");
+                    println!("  OK    {display}{note}");
                     ok += 1;
                 }
-                Err(e) => { eprintln!("  {display} ... FAIL: {e}"); fail += 1; }
+                Err(e) => {
+                    println!("  FAIL  {display}: {e}");
+                    fail += 1;
+                }
             },
-            Err(e) => { eprintln!("  {display} ... FAIL: {e}"); fail += 1; }
+            Err(e) => {
+                println!("  FAIL  {display}: {e}");
+                fail += 1;
+            }
         }
     }
     let total = ok + fail;
-    println!("{ok}/{total} valid");
+    println!("Summary: {ok}/{total} valid");
     std::process::exit(if fail > 0 { 1 } else { 0 });
 }
 
 fn cmd_create_config(args: &[String]) -> ! {
     if args.len() > 3 {
         eprintln!("error: too many arguments");
-        eprintln!("usage: edgemap create-config [path]");
+        eprintln!("Usage: edgemap create-config [PATH]");
         std::process::exit(1);
     }
     let content = config::default_content();
     if args.len() >= 3 {
         let path = &args[2];
         if Path::new(path).exists() {
-            eprintln!("error: {path} already exists");
+            eprintln!("error: config already exists: {path}");
             std::process::exit(1);
         }
         if let Some(parent) = Path::new(path).parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("error: cannot create parent dir for {path}: {e}");
+                eprintln!(
+                    "error: failed to create parent directory for '{path}': {e}"
+                );
                 std::process::exit(1);
             }
         }
         if let Err(e) = std::fs::write(path, content) {
-            eprintln!("error: cannot write {path}: {e}");
+            eprintln!("error: failed to write config '{path}': {e}");
             std::process::exit(1);
         }
-        println!("Created {path}");
+        println!("Created: {path}");
     } else {
         let stdout = io::stdout();
         let mut handle = stdout.lock();
         if let Err(e) = handle.write_all(content.as_bytes()) {
-            eprintln!("error: cannot write to stdout: {e}");
+            eprintln!("error: failed to write config to stdout: {e}");
             std::process::exit(1);
         }
     }
@@ -844,9 +895,15 @@ fn cmd_create_config(args: &[String]) -> ! {
 }
 
 fn send_control_command(request: control::ControlRequest) -> ! {
+    let success = match &request {
+        control::ControlRequest::Reload => "Config reloaded".to_string(),
+        control::ControlRequest::SwitchConfig(path) => {
+            format!("Config switched: {path}")
+        }
+    };
     match send_control_request(&request) {
         Ok(_) => {
-            eprintln!("Command applied by dseuhid");
+            println!("{success}");
             std::process::exit(0);
         }
         Err(e) => {
@@ -858,8 +915,8 @@ fn send_control_command(request: control::ControlRequest) -> ! {
 
 fn cmd_reload(args: &[String]) -> ! {
     if args.len() > 2 {
-        eprintln!("error: reload takes no arguments");
-        eprintln!("usage: edgemap reload");
+        eprintln!("error: command 'reload' does not accept arguments");
+        eprintln!("Usage: edgemap reload");
         std::process::exit(1);
     }
     send_control_command(control::ControlRequest::Reload)
@@ -867,13 +924,13 @@ fn cmd_reload(args: &[String]) -> ! {
 
 fn cmd_switch_config(args: &[String]) -> ! {
     if args.len() < 3 {
-        eprintln!("error: switch-config requires a path argument");
-        eprintln!("usage: edgemap switch-config <path>");
+        eprintln!("error: command 'switch-config' requires a path");
+        eprintln!("Usage: edgemap switch-config <PATH>");
         std::process::exit(1);
     }
     if args.len() > 3 {
         eprintln!("error: too many arguments");
-        eprintln!("usage: edgemap switch-config <path>");
+        eprintln!("Usage: edgemap switch-config <PATH>");
         std::process::exit(1);
     }
     let path = &args[2];
@@ -882,7 +939,7 @@ fn cmd_switch_config(args: &[String]) -> ! {
     } else if path.starts_with('.') {
         std::fs::canonicalize(path)
             .unwrap_or_else(|e| {
-                eprintln!("error: cannot resolve {}: {}", path, e);
+                eprintln!("error: failed to resolve config path '{path}': {e}");
                 std::process::exit(1);
             })
             .to_string_lossy()
@@ -934,10 +991,18 @@ fn extract_profile_order(raw: &str) -> Vec<String> {
 }
 
 fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let root: toml::Value = toml::from_str(&content)
-        .map_err(|e| format!("cannot parse {}: {e}", path.display()))?;
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        format!(
+            "failed to read edgemap config: path={}, error={e}",
+            path.display()
+        )
+    })?;
+    let root: toml::Value = toml::from_str(&content).map_err(|e| {
+        format!(
+            "failed to parse edgemap config: path={}, error={e}",
+            path.display()
+        )
+    })?;
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
     let base_config_raw = root.get("config")
@@ -957,7 +1022,7 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
                     cfg.match_cmdline = cfg.match_cmdline.to_lowercase();
                     profiles.push((name.clone(), cfg));
                 }
-                Err(e) => log::warn!("invalid profile '{name}': {e}, skipping"),
+                Err(e) => log::warn!("profile skipped: name={name}, error={e}"),
             }
         }
     }
@@ -972,7 +1037,7 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
     for (name, pcfg) in &profiles {
         let p_path = resolve_config_path(&pcfg.config, &dir)?;
         if pcfg.match_process.is_empty() && pcfg.match_cmdline.is_empty() {
-            log::warn!("profile '{name}': no match_process or match_cmdline, skipping");
+            log::warn!("profile skipped: name={name}, reason=no match criteria");
             continue;
         }
         // defer config existence/validation to daemon loop (pre-injection)
@@ -999,7 +1064,7 @@ fn cmd_daemon(args: &[String]) -> ! {
             i += 1;
         } else {
             eprintln!("error: unknown argument '{}'", args[i]);
-            eprintln!("usage: edgemap daemon [--config <path>]");
+            eprintln!("Usage: edgemap daemon [--config <PATH>]");
             std::process::exit(1);
         }
         i += 1;
@@ -1022,7 +1087,7 @@ fn cmd_daemon(args: &[String]) -> ! {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let state_dir = edgemap_state_dir().unwrap_or_else(|e| {
-        log::error!("{e}");
+        log::error!("failed to resolve state directory: {e}");
         std::process::exit(1);
     });
     let _daemon_lock = control::DaemonLock::acquire_named(
@@ -1031,7 +1096,7 @@ fn cmd_daemon(args: &[String]) -> ! {
         "edgemap daemon",
     )
     .unwrap_or_else(|e| {
-        log::error!("cannot acquire edgemap daemon lock: {e}");
+        log::error!("failed to acquire edgemap daemon lock: {e}");
         std::process::exit(1);
     });
 
@@ -1039,37 +1104,46 @@ fn cmd_daemon(args: &[String]) -> ! {
 
     if !edgemap_config_path.exists() {
         if let Err(e) = std::fs::create_dir_all(dir) {
-            log::error!("cannot create {}: {e}", dir.display());
+            log::error!(
+                "failed to create config directory: path={}, error={e}",
+                dir.display()
+            );
             std::process::exit(1);
         }
         let default_toml_content = config::default_content();
         let default_remap_path = dir.join(DEFAULT_CONFIG_FILE);
         if !default_remap_path.exists() {
             if let Err(e) = std::fs::write(&default_remap_path, default_toml_content) {
-                log::error!("cannot write {}: {e}", default_remap_path.display());
+                log::error!(
+                    "failed to write config: path={}, error={e}",
+                    default_remap_path.display()
+                );
                 std::process::exit(1);
             }
-            log::info!("Created {}", default_remap_path.display());
+            log::info!("config created: path={}", default_remap_path.display());
         }
         let edgemap_toml = format!("config = \"{DEFAULT_CONFIG_FILE}\"\n");
         if let Err(e) = std::fs::write(&edgemap_config_path, edgemap_toml) {
-            log::error!("cannot write {}: {e}", edgemap_config_path.display());
+            log::error!(
+                "failed to write config: path={}, error={e}",
+                edgemap_config_path.display()
+            );
             std::process::exit(1);
         }
-        log::info!("Created {}", edgemap_config_path.display());
+        log::info!("config created: path={}", edgemap_config_path.display());
     }
 
     let config_path = edgemap_config_path.clone();
     let mut state = match load_edgemap_config(&config_path) {
         Ok(s) => s,
         Err(e) => {
-            log::error!("{e}");
+            log::error!("failed to load edgemap config: {e}");
             std::process::exit(1);
         }
     };
 
     let shutdown = ShutdownSignal::new().unwrap_or_else(|e| {
-        log::error!("cannot initialize signal handling: {e}");
+        log::error!("failed to initialize signal handling: {e}");
         std::process::exit(1);
     });
 
@@ -1079,11 +1153,11 @@ fn cmd_daemon(args: &[String]) -> ! {
         let _ = libc::signal(libc::SIGPIPE, handler);
     }
 
-    log::info!("daemon started");
-    log::info!("config: {}", config_path.display());
+    log::info!("edgemap daemon started");
+    log::info!("edgemap config: path={}", config_path.display());
 
     let mut monitor = DaemonMonitor::new(&config_path).unwrap_or_else(|e| {
-        log::error!("{e}");
+        log::error!("failed to initialize daemon monitor: {e}");
         std::process::exit(1);
     });
 
@@ -1105,9 +1179,11 @@ fn cmd_daemon(args: &[String]) -> ! {
                     state = s;
                     current_config.clear();
                     profile_due = true;
-                    log::info!("edgemap config reloaded");
+                    log::info!("edgemap config reloaded: path={}", config_path.display());
                 }
-                Err(e) => log::error!("reload failed, keeping previous config: {e}"),
+                Err(e) => {
+                    log::error!("failed to reload edgemap config; previous config retained: {e}")
+                }
             }
         }
 
@@ -1136,7 +1212,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                     }
                     Err(e) => {
                         if !warned_not_running {
-                            log::warn!("dseuhid not running, waiting: {e}");
+                            log::info!("waiting for dseuhid: {e}");
                             warned_not_running = true;
                         }
                     }
@@ -1145,23 +1221,23 @@ fn cmd_daemon(args: &[String]) -> ! {
 
             if control_client.is_none() {
                 if previous_state.is_some_and(|state| state.uhid_ready) {
-                    log::info!("UHID device stopped");
+                    log::info!("virtual HID device unavailable");
                 }
                 if was_alive {
                     log::warn!(
-                        "dseuhid disconnected: {}",
+                        "dseuhid control connection lost: reason={}",
                         disconnect_reason.as_deref().unwrap_or("control socket closed")
                     );
                 }
             } else if let Some(state) = control_state {
                 if !was_alive {
-                    log::info!("dseuhid connected");
+                    log::info!("dseuhid control connection established");
                 }
                 let previous_ready = previous_state.is_some_and(|old| old.uhid_ready);
                 if state.uhid_ready && !previous_ready {
-                    log::info!("UHID device ready");
+                    log::info!("virtual HID device ready");
                 } else if !state.uhid_ready && previous_ready {
-                    log::info!("UHID device stopped");
+                    log::info!("virtual HID device unavailable");
                 }
                 let previous_needs = previous_state.map(|old| old.needs_config);
                 if needs_config_became_true(previous_needs, state.needs_config) {
@@ -1182,7 +1258,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                 &mut profile_due,
                 &mut shutdown_requested,
             ) {
-                log::error!("{e}");
+                log::error!("daemon wait failed: {e}");
                 break;
             }
             continue;
@@ -1199,7 +1275,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                 &mut profile_due,
                 &mut shutdown_requested,
             ) {
-                log::error!("{e}");
+                log::error!("daemon wait failed: {e}");
                 break;
             }
             continue;
@@ -1219,7 +1295,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                 Ok(Some(path)) => path,
                 Ok(None) => state.base_config.clone(),
                 Err(e) => {
-                    log::error!("cannot resolve profile config: {e}");
+                    log::error!("failed to resolve profile config: {e}");
                     if let Err(wait_error) = wait_for_daemon_activity(
                         &mut monitor,
                         &shutdown,
@@ -1230,7 +1306,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                         &mut profile_due,
                         &mut shutdown_requested,
                     ) {
-                        log::error!("{wait_error}");
+                        log::error!("daemon wait failed: {wait_error}");
                         break;
                     }
                     continue;
@@ -1243,17 +1319,20 @@ fn cmd_daemon(args: &[String]) -> ! {
             // their config files are created, or invalid save states
             let is_valid = |p: &str| -> bool {
                 if !Path::new(p).exists() {
-                    log::warn!("config not found: {p}");
+                    log::warn!("config not found: path={p}");
                     return false;
                 }
                 match config::Config::load(p) {
                     Ok(cfg) => {
                         if let Err(e) = config::validate(&cfg) {
-                            log::warn!("config invalid ({p}): {e}");
+                            log::warn!("config validation failed: path={p}, error={e}");
                             false
                         } else { true }
                     }
-                    Err(e) => { log::warn!("cannot load {p}: {e}"); false }
+                    Err(e) => {
+                        log::warn!("failed to load config: path={p}, error={e}");
+                        false
+                    }
                 }
             };
 
@@ -1261,10 +1340,10 @@ fn cmd_daemon(args: &[String]) -> ! {
             if !is_valid(&target) {
                 // profile config failed — try base_config as fallback
                 if target != state.base_config {
-                    log::warn!("profile config invalid, falling back to default");
+                    log::warn!("profile config invalid; using default config");
                     target = state.base_config.clone();
                     if !is_valid(&target) {
-                        log::warn!("default config also invalid, keeping previous");
+                        log::warn!("default config also invalid; previous config retained");
                         if let Err(wait_error) = wait_for_daemon_activity(
                             &mut monitor,
                             &shutdown,
@@ -1275,14 +1354,14 @@ fn cmd_daemon(args: &[String]) -> ! {
                             &mut profile_due,
                             &mut shutdown_requested,
                         ) {
-                            log::error!("{wait_error}");
+                            log::error!("daemon wait failed: {wait_error}");
                             break;
                         }
                         continue;
                     }
                 } else {
                     // base_config itself is invalid — just warn, don't spam
-                    log::warn!("default config invalid, keeping previous");
+                    log::warn!("default config invalid; previous config retained");
                     if let Err(wait_error) = wait_for_daemon_activity(
                         &mut monitor,
                         &shutdown,
@@ -1293,7 +1372,7 @@ fn cmd_daemon(args: &[String]) -> ! {
                         &mut profile_due,
                         &mut shutdown_requested,
                     ) {
-                        log::error!("{wait_error}");
+                        log::error!("daemon wait failed: {wait_error}");
                         break;
                     }
                     continue;
@@ -1318,7 +1397,8 @@ fn cmd_daemon(args: &[String]) -> ! {
                         })
                         .map(|(name, _)| format!("profile '{name}'"))
                         .unwrap_or_else(|| "default config".to_string());
-                    log::info!("applied {label}: {target}");
+                    log::info!("config applied: source={label}");
+                    log::info!("config path: path={target}");
                     send_notification("edgemap", &format!("Switched to {label}"));
                     current_config = target;
                 }
@@ -1341,19 +1421,19 @@ fn cmd_daemon(args: &[String]) -> ! {
             &mut profile_due,
             &mut shutdown_requested,
         ) {
-            log::error!("{e}");
+            log::error!("daemon wait failed: {e}");
             break;
         }
     }
 
-    log::info!("daemon stopped");
+    log::info!("edgemap daemon stopped");
     std::process::exit(0);
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        print_usage();
+        print_usage(false);
         std::process::exit(1);
     }
     match args[1].as_str() {
@@ -1363,12 +1443,12 @@ fn main() {
         "sc" | "switch-config" => cmd_switch_config(&args),
         "d" | "daemon" => cmd_daemon(&args),
         "help" | "--help" | "-h" => {
-            print_usage();
+            print_usage(true);
             std::process::exit(0);
         }
         _ => {
             eprintln!("error: unknown command '{}'", args[1]);
-            eprintln!("Run 'edgemap help' for usage.");
+            eprintln!("hint: run 'edgemap help' for usage");
             std::process::exit(1);
         }
     }
@@ -1377,6 +1457,13 @@ fn main() {
 #[cfg(test)]
 mod path_tests {
     use super::*;
+
+    #[test]
+    fn usage_uses_conventional_placeholders() {
+        assert!(USAGE.contains("Usage: edgemap <COMMAND> [ARGS]"));
+        assert!(USAGE.contains("switch-config <PATH>"));
+        assert!(!USAGE.contains("<path>"));
+    }
 
     #[test]
     fn absolute_xdg_path_is_used_without_home() {

@@ -337,7 +337,7 @@ impl HidrawDevice {
             let mut buf = [0u8; 64];
             match device.read_input(&mut buf) {
                 Ok(64) if buf[0] == 0x01 => {
-                    debug!("device state OK: first USB input report valid");
+                    debug!("device check passed: first USB input report valid");
                 }
                 Ok(n) => {
                     return Err(io::Error::other(
@@ -345,7 +345,7 @@ impl HidrawDevice {
                     ));
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    debug!("device state OK: no USB data yet (non-blocking read)");
+                    debug!("device check deferred: no USB input available");
                 }
                 Err(e) => {
                     return Err(io::Error::new(
@@ -359,7 +359,7 @@ impl HidrawDevice {
             // full 0x31 state report. Runtime input decoding already validates
             // the 0x31 report shape and CRC, so avoid failing open on a valid
             // but unusable-for-us BT packet here.
-            debug!("skipping first input report validation for non-USB device");
+            debug!("first input report check skipped for non-USB source");
         }
 
         Ok(device)
@@ -438,15 +438,15 @@ impl HidrawDevice {
         unblock_shutdown_signals_in_child(&mut command);
         match command.output() {
             Ok(output) if output.status.success() => {}
-            Ok(output) => warn!("Failed to clear ACL on {:?}: {}", path, output.status),
-            Err(e) => warn!("Failed to clear ACL on {:?}: {e}", path),
+            Ok(output) => warn!("failed to clear node ACL: path={}, status={}", path.display(), output.status),
+            Err(e) => warn!("failed to clear node ACL: path={}, error={e}", path.display()),
         }
     }
 
     fn restrict_node(path: &Path, restored: &mut Vec<RestoredNode>) -> io::Result<()> {
         let mode = fs::metadata(path)?.permissions().mode();
         let acl = Self::read_acl(path).unwrap_or_else(|e| {
-            warn!("Failed to save ACL on {:?}: {e}", path);
+            warn!("failed to capture node ACL: path={}, error={e}", path.display());
             String::new()
         });
 
@@ -498,9 +498,9 @@ impl HidrawDevice {
             }
         }
 
-        info!("hidden {} physical device nodes", hidden.len());
+        info!("input nodes restricted: count={}", hidden.len());
         for name in &hidden {
-            debug!("  restricted {name}");
+            debug!("input node restricted: path={name}");
         }
 
         if failures.is_empty() {
@@ -520,7 +520,7 @@ impl HidrawDevice {
             let mode = match fs::metadata(&node.path) {
                 Ok(metadata) => metadata.permissions().mode(),
                 Err(e) => {
-                    warn!("Failed to inspect {:?} for re-restriction: {e}", node.path);
+                    warn!("failed to inspect node permissions: path={}, error={e}", node.path.display());
                     continue;
                 }
             };
@@ -535,8 +535,8 @@ impl HidrawDevice {
                 }
                 Err(e) => {
                     warn!(
-                        "Failed to refresh ACL snapshot on {:?}, keeping previous snapshot: {e}",
-                        node.path
+                        "failed to refresh node ACL snapshot; previous snapshot retained: path={}, error={e}",
+                        node.path.display()
                     );
                 }
             }
@@ -544,17 +544,17 @@ impl HidrawDevice {
             Self::clear_acl(&node.path);
             match fs::set_permissions(&node.path, fs::Permissions::from_mode(0o000)) {
                 Ok(()) => restricted.push(node.path.clone()),
-                Err(e) => warn!("Failed to re-restrict {:?}: {e}", node.path),
+                Err(e) => warn!("failed to re-restrict input node: path={}, error={e}", node.path.display()),
             }
         }
 
         if !restricted.is_empty() {
             info!(
-                "re-restricted {} device nodes after external permission reset",
+                "input nodes re-restricted after permission reset: count={}",
                 restricted.len()
             );
             for path in restricted {
-                debug!("  re-restricted {}", path.display());
+                debug!("input node re-restricted: path={}", path.display());
             }
         }
     }
@@ -563,7 +563,7 @@ impl HidrawDevice {
         if self.restored_nodes.is_empty() {
             return;
         }
-        info!("restore {} device nodes", self.restored_nodes.len());
+        info!("restoring input node permissions: count={}", self.restored_nodes.len());
         let mut acl_batch = String::new();
         for node in &self.restored_nodes {
             if !node.path.exists() {
@@ -572,9 +572,9 @@ impl HidrawDevice {
             if let Err(e) =
                 fs::set_permissions(&node.path, std::fs::Permissions::from_mode(node.mode))
             {
-                log::warn!("Failed to restore permissions on {:?}: {e}", node.path);
+                log::warn!("failed to restore node permissions: path={}, error={e}", node.path.display());
             } else {
-                log::debug!("Restored permissions on {:?}", node.path);
+                log::debug!("node permissions restored: path={}", node.path.display());
             }
 
             if !node.acl.is_empty() {
@@ -594,16 +594,16 @@ impl HidrawDevice {
                 Ok(mut child) => {
                     if let Some(mut stdin) = child.stdin.take() {
                         if let Err(e) = stdin.write_all(acl_batch.as_bytes()) {
-                            log::warn!("Failed to write ACL data to setfacl: {e}");
+                            log::warn!("failed to write ACL restore data to setfacl: {e}");
                         }
                     }
                     match child.wait() {
                         Ok(status) if status.success() => {}
-                        Ok(status) => log::warn!("setfacl restore failed with {status}"),
-                        Err(e) => log::warn!("Failed to wait for setfacl restore: {e}"),
+                        Ok(status) => log::warn!("failed to restore ACLs with setfacl: status={status}"),
+                        Err(e) => log::warn!("failed to wait for setfacl ACL restore: {e}"),
                     }
                 }
-                Err(e) => log::warn!("Failed to spawn setfacl: {e}"),
+                Err(e) => log::warn!("failed to start setfacl ACL restore: {e}"),
             }
         }
     }
@@ -618,7 +618,7 @@ impl Drop for HidrawDevice {
 fn is_physical_device(hidraw_name: &str) -> bool {
     if let Ok(uevent) = fs::read_to_string(format!("/sys/class/hidraw/{hidraw_name}/device/uevent")) {
         if is_uhid_uevent(&uevent) {
-            debug!("skipping virtual UHID device {hidraw_name}");
+            debug!("virtual UHID device skipped: node={hidraw_name}");
             return false;
         }
     }
@@ -646,8 +646,9 @@ pub fn find_dualsense() -> io::Result<Option<DeviceInfo>> {
         };
 
         if let Some(ref existing) = found {
+            warn!("multiple controllers found; using the first");
             warn!(
-                "multiple DualSense devices found (at {} and {}); using the first, additional devices are not supported",
+                "controller selection: selected={}, ignored={}",
                 existing.path.display(),
                 info.path.display()
             );
@@ -684,7 +685,7 @@ pub fn probe_dualsense(path: &Path) -> io::Result<Option<DeviceInfo>> {
         Some(transport) => transport,
         None => {
             debug!(
-                "skipping unsupported DualSense {name} (bustype={})",
+                "controller skipped due to unsupported bus type: node={name}, bustype={}",
                 devinfo.bustype
             );
             return Ok(None);
@@ -764,7 +765,7 @@ fn input_nodes_state(hidraw_path: &Path) -> io::Result<InputNodesState> {
     };
     if nodes.is_empty() {
         debug!(
-            "waiting for associated input nodes to appear for {}",
+            "waiting for associated input nodes: hidraw={}",
             hidraw_path.display()
         );
         return Ok(InputNodesState::Pending);
@@ -775,7 +776,7 @@ fn input_nodes_state(hidraw_path: &Path) -> io::Result<InputNodesState> {
         .map(|node| node.name.as_str())
         .collect();
     if !pending.is_empty() {
-        debug!("waiting for udev to initialize input nodes: {}", pending.join(", "));
+        debug!("waiting for udev to initialize input nodes: nodes={}", pending.join(", "));
         return Ok(InputNodesState::Pending);
     }
     Ok(InputNodesState::Ready)

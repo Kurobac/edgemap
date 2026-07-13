@@ -131,7 +131,7 @@ impl Drop for KeyboardDevice {
     fn drop(&mut self) {
         self.flush_held();
         if let Some(fd) = &self.fd {
-            info!("uinput keyboard device destroyed");
+            info!("virtual keyboard destroyed");
             unsafe {
                 libc::ioctl(fd.as_raw_fd(), ((0x55u64) << 8) | (0x02u64));
             }
@@ -206,15 +206,15 @@ impl KeyboardDevice {
         let raw = fd.as_raw_fd();
 
         if let Err(e) = set_bit(raw, UI_SET_EVBIT, 0x01) {
-            log::warn!("uinput set_bit EV_KEY failed: {e}");
+            log::warn!("failed to enable uinput EV_KEY capability: {e}");
         }
         if let Err(e) = set_bit(raw, UI_SET_EVBIT, 0x00) {
-            log::warn!("uinput set_bit EV_SYN failed: {e}");
+            log::warn!("failed to enable uinput EV_SYN capability: {e}");
         }
 
         for code in ALL_KEYCODES {
             if let Err(e) = set_bit(raw, UI_SET_KEYBIT, *code) {
-                log::warn!("uinput set_bit key {code} failed: {e}");
+                log::warn!("failed to enable uinput key capability: code={code}, error={e}");
                 break;
             }
         }
@@ -257,10 +257,10 @@ impl KeyboardDevice {
         if let Some(ref fd) = self.fd {
             let ev = InputEvent { time_sec: 0, time_usec: 0, ev_type: 0x01, code, value };
             write_input_event(fd.as_raw_fd(), &ev)
-                .inspect_err(|e| log::error!("uinput event write failed: {e}"))?;
+                .inspect_err(|e| log::error!("failed to write uinput key event: {e}"))?;
             let syn = InputEvent { time_sec: 0, time_usec: 0, ev_type: 0x00, code: 0, value: 0 };
             write_input_event(fd.as_raw_fd(), &syn)
-                .inspect_err(|e| log::error!("uinput syn write failed: {e}"))?;
+                .inspect_err(|e| log::error!("failed to write uinput SYN event: {e}"))?;
         }
         Ok(())
     }

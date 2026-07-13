@@ -342,7 +342,7 @@ impl ControlServer {
 
     fn reply(&mut self, client: RawFd, packet: &[u8]) {
         if let Err(error) = send_packet(client, packet) {
-            log::debug!("disconnecting control client {client}: reply failed: {error}");
+            log::debug!("control client disconnected after reply failure: fd={client}, error={error}");
             self.clients.remove(&client);
         }
     }
@@ -373,7 +373,7 @@ impl ControlServer {
                     fd as u64,
                 ),
             ) {
-                log::warn!("rejecting control client {fd}: epoll registration failed: {error}");
+                log::warn!("control client rejected after epoll registration failure: fd={fd}, error={error}");
                 continue;
             }
             self.clients.insert(fd, client);

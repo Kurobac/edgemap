@@ -253,9 +253,10 @@ impl UhidDevice {
         write_all_fd(self.fd.as_raw_fd(), &buf[..total_size])?;
 
         debug!(
-            "UHID create2: name={name}, rd_size={}, bus={bus}, vid={vendor:04x}, pid={product:04x}, written={total_size}",
+            "UHID CREATE2 sent: name={name}, descriptor_size={}, bytes_written={total_size}",
             rd_data.len()
         );
+        debug!("UHID identity: bus={bus}, vid={vendor:04x}, pid={product:04x}");
         self.created = true;
         Ok(())
     }
@@ -270,7 +271,7 @@ impl UhidDevice {
 
         write_all_fd(self.fd.as_raw_fd(), &buf)?;
 
-        info!("UHID destroy sent");
+        info!("UHID DESTROY sent");
         self.created = false;
         Ok(())
     }
@@ -310,7 +311,7 @@ impl UhidDevice {
 
         let total_size = 12 + data.len();
         if let Err(e) = write_all_fd(self.fd.as_raw_fd(), &buf[..total_size]) {
-            log::error!("uhid GET_REPORT reply write failed: {e}");
+            log::error!("failed to write UHID GET_REPORT reply: {e}");
             return Err(e);
         }
         Ok(())
@@ -323,7 +324,7 @@ impl UhidDevice {
         buf[8..10].copy_from_slice(&err.to_le_bytes());
 
         if let Err(e) = write_all_fd(self.fd.as_raw_fd(), &buf[..10]) {
-            log::error!("uhid SET_REPORT reply write failed: {e}");
+            log::error!("failed to write UHID SET_REPORT reply: {e}");
             return Err(e);
         }
         Ok(())
@@ -349,7 +350,6 @@ impl UhidDevice {
             None => return Ok(None),
         };
 
-        debug!("UHID recv: {ev:?}");
         Ok(Some(ev))
     }
 }

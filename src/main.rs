@@ -52,14 +52,14 @@ fn shutdown_during_retry_delay(
                 ),
                 Err(nix::errno::Errno::EINTR) => continue,
                 Err(e) => {
-                    error!("Failed while waiting for retry delay: {e}");
+                    error!("failed to poll during retry delay: {e}");
                     return true;
                 }
             }
         };
         let failure = PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL;
         if shutdown_events.intersects(failure) || control_events.intersects(failure) {
-            error!("poll failure while waiting for retry delay");
+            error!("poll reported a failure during retry delay");
             return true;
         }
         if shutdown_events.contains(PollFlags::POLLIN) {
@@ -67,7 +67,7 @@ fn shutdown_during_retry_delay(
         }
         if control_events.contains(PollFlags::POLLIN) {
             if let Err(e) = reject_inactive_control(control) {
-                error!("Failed to handle control request while waiting: {e}");
+                error!("failed to handle control request during retry delay: {e}");
                 return true;
             }
         }
@@ -81,7 +81,7 @@ fn parse_config_path() -> Option<String> {
         match args[i].as_str() {
             "-c" | "--config-path" => {
                 if i + 1 >= args.len() {
-                    eprintln!("error: --config-path requires a path argument");
+                    eprintln!("error: option '--config-path' requires a path");
                     std::process::exit(1);
                 }
                 return Some(args[i + 1].clone());
@@ -93,22 +93,33 @@ fn parse_config_path() -> Option<String> {
     None
 }
 
-fn print_usage() {
-    eprintln!(
-        "dseuhid {} — DualSense UHID Proxy",
+fn usage_text() -> String {
+    format!(
+        concat!(
+            "dseuhid {} — DualSense UHID proxy\n",
+            "\n",
+            "Usage: dseuhid [OPTIONS] [COMMAND]\n",
+            "\n",
+            "Commands:\n",
+            "  version                   Print version and exit\n",
+            "  help                      Print help\n",
+            "\n",
+            "Options:\n",
+            "  -c, --config-path <PATH>  Load a config file; reconnect resets to passthrough\n",
+            "\n",
+            "Without a command, start the UHID proxy daemon (requires root).\n",
+        ),
         env!("CARGO_PKG_VERSION")
-    );
-    eprintln!();
-    eprintln!("Usage: dseuhid [OPTIONS] [COMMAND]");
-    eprintln!();
-    eprintln!("Commands:");
-    eprintln!("  version         Print version and exit");
-    eprintln!("  help            Print this help");
-    eprintln!();
-    eprintln!("Options:");
-    eprintln!("  -c, --config-path <path>  Config file (resets to passthrough on reconnect)");
-    eprintln!();
-    eprintln!("Without a command, starts the UHID proxy daemon (requires root).");
+    )
+}
+
+fn print_usage(to_stdout: bool) {
+    let usage = usage_text();
+    if to_stdout {
+        print!("{usage}");
+    } else {
+        eprint!("{usage}");
+    }
 }
 
 use device::{
@@ -123,10 +134,10 @@ fn main() {
     if args.len() >= 2 {
         // reject duplicate subcommands: all known subcommands take no extra args
         let sub = args[1].as_str();
-let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "-h");
+        let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "-h");
         if known && args.len() > 2 {
-            eprintln!("error: '{}' takes no arguments", args[1]);
-            eprintln!("Run 'dseuhid help' for usage.");
+            eprintln!("error: command '{}' does not accept arguments", args[1]);
+            eprintln!("hint: run 'dseuhid help' for usage");
             std::process::exit(1);
         }
         match sub {
@@ -135,13 +146,13 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 return;
             }
             "help" | "--help" | "-h" => {
-                print_usage();
+                print_usage(true);
                 return;
             }
             _ => {
                 if !sub.starts_with('-') {
                     eprintln!("error: unknown command '{}'", args[1]);
-                    eprintln!("Run 'dseuhid help' for usage.");
+                    eprintln!("hint: run 'dseuhid help' for usage");
                     std::process::exit(1);
                 }
             }
@@ -151,31 +162,36 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     if unsafe { libc::getuid() } != 0 {
-        error!("dseuhid daemon requires root (needs /dev/uhid and /dev/hidraw)");
+        error!("dseuhid daemon requires root");
+        std::process::exit(1);
+    }
+
+    if let Err(e) = proxy::validate_repeat_env() {
+        error!("{e}");
         std::process::exit(1);
     }
 
     let mut config_path = parse_config_path();
     if let Some(path) = config_path.as_deref() {
         let cfg = config::Config::load(path).unwrap_or_else(|e| {
-            error!("Failed to load startup config: {e}");
+            error!("failed to load startup config: {e}");
             std::process::exit(1);
         });
         config::validate(&cfg).unwrap_or_else(|e| {
-            error!("Startup config validation failed: {e}");
+            error!("startup config validation failed: {e}");
             std::process::exit(1);
         });
     }
 
-    info!("DualSense UHID proxy starting");
+    info!("dseuhid daemon starting");
     let shutdown = ShutdownSignal::new().unwrap_or_else(|e| {
-        error!("Failed to initialize signal handling: {e}");
+        error!("failed to initialize signal handling: {e}");
         std::process::exit(1);
     });
 
     let _daemon_lock = control::DaemonLock::acquire(std::path::Path::new(RUNTIME_DIR))
         .unwrap_or_else(|e| {
-            error!("Failed to acquire daemon lock: {e}");
+            error!("failed to acquire daemon lock: {e}");
             std::process::exit(1);
         });
     let mut control = control::ControlServer::bind(
@@ -186,7 +202,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         },
     )
     .unwrap_or_else(|e| {
-        error!("Failed to initialize control socket: {e}");
+        error!("failed to initialize control socket: {e}");
         std::process::exit(1);
     });
 
@@ -195,19 +211,19 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             let hidraw_monitor = match HidrawMonitor::new() {
                 Ok(monitor) => monitor,
                 Err(e) => {
-                    error!("Failed to monitor hidraw/input devices through udev: {e}");
+                    error!("failed to create udev monitor for hidraw/input devices: {e}");
                     break 'outer;
                 }
             };
             let mut found = match find_dualsense() {
                 Ok(device) => device,
                 Err(e) => {
-                    error!("Failed to enumerate hidraw devices through udev: {e}");
+                    error!("failed to enumerate hidraw devices through udev: {e}");
                     break 'outer;
                 }
             };
             if found.is_none() {
-                info!("Waiting for DualSense device...");
+                info!("waiting for a controller");
             }
 
             'wait_for_device: loop {
@@ -222,25 +238,25 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                             found = match find_dualsense() {
                                 Ok(device) => device,
                                 Err(e) => {
-                                    error!("Failed to enumerate hidraw devices through udev: {e}");
+                                    error!("failed to enumerate hidraw devices through udev: {e}");
                                     break 'outer;
                                 }
                             };
                             if found.is_some() {
                                 continue;
                             }
-                            info!("Waiting for DualSense device...");
+                            info!("waiting for a controller");
                         }
                         Ok(InputNodesWait::Control) => {
                             if let Err(e) = reject_inactive_control(&mut control) {
-                                error!("Failed to handle inactive control request: {e}");
+                                error!("failed to reject control request while proxy is inactive: {e}");
                                 break 'outer;
                             }
                             found = Some(device);
                         }
                         Ok(InputNodesWait::Shutdown) => break 'outer,
                         Err(e) => {
-                            error!("Failed while waiting for input nodes to initialize: {e}");
+                            error!("failed while waiting for associated input nodes: {e}");
                             break 'outer;
                         }
                     }
@@ -250,25 +266,28 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                     Ok(HidrawWait::Devices(paths)) => paths,
                     Ok(HidrawWait::Control) => {
                         if let Err(e) = reject_inactive_control(&mut control) {
-                            error!("Failed to handle inactive control request: {e}");
+                            error!("failed to reject control request while proxy is inactive: {e}");
                             break 'outer;
                         }
                         continue;
                     }
                     Ok(HidrawWait::Shutdown) => break 'outer,
                     Err(e) => {
-                        error!("Failed to wait for hidraw device events: {e}");
+                        error!("failed to wait for hidraw device events: {e}");
                         break 'outer;
                     }
                 };
                 for path in paths {
                     match probe_dualsense(&path) {
                         Ok(Some(device)) if found.is_none() => found = Some(device),
-                        Ok(Some(device)) => warn!(
-                            "multiple DualSense devices found (at {} and {}); using the first, additional devices are not supported",
-                            found.as_ref().unwrap().path.display(),
-                            device.path.display()
-                        ),
+                        Ok(Some(device)) => {
+                            warn!("multiple controllers found; using the first");
+                            warn!(
+                                "controller selection: selected={}, ignored={}",
+                                found.as_ref().unwrap().path.display(),
+                                device.path.display()
+                            );
+                        }
                         Ok(None) => {}
                         Err(e)
                             if matches!(
@@ -276,7 +295,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                                 Some(libc::ENOENT | libc::ENODEV | libc::ENXIO)
                             ) => {}
                         Err(e) => {
-                            warn!("Failed to probe new hidraw device {}: {e}", path.display())
+                            warn!("failed to probe hidraw device: path={}, error={e}", path.display())
                         }
                     }
                 }
@@ -284,9 +303,12 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         };
 
         info!(
-            "found {} via {} ({:04x}:{:04x}) at {}",
+            "controller found: name={}, transport={}",
             dev_info.device_name(),
-            dev_info.transport.name(),
+            dev_info.transport.name()
+        );
+        info!(
+            "controller identity: id={:04x}:{:04x}, path={}",
             dev_info.vid,
             dev_info.pid,
             dev_info.path.display()
@@ -294,17 +316,17 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
         let loaded_config = match config_path.as_deref() {
             Some(path) => {
-                info!("Loading config from {path}");
+                info!("loading config: path={path}");
                 match config::Config::load(path) {
                     Ok(cfg) => match config::validate(&cfg) {
                         Ok(()) => Some(cfg),
                         Err(e) => {
-                            error!("Config validation failed: {e}");
+                            error!("config validation failed: {e}");
                             break 'outer;
                         }
                     },
                     Err(e) => {
-                        error!("Failed to load config: {e}");
+                        error!("failed to load config: {e}");
                         break 'outer;
                     }
                 }
@@ -324,7 +346,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 Ok(mapping) => {
                     for name in config::ALL_BUTTON_NAMES {
                         if !cfg.buttons.contains_key(*name) {
-                            warn!("{name}: not configured, passthrough");
+                            debug!("button not configured; using passthrough: button={name}");
                         }
                     }
                     proxy::warn_ignored_edge_passthroughs(
@@ -335,12 +357,12 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                     mapping
                 }
                 Err(e) => {
-                    error!("Failed to build mapping: {e}");
+                    error!("failed to build mapping: {e}");
                     break 'outer;
                 }
             },
             None => {
-                info!("No config specified, running in passthrough mode");
+                info!("no config specified; using passthrough mode");
                 mapping::MappingConfig::default()
             }
         };
@@ -349,7 +371,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         let mut hidraw = match device::HidrawDevice::open(&dev_info.path) {
             Ok(d) => d,
             Err(e) => {
-                error!("Failed to open hidraw device: {e}");
+                error!("failed to open hidraw device: {e}");
                 if shutdown_during_retry_delay(&shutdown, &mut control) {
                     break 'outer;
                 }
@@ -360,8 +382,8 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
         let mut uhid = match UhidDevice::open() {
             Ok(d) => d,
             Err(e) => {
-                error!("Failed to open /dev/uhid: {e}");
-                error!("Make sure the uhid kernel module is loaded (modprobe uhid)");
+                error!("failed to open /dev/uhid: {e}");
+                error!("UHID kernel module may be unavailable; verify with: modprobe uhid");
                 if shutdown_during_retry_delay(&shutdown, &mut control) {
                     break 'outer;
                 }
@@ -378,15 +400,15 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             if device::ioctl_get_feature_report(hidraw.as_raw_fd(), &mut buf).is_ok() {
                 match codec_pipeline.physical.decode_feature_report(*request, buf) {
                     Ok(data) => {
-                        debug!("GET_REPORT cache: read report 0x{:02x} from physical device", request.report_id);
+                        debug!("feature report cached: report_id=0x{:02x}", request.report_id);
                         report_cache.insert(request.report_id, data);
                     }
                     Err(_) => {
-                        warn!("GET_REPORT cache: invalid report 0x{:02x}, using built-in fallback", request.report_id);
+                        warn!("invalid feature report; using target response: report_id=0x{:02x}", request.report_id);
                     }
                 }
             } else {
-                warn!("GET_REPORT cache: failed to read 0x{:02x}, using built-in fallback", request.report_id);
+                warn!("failed to read feature report; using target response: report_id=0x{:02x}", request.report_id);
             }
         }
         codec_pipeline.target.seed_feature_reports(&mut report_cache);
@@ -405,31 +427,31 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             0,
             target_identity.report_descriptor,
         ) {
-            error!("Failed to create UHID device: {e}");
+            error!("failed to create virtual HID device: {e}");
             continue;
         }
 
-        info!("Created virtual HID device: {} (output: {})", target_identity.name, target_identity.label);
+        info!("virtual HID device created: name={}, output={}", target_identity.name, target_identity.label);
 
         if let Err(e) = hidraw.restrict_evdev_nodes() {
-            warn!("Failed to restrict physical evdev nodes: {e}");
+            warn!("failed to restrict input nodes: {e}");
         }
 
-        info!("Proxy starting");
+        info!("proxy initializing");
 
         let keyboard = match keyboard::KeyboardDevice::open() {
             Ok(k) => {
-                info!("uinput keyboard device created");
+                info!("virtual keyboard created");
                 k
             }
             Err(e) => {
-                warn!("uinput not available ({e}), keyboard targets will be ignored");
+                warn!("virtual keyboard unavailable; keyboard targets disabled: {e}");
                 keyboard::KeyboardDevice::dummy()
             }
         };
 
         if let Err(e) = reject_inactive_control(&mut control) {
-            error!("Failed to handle inactive control request: {e}");
+            error!("failed to reject control request while proxy is inactive: {e}");
             break 'outer;
         }
         let mut proxy = Proxy::new(ProxyInit {
@@ -450,7 +472,7 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                 state.uhid_ready = false;
                 state.needs_config = false;
                 control.set_state(state);
-                info!("output_device changed in config, recreating virtual device...");
+                info!("output device changed; recreating virtual HID device");
             }
             proxy::ExitReason::DeviceGone => {
                 config_path = None;
@@ -460,18 +482,18 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
                     uhid_ready: false,
                     needs_config: true,
                 });
-                info!("Device disconnected, waiting for reconnect...");
+                info!("controller disconnected; waiting for reconnection");
                 if shutdown_during_retry_delay(&shutdown, &mut control) {
                     break 'outer;
                 }
             }
             proxy::ExitReason::UserShutdown => {
-                info!("Shutting down.");
+                info!("dseuhid daemon stopping");
                 // hidraw + uhid auto-dropped — permissions restored, UHID destroyed
                 break 'outer;
             }
             proxy::ExitReason::FatalError => {
-                error!("Fatal proxy error, shutting down.");
+                error!("fatal proxy error; dseuhid daemon stopping");
                 // Exit through normal scope cleanup so permissions and UHID are restored.
                 break 'outer;
             }
@@ -479,12 +501,20 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
     }
 
     drop(control);
-    info!("Shutdown complete.");
+    info!("dseuhid daemon stopped");
 }
 
 #[cfg(test)]
 mod main_tests {
     use super::*;
+
+    #[test]
+    fn usage_uses_conventional_placeholders() {
+        let usage = usage_text();
+        assert!(usage.contains("Usage: dseuhid [OPTIONS] [COMMAND]"));
+        assert!(usage.contains("--config-path <PATH>"));
+        assert!(!usage.contains("<path>"));
+    }
 
     #[test]
     fn inactive_control_requests_are_rejected_without_queueing() {

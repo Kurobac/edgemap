@@ -1,4 +1,4 @@
-# edgemap — Project Status (2026-07-13)
+# edgemap — Project Status (2026-07-14)
 
 ## Overview
 
@@ -45,6 +45,14 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v1.0.2 | `4006227` | **DualShock 4 target Beta**: GUI entry and docs for `output_device = "dualshock4"`; native DS4 Proton compatibility notes point to the DS4 UHID MI_03 identity patch in `proton-eg-patch`; 158 Rust + 20 GUI tests |
 | v1.1.0 | `02aeccc` | **Bluetooth source support**: DS5/Edge BT input, BT main-output forwarding, BT GET_REPORT cache, DS5 gyro cadence pacer, codec/error-handling cleanup, safer hot reload; 195 Rust + 21 GUI tests |
 | v1.2.0 | `88824b7` | **Event-driven daemon coordination**: libudev hotplug, signalfd shutdown, acknowledged Unix seqpacket IPC, atomic daemon locks, transactional startup/reload handling; 218 Rust + 21 GUI tests |
+| v1.2.1 | — | **Control-plane hardening**: generic config errors, bounded regular-file loading, client/request limits, and systemd resource ceilings; 223 Rust + 21 GUI tests |
+
+## v1.2.1 Release Notes
+
+- Prevented root-readable file contents from being reflected through control-socket configuration errors. Load, validation, and mapping failures now return fixed category messages and omit untrusted parser details from the system journal; local `edgemap validate` retains detailed diagnostics under the caller's permissions.
+- Restricted configuration loading to regular files no larger than 256 KiB. Files are opened nonblocking, checked through the opened descriptor, and read through an independent hard limit so FIFO/device nodes are rejected and zero-length pseudo-file reads remain bounded.
+- Limited the control server to 16 active clients, bounded accept work, and one delivered request per outer event-loop turn. Excess clients receive `busy` and are closed without disturbing existing connections; per-client hello or epoll-registration failures remain isolated.
+- Added `MemoryMax=64M`, `TasksMax=32`, `LimitNOFILE=128`, and `LimitCORE=0` to both systemd services as final containment boundaries without throttling the HID processing path.
 
 ## v1.2.0 Release Notes
 
@@ -237,12 +245,12 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Multi-device: warn if more than one DualSense detected
 - Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
 
-### Rust Unit Tests (218 total: 124 dseuhid + 94 edgemap, all passing)
+### Rust Unit Tests (223 total: 127 dseuhid + 96 edgemap, all passing)
 
 | Binary | Tests | Coverage |
 |--------|-------|----------|
-| `dseuhid` | 124 | codec/config/mapping/report behavior; libudev filtering and initialized-node handling; seqpacket protocol and daemon locks; signalfd shutdown; Proxy repeat behavior; UHID and keyboard error paths |
-| `edgemap` | 94 | shared config/mapping/report/control behavior; XDG and profile matching; config inotify recreation; child reaping; signalfd shutdown |
+| `dseuhid` | 127 | codec/config/mapping/report behavior; bounded config loading; libudev filtering and initialized-node handling; seqpacket limits/protocol and daemon locks; signalfd shutdown; Proxy repeat behavior; UHID and keyboard error paths |
+| `edgemap` | 96 | shared bounded config loading and config/mapping/report/control behavior; XDG and profile matching; config inotify recreation; child reaping; signalfd shutdown |
 
 ### GUI Tests (21 total, PyQt6 offscreen)
 

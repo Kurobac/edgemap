@@ -1,8 +1,13 @@
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, RemapRule, StickDir, Target, Trigger, TurboConfig};
 use crate::report::Button;
+
+pub const MAX_CONFIG_FILE_SIZE: usize = 256 * 1024;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
@@ -149,8 +154,36 @@ fn resolve_step_target(key: &str) -> Option<crate::mapping::StepTarget> {
 
 impl Config {
     pub fn load(path: &str) -> Result<Self, String> {
-        let content =
-            std::fs::read_to_string(path).map_err(|e| format!("Cannot read {path}: {e}"))?;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|e| format!("Cannot open {path}: {e}"))?;
+        let metadata = file
+            .metadata()
+            .map_err(|e| format!("Cannot inspect {path}: {e}"))?;
+        if !metadata.file_type().is_file() {
+            return Err(format!("Config path is not a regular file: {path}"));
+        }
+        if metadata.len() > MAX_CONFIG_FILE_SIZE as u64 {
+            return Err(format!(
+                "Config file exceeds {MAX_CONFIG_FILE_SIZE} byte limit: {path}"
+            ));
+        }
+
+        // The bounded read also protects against pseudo-files whose metadata
+        // reports a zero size while generating data on demand.
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_CONFIG_FILE_SIZE as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("Cannot read {path}: {e}"))?;
+        if bytes.len() > MAX_CONFIG_FILE_SIZE {
+            return Err(format!(
+                "Config file exceeds {MAX_CONFIG_FILE_SIZE} byte limit: {path}"
+            ));
+        }
+        let content = String::from_utf8(bytes)
+            .map_err(|e| format!("Invalid UTF-8 in config {path}: {e}"))?;
         toml::from_str(&content).map_err(|e| format!("Invalid config {path}: {e}"))
     }
 
@@ -821,6 +854,28 @@ mod tests {
         assert_eq!(cfg.buttons.len(), 22);
         assert_eq!(cfg.output_device, "auto");
         assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn config_load_rejects_non_regular_and_oversized_files() {
+        let non_regular = Config::load("/dev/null").unwrap_err();
+        assert!(non_regular.contains("not a regular file"));
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "dseuhid-oversized-config-{}-{unique}.toml",
+            std::process::id()
+        ));
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_CONFIG_FILE_SIZE as u64 + 1).unwrap();
+        drop(file);
+
+        let error = Config::load(path.to_str().unwrap()).unwrap_err();
+        assert!(error.contains("exceeds"));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

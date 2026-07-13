@@ -15,8 +15,10 @@ pub const LOCK_FILE_NAME: &str = "daemon.lock";
 pub const SOCKET_FILE_NAME: &str = "control.sock";
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_PACKET_SIZE: usize = 8192;
+pub const MAX_CONTROL_CLIENTS: usize = 16;
 
 const LISTENER_TOKEN: u64 = u64::MAX;
+const MAX_ACCEPTS_PER_WAKE: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlState {
@@ -293,6 +295,11 @@ impl ControlServer {
             if !flags.contains(EpollFlags::EPOLLIN) {
                 continue;
             }
+            if !requests.is_empty() {
+                // Keep control work bounded so a client flood cannot starve
+                // hidraw and UHID handling in the outer event loop.
+                continue;
+            }
 
             match recv_packet(fd) {
                 Ok(RecvPacket::Data(packet)) => {
@@ -341,28 +348,37 @@ impl ControlServer {
     }
 
     fn accept_clients(&mut self) -> io::Result<()> {
-        loop {
+        for _ in 0..MAX_ACCEPTS_PER_WAKE {
             let fd = match accept4(
                 self.listener.as_raw_fd(),
                 SockFlag::SOCK_NONBLOCK | SockFlag::SOCK_CLOEXEC,
             ) {
                 Ok(fd) => fd,
                 Err(nix::errno::Errno::EAGAIN) => return Ok(()),
+                Err(nix::errno::Errno::EINTR) => continue,
                 Err(error) => return Err(error.into()),
             };
             let client = unsafe { OwnedFd::from_raw_fd(fd) };
+            if self.clients.len() >= MAX_CONTROL_CLIENTS {
+                let _ = send_packet(fd, b"error busy control client limit reached");
+                continue;
+            }
             if send_packet(fd, &hello_packet(self.state)).is_err() {
                 continue;
             }
-            self.epoll.add(
+            if let Err(error) = self.epoll.add(
                 client.as_fd(),
                 EpollEvent::new(
                     EpollFlags::EPOLLIN | EpollFlags::EPOLLERR | EpollFlags::EPOLLHUP,
                     fd as u64,
                 ),
-            )?;
+            ) {
+                log::warn!("rejecting control client {fd}: epoll registration failed: {error}");
+                continue;
+            }
             self.clients.insert(fd, client);
         }
+        Ok(())
     }
 }
 
@@ -581,6 +597,8 @@ mod tests {
             .send_request(&ControlRequest::SwitchConfig("/tmp/two.toml".to_string()))
             .unwrap();
         let mut requests = server.drain_requests().unwrap();
+        assert_eq!(requests.len(), 1);
+        requests.extend(server.drain_requests().unwrap());
         requests.sort_by_key(|pending| pending.client);
         assert_eq!(requests.len(), 2);
         assert!(requests
@@ -619,6 +637,45 @@ mod tests {
         assert_eq!(next.receive().unwrap(), Some(ServerPacket::Hello(initial)));
 
         drop(next);
+        drop(server);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn control_server_limits_clients_without_affecting_existing_connections() {
+        let dir = temp_dir("client-limit");
+        let initial = ControlState {
+            uhid_ready: true,
+            needs_config: false,
+        };
+        let mut server = ControlServer::bind(&dir, initial).unwrap();
+        let mut clients = Vec::new();
+
+        for _ in 0..MAX_CONTROL_CLIENTS {
+            let client = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
+            assert!(server.drain_requests().unwrap().is_empty());
+            assert_eq!(client.receive().unwrap(), Some(ServerPacket::Hello(initial)));
+            clients.push(client);
+        }
+        assert_eq!(server.clients.len(), MAX_CONTROL_CLIENTS);
+
+        let rejected = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
+        assert!(server.drain_requests().unwrap().is_empty());
+        assert_eq!(
+            rejected.receive().unwrap(),
+            Some(ServerPacket::Error {
+                code: "busy".to_string(),
+                message: "control client limit reached".to_string(),
+            })
+        );
+
+        clients[0].send_request(&ControlRequest::Reload).unwrap();
+        let pending = server.drain_requests().unwrap().pop().unwrap();
+        server.reply_ok(pending.client, &pending.request);
+        assert_eq!(clients[0].receive().unwrap(), Some(ServerPacket::OkReload));
+
+        drop(rejected);
+        drop(clients);
         drop(server);
         std::fs::remove_dir_all(dir).unwrap();
     }

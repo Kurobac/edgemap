@@ -6,7 +6,7 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 218 tests total (124 dseuhid + 94 edgemap)
+cargo test                # 223 tests total (127 dseuhid + 96 edgemap)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
@@ -36,7 +36,7 @@ makepkg -si              # build + install via PKGBUILD
 | `src/control.rs` | `flock`-based single-instance guard plus versioned Unix `SOCK_SEQPACKET` server/client protocol, acknowledged commands, and `uhid_ready`/`needs_config` state snapshots |
 | `src/codec.rs` | Source/physical/target codec boundary: `SourceCodec`, `ControllerFrame`, `TargetCodec`, `PhysicalCodec`, feature report cache policy, output command wrappers |
 | `src/mapping.rs` | `MappingConfig` (remap rules, blocked_buttons, combo/macro configs), `Target` enum, `apply()` two-phase remap with snapshot isolation |
-| `src/config.rs` | TOML parse → `validate()` (37 rules) → `to_mapping_config()`. Combo, macro, turbo, remap all fully wired. `default_content()` for auto-created config. |
+| `src/config.rs` | Bounded regular-file load (256 KiB) → TOML parse → `validate()` (37 rules) → `to_mapping_config()`. Combo, macro, turbo, remap all fully wired. `default_content()` for auto-created config. |
 | `src/report.rs` | DS5/DS4 USB wire-format helpers, `GamepadState`, `Button` enum. Not a transport-neutral HID model. |
 | `src/device.rs` | libudev-based initialized hidraw enumeration and hidraw/input hotplug monitoring for DSE Edge (0DF2) and regular DS (0CE6), USB or Bluetooth source. Waits for associated event/js nodes to finish udev initialization before hiding them, and skips UHID virtuals. Reads HID report descriptor from physical device via HIDIOCGRDESC; read failure aborts open. Node hiding via `chmod 000` + batch `setfacl --restore=-`. |
 | `src/uhid.rs` | Raw UHID wrapper (create2, input2, get/set report reply), complete-write checks, UHID event size validation |
@@ -97,7 +97,8 @@ Input order inside `handle_hidraw_input()`:
 - **Root required** for daemon — `cargo test`, `cargo build`, subcommands work without root.
 - **Config**: no default path. `-c`/`--config-path` optional — if omitted, starts in passthrough mode. edgemap is the intended way to manage config.
 - **Hot reload**: `edgemap reload` sends an acknowledged control request. dseuhid re-reads the current live config and replies success only after load/validate/build commits; failure keeps the previous mapping, runtimes, and path.
-- **Control socket**: `/run/dseuhid/control.sock` is a mode-0666 Unix `SOCK_SEQPACKET` endpoint. Versioned request/reply packets carry `reload` and `switch-config`; hello/state packets carry `uhid_ready` and `needs_config`. `/run/dseuhid/daemon.lock` uses `flock` for atomic single-instance ownership and contains the PID only for diagnostics.
+- **Control socket**: `/run/dseuhid/control.sock` is a mode-0666 Unix `SOCK_SEQPACKET` endpoint with at most 16 active clients and one delivered request per event-loop turn. Versioned request/reply packets carry `reload` and `switch-config`; hello/state packets carry `uhid_ready` and `needs_config`. Config failure replies expose only fixed category messages. `/run/dseuhid/daemon.lock` uses `flock` for atomic single-instance ownership and contains the PID only for diagnostics.
+- **Config file limits**: configuration paths must resolve to regular files no larger than 256 KiB. Files are opened nonblocking and reads are independently capped, rejecting FIFO/device nodes and preventing unbounded pseudo-file reads.
 - **edgemap daemon**: auto-creates `edgemap.toml` + `default.toml` under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`) on first run. Profiles in `[profiles.*]` sections with `match_process` (comm exact) and/or `match_cmdline` (substring), first match in declaration order wins. Each 3-second profile scan reads each PID's required `comm`/`cmdline` data at most once. A persistent control connection reports dseuhid lifetime and UHID/config state; inotify watches `edgemap.toml` and socket recreation. Only `needs_config=true`, an edgemap.toml reload, or a genuinely changed profile decision makes the daemon re-inject; manual config switches otherwise remain active until the daemon chooses a different profile. Sends notifications only after acknowledged switches.
 - **edgemap single instance**: daemon mode holds an exclusive `flock` on `$XDG_STATE_HOME/edgemap/edgemap.lock` (fallback `~/.local/state/edgemap/edgemap.lock`). The file contains the PID for diagnostics; process lifetime is determined only by the kernel lock.
 - **Byte 10 high nibble** = DSE Edge buttons: FnLeft=0x10, FnRight=0x20, LeftPaddle=0x40, RightPaddle=0x80. Byte 11 low nibble must be preserved, high nibble zeroed.
@@ -139,7 +140,7 @@ Input order inside `handle_hidraw_input()`:
 Tarball layout (GitHub Actions builds on tag):
 
 ```
-edgemap-v1.2.0-x86_64.tar.gz
+edgemap-v1.2.1-x86_64.tar.gz
 ├── install.sh                 # sudo ./install.sh
 ├── dseuhid                    → /usr/local/bin/
 ├── edgemap                    → /usr/local/bin/

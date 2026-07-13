@@ -245,16 +245,17 @@ class WidgetTests(unittest.TestCase):
         ]
         binary = ROOT / "target" / "debug" / "edgemap"
         self.assertTrue(binary.exists(), "build edgemap before running GUI tests")
-        for config in cases:
-            editor.config = config
-            content = editor._build_toml()
-            result = subprocess.run(
-                [str(binary), "validate", "/dev/stdin"],
-                input=content,
-                text=True,
-                capture_output=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "gui-validation.toml"
+            for config in cases:
+                editor.config = config
+                path.write_text(editor._build_toml())
+                result = subprocess.run(
+                    [str(binary), "validate", str(path)],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_keyboard_picker_initialization_and_writeback(self):
         class FakePicker:

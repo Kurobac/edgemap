@@ -7,6 +7,10 @@ Type=simple
 ExecStart=/usr/bin/edgemap daemon
 Restart=on-failure
 RestartSec=5
+MemoryMax=64M
+TasksMax=32
+LimitNOFILE=128
+LimitCORE=0
 
 [Install]
 WantedBy=default.target

@@ -564,7 +564,7 @@ impl Proxy {
         let new_output_device = cfg.output_device.clone();
         let new_runtimes = MappingRuntimes::from_mapping(&new_mapping);
         *self.mapping.write().unwrap() = new_mapping;
-        info!("Config reloaded from {path}");
+        info!("Config reloaded from {path:?}");
         self.config_path = Some(path);
         self.last_snapshot = None;
         self.last_output = None;
@@ -738,7 +738,7 @@ impl Proxy {
                     self.reload_config()
                 }
                 ControlRequest::SwitchConfig(path) => {
-                    info!("control: switch-config to {path}");
+                    info!("control: switch-config to {path:?}");
                     self.reload_config_from(path.clone())
                 }
             };
@@ -749,9 +749,13 @@ impl Proxy {
                     state.needs_config = false;
                     control.set_state(state);
                 }
-                Err((code, message)) => {
-                    error!("control request failed: {message}; keeping previous config");
-                    control.reply_error(pending.client, code, &message);
+                Err((code, _detail)) => {
+                    error!("control request failed ({code}); keeping previous config");
+                    control.reply_error(
+                        pending.client,
+                        code,
+                        public_control_error_message(code),
+                    );
                 }
             }
         }
@@ -1164,6 +1168,16 @@ impl Proxy {
     }
 }
 
+fn public_control_error_message(code: &str) -> &'static str {
+    match code {
+        "load-failed" => "configuration load failed",
+        "validation-failed" => "configuration validation failed",
+        "mapping-failed" => "configuration mapping failed",
+        "no-config" => "no config path is active",
+        _ => "control request failed",
+    }
+}
+
 pub(crate) fn warn_ignored_edge_passthroughs(
     cfg: &crate::config::Config,
     source_kind: SonyDeviceKind,
@@ -1256,5 +1270,21 @@ mod tests {
         assert_eq!(report[7], 0x03);
         assert_eq!(&report[10..12], &0u16.to_le_bytes());
         assert_eq!(report[34], 0);
+    }
+
+    #[test]
+    fn public_control_errors_do_not_expose_config_details() {
+        assert_eq!(
+            public_control_error_message("load-failed"),
+            "configuration load failed"
+        );
+        assert_eq!(
+            public_control_error_message("validation-failed"),
+            "configuration validation failed"
+        );
+        assert_eq!(
+            public_control_error_message("mapping-failed"),
+            "configuration mapping failed"
+        );
     }
 }

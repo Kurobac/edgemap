@@ -67,6 +67,24 @@ edgemap daemon auto-creates `edgemap.toml` + `default.toml` under
 `$XDG_CONFIG_HOME/edgemap` (default: `~/.config/edgemap`) on first run.
 Run `edgemap create-config` to print a template with full inline documentation.
 
+### Daemon coordination and limits
+
+The daemons communicate through the versioned Unix `SOCK_SEQPACKET` endpoint
+`/run/dseuhid/control.sock`. The server accepts at most 16 simultaneous clients
+and delivers at most one request per event-loop turn so control traffic cannot
+starve HID processing.
+
+Configuration paths must resolve to regular files no larger than 256 KiB.
+Nonblocking open and a bounded read prevent FIFOs, device nodes, and dynamically
+generated pseudo-files from causing unbounded reads. Socket-triggered configuration
+failures return fixed category messages without echoing parser details or file
+contents; run `edgemap validate <path>` for detailed diagnostics under the caller's
+own permissions.
+
+Both systemd units cap memory at 64 MiB, tasks at 32, and open file descriptors at
+128, and disable core dumps. These limits are final containment boundaries rather
+than normal operating targets.
+
 ## Features
 
 | Feature | Description |
@@ -179,6 +197,7 @@ target repeat is disabled by default and can be enabled with
 - Root for `dseuhid` only
 - `python-pyqt6` for GUI support (optional)
 - `libnotify` for profile-switch notifications (optional)
+- Configuration files must be regular files no larger than 256 KiB
 
 ## Special Thanks
 

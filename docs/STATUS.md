@@ -44,7 +44,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v1.0.1 | `35894d3` | **Path and GUI hardening**: strict XDG/HOME handling, stable passthrough/keyboard/macro editor state, safe TOML/profile serialization, macro reference integrity, GUI CI; 158 Rust + 19 GUI tests |
 | v1.0.2 | `4006227` | **DualShock 4 target Beta**: GUI entry and docs for `output_device = "dualshock4"`; native DS4 Proton compatibility notes point to the DS4 UHID MI_03 identity patch in `proton-eg-patch`; 158 Rust + 20 GUI tests |
 | v1.1.0 | `02aeccc` | **Bluetooth source support**: DS5/Edge BT input, BT main-output forwarding, BT GET_REPORT cache, DS5 gyro cadence pacer, codec/error-handling cleanup, safer hot reload; 195 Rust + 21 GUI tests |
-| v1.2.0 | — | **Event-driven daemon coordination**: libudev hotplug, signalfd shutdown, acknowledged Unix seqpacket IPC, atomic daemon locks, transactional startup/reload handling; 218 Rust + 21 GUI tests |
+| v1.2.0 | `88824b7` | **Event-driven daemon coordination**: libudev hotplug, signalfd shutdown, acknowledged Unix seqpacket IPC, atomic daemon locks, transactional startup/reload handling; 218 Rust + 21 GUI tests |
 
 ## v1.2.0 Release Notes
 

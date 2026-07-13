@@ -55,8 +55,8 @@ impl FeatureReportCache {
         self.reports.insert(report_id, data);
     }
 
-    pub fn into_inner(self) -> HashMap<u8, Vec<u8>> {
-        self.reports
+    pub fn get(&self, report_id: u8) -> Option<&[u8]> {
+        self.reports.get(&report_id).map(Vec::as_slice)
     }
 }
 
@@ -1108,11 +1108,10 @@ mod tests {
     fn ds4_target_seeds_feature_reports() {
         let mut cache = FeatureReportCache::new();
         TargetCodec::Ds4Usb.seed_feature_reports(&mut cache);
-        let cache = cache.into_inner();
 
-        assert_eq!(cache.get(&0x02).unwrap().len(), 37);
-        assert_eq!(cache.get(&0x12).unwrap()[1..7], [0x01, 0x00, 0x00, 0x37, 0x13, 0xC0]);
-        assert_eq!(cache.get(&0xA3).unwrap().len(), 49);
+        assert_eq!(cache.get(0x02).unwrap().len(), 37);
+        assert_eq!(cache.get(0x12).unwrap()[1..7], [0x01, 0x00, 0x00, 0x37, 0x13, 0xC0]);
+        assert_eq!(cache.get(0xA3).unwrap().len(), 49);
     }
 
     #[test]

@@ -7,7 +7,10 @@ use log::{debug, error, info, trace, warn};
 use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use std::os::fd::BorrowedFd;
 
-use crate::codec::{CodecError, CodecPipeline, PhysicalCodec, PhysicalOutputState, SourceCodec, TargetCodec};
+use crate::codec::{
+    CodecError, CodecPipeline, FeatureReportCache, PhysicalCodec, PhysicalOutputState,
+    SourceCodec, TargetCodec,
+};
 use crate::control::{ControlRequest, ControlServer};
 use crate::device::{HidrawDevice, SonyDeviceKind};
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
@@ -389,14 +392,54 @@ pub enum ExitReason {
     FatalError,
 }
 
+pub(crate) struct ProxyInit {
+    pub(crate) hidraw: HidrawDevice,
+    pub(crate) uhid: UhidDevice,
+    pub(crate) keyboard: crate::keyboard::KeyboardDevice,
+    pub(crate) mapping: Arc<RwLock<MappingConfig>>,
+    pub(crate) config_path: Option<String>,
+    pub(crate) report_cache: FeatureReportCache,
+    pub(crate) codec: CodecPipeline,
+    pub(crate) source_kind: SonyDeviceKind,
+    pub(crate) output_device_config: String,
+}
+
+struct MappingRuntimes {
+    turbo: Vec<TurboRuntime>,
+    combo: Vec<ComboRuntime>,
+    macros: Vec<MacroRuntime>,
+}
+
+impl MappingRuntimes {
+    fn from_mapping(mapping: &MappingConfig) -> Self {
+        Self {
+            turbo: mapping
+                .turbo_configs
+                .iter()
+                .map(TurboRuntime::from_config)
+                .collect(),
+            combo: mapping
+                .combo_configs
+                .iter()
+                .map(ComboRuntime::from_combo_rule)
+                .collect(),
+            macros: mapping
+                .macro_configs
+                .iter()
+                .map(MacroRuntime::from_macro_rule)
+                .collect(),
+        }
+    }
+}
+
 static DISCONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub struct Proxy {
     hidraw: HidrawDevice,
     uhid: UhidDevice,
     mapping: Arc<RwLock<MappingConfig>>,
-    config_path: String,
-    report_cache: HashMap<u8, Vec<u8>>,
+    config_path: Option<String>,
+    report_cache: FeatureReportCache,
     codec: CodecPipeline,
     source_kind: SonyDeviceKind,
     output_device_config: String,
@@ -425,10 +468,10 @@ enum CachedReportSource {
 
 impl Proxy {
     fn get_cached_report(&self, report_id: u8) -> Option<CachedReport> {
-        if let Some(data) = self.report_cache.get(&report_id) {
+        if let Some(data) = self.report_cache.get(report_id) {
             return Some(CachedReport {
                 source: CachedReportSource::PhysicalCache,
-                data: data.clone(),
+                data: data.to_vec(),
             });
         }
         self.codec.target.fallback_feature_report(report_id).map(|data| CachedReport {
@@ -437,37 +480,59 @@ impl Proxy {
         })
     }
 
-    pub fn new(hidraw: HidrawDevice, uhid: UhidDevice, mapping: Arc<RwLock<MappingConfig>>, config_path: &str, report_cache: HashMap<u8, Vec<u8>>, codec: CodecPipeline, source_kind: SonyDeviceKind, output_device_config: String, keyboard: crate::keyboard::KeyboardDevice) -> Self {
+    pub(crate) fn new(init: ProxyInit) -> Self {
+        let ProxyInit {
+            hidraw,
+            uhid,
+            keyboard,
+            mapping,
+            config_path,
+            report_cache,
+            codec,
+            source_kind,
+            output_device_config,
+        } = init;
         let repeat_input = RepeatInput::from_env(codec);
-        let (turbo_runtimes, combo_runtimes, macro_runtimes) = {
-            let m = mapping.read().unwrap();
-            let turbos: Vec<_> = m.turbo_configs.iter()
-                .map(TurboRuntime::from_config)
-                .collect();
-            let combos: Vec<_> = m.combo_configs.iter()
-                .map(ComboRuntime::from_combo_rule)
-                .collect();
-            let macros: Vec<_> = m.macro_configs.iter()
-                .map(MacroRuntime::from_macro_rule)
-                .collect();
-            (turbos, combos, macros)
+        let runtimes = {
+            let mapping = mapping.read().unwrap();
+            MappingRuntimes::from_mapping(&mapping)
         };
-        Self { hidraw, uhid, mapping, config_path: config_path.to_string(), report_cache, codec, source_kind, output_device_config, recreate_uhid: false, keyboard, last_keyboard: HashMap::new(), last_snapshot: None, last_output: None, repeat_input, physical_output_state: PhysicalOutputState::default(), physical_set_report_unsupported_warned: HashSet::new(), turbo_runtimes, combo_runtimes, macro_runtimes }
+        Self {
+            hidraw,
+            uhid,
+            mapping,
+            config_path,
+            report_cache,
+            codec,
+            source_kind,
+            output_device_config,
+            recreate_uhid: false,
+            keyboard,
+            last_keyboard: HashMap::new(),
+            last_snapshot: None,
+            last_output: None,
+            repeat_input,
+            physical_output_state: PhysicalOutputState::default(),
+            physical_set_report_unsupported_warned: HashSet::new(),
+            turbo_runtimes: runtimes.turbo,
+            combo_runtimes: runtimes.combo,
+            macro_runtimes: runtimes.macros,
+        }
     }
 
     pub fn forget_restore_on_physical_disconnect(&mut self) {
         self.hidraw.clear_restored_paths();
     }
 
-    pub fn config_path(&self) -> &str {
-        &self.config_path
+    pub fn config_path(&self) -> Option<&str> {
+        self.config_path.as_deref()
     }
 
     fn reload_config(&mut self) -> Result<(), (&'static str, String)> {
-        if self.config_path.is_empty() {
-            return Err(("no-config", "no config path is active".to_string()));
-        }
-        let path = self.config_path.clone();
+        let path = self
+            .config_path
+            .clone()
+            .ok_or_else(|| ("no-config", "no config path is active".to_string()))?;
         self.reload_config_from(path)
     }
 
@@ -497,28 +562,20 @@ impl Proxy {
             }
         };
         let new_output_device = cfg.output_device.clone();
+        let new_runtimes = MappingRuntimes::from_mapping(&new_mapping);
         *self.mapping.write().unwrap() = new_mapping;
-        self.config_path = path;
+        info!("Config reloaded from {path}");
+        self.config_path = Some(path);
         self.last_snapshot = None;
         self.last_output = None;
-        info!("Config reloaded from {}", self.config_path);
         if new_output_device != self.output_device_config {
             info!("output_device changed ({} → {}), will recreate virtual device", self.output_device_config, new_output_device);
             self.recreate_uhid = true;
         }
         self.output_device_config = new_output_device;
-        // rebuild turbo runtimes from the new mapping
-        self.turbo_runtimes = self.mapping.read().unwrap().turbo_configs.iter()
-            .map(TurboRuntime::from_config)
-            .collect();
-        // rebuild combo runtimes from the new mapping
-        self.combo_runtimes = self.mapping.read().unwrap().combo_configs.iter()
-            .map(ComboRuntime::from_combo_rule)
-            .collect();
-        // rebuild macro runtimes from the new mapping
-        self.macro_runtimes = self.mapping.read().unwrap().macro_configs.iter()
-            .map(MacroRuntime::from_macro_rule)
-            .collect();
+        self.turbo_runtimes = new_runtimes.turbo;
+        self.combo_runtimes = new_runtimes.combo;
+        self.macro_runtimes = new_runtimes.macros;
         Ok(())
     }
 

@@ -114,7 +114,7 @@ fn print_usage() {
 use device::{
     find_dualsense, probe_dualsense, HidrawMonitor, HidrawWait, InputNodesWait,
 };
-use proxy::Proxy;
+use proxy::{Proxy, ProxyInit};
 use shutdown::ShutdownSignal;
 use uhid::UhidDevice;
 
@@ -417,8 +417,6 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
 
         info!("Proxy starting");
 
-        let config_path_str = config_path.as_deref().unwrap_or("");
-
         let keyboard = match keyboard::KeyboardDevice::open() {
             Ok(k) => {
                 info!("uinput keyboard device created");
@@ -434,10 +432,20 @@ let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "
             error!("Failed to handle inactive control request: {e}");
             break 'outer;
         }
-        let mut proxy = Proxy::new(hidraw, uhid, mapping, config_path_str, report_cache.into_inner(), codec_pipeline, dev_info.kind, output_device, keyboard);
+        let mut proxy = Proxy::new(ProxyInit {
+            hidraw,
+            uhid,
+            keyboard,
+            mapping,
+            config_path: config_path.clone(),
+            report_cache,
+            codec: codec_pipeline,
+            source_kind: dev_info.kind,
+            output_device_config: output_device,
+        });
         match proxy.run(&shutdown, &mut control) {
             proxy::ExitReason::ConfigChanged => {
-                config_path = Some(proxy.config_path().to_string());
+                config_path = proxy.config_path().map(str::to_owned);
                 let mut state = control.state();
                 state.uhid_ready = false;
                 state.needs_config = false;

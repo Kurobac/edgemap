@@ -31,7 +31,7 @@ makepkg -si              # build + install via PKGBUILD
 
 | File | Role |
 |------|------|
-| `src/main.rs` | Entry: subcommand dispatch → daemon lock/control socket setup → device detection → config load → UHID create → proxy loop → reconnect |
+| `src/main.rs` | Entry: subcommand dispatch → daemon lock/control socket setup → startup config load/validation → device detection → UHID create → proxy loop → reconnect |
 | `src/proxy.rs` | **Three-layer pipeline** (L1→L2→L3), epoll loop (hidraw + UHID + control socket), turbo/combo/macro runtimes, transactional reload |
 | `src/control.rs` | `flock`-based single-instance guard plus versioned Unix `SOCK_SEQPACKET` server/client protocol, acknowledged commands, and `uhid_ready`/`needs_config` state snapshots |
 | `src/codec.rs` | Source/physical/target codec boundary: `SourceCodec`, `ControllerFrame`, `TargetCodec`, `PhysicalCodec`, feature report cache policy, output command wrappers |
@@ -139,7 +139,7 @@ Input order inside `handle_hidraw_input()`:
 Tarball layout (GitHub Actions builds on tag):
 
 ```
-edgemap-v1.1.0-x86_64.tar.gz
+edgemap-v1.2.0-x86_64.tar.gz
 ├── install.sh                 # sudo ./install.sh
 ├── dseuhid                    → /usr/local/bin/
 ├── edgemap                    → /usr/local/bin/

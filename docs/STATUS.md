@@ -1,4 +1,4 @@
-# edgemap — Project Status (2026-06-30)
+# edgemap — Project Status (2026-07-13)
 
 ## Overview
 
@@ -44,6 +44,20 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v1.0.1 | `35894d3` | **Path and GUI hardening**: strict XDG/HOME handling, stable passthrough/keyboard/macro editor state, safe TOML/profile serialization, macro reference integrity, GUI CI; 158 Rust + 19 GUI tests |
 | v1.0.2 | `4006227` | **DualShock 4 target Beta**: GUI entry and docs for `output_device = "dualshock4"`; native DS4 Proton compatibility notes point to the DS4 UHID MI_03 identity patch in `proton-eg-patch`; 158 Rust + 20 GUI tests |
 | v1.1.0 | `02aeccc` | **Bluetooth source support**: DS5/Edge BT input, BT main-output forwarding, BT GET_REPORT cache, DS5 gyro cadence pacer, codec/error-handling cleanup, safer hot reload; 195 Rust + 21 GUI tests |
+| v1.2.0 | — | **Event-driven daemon coordination**: libudev hotplug, signalfd shutdown, acknowledged Unix seqpacket IPC, atomic daemon locks, transactional startup/reload handling; 218 Rust + 21 GUI tests |
+
+## v1.2.0 Release Notes
+
+- Replaced periodic hidraw probing with libudev enumeration and hotplug monitoring. dseuhid waits for initialized hidraw/input nodes before opening or hiding them, avoiding races with udev permission setup and repeated device wakeups.
+- Routed SIGINT/SIGTERM through signalfd in both daemons. Device waits, retry delays, the active proxy loop, and edgemap monitoring now share interruptible poll/epoll shutdown paths.
+- Replaced `/run/dseuhid` PID, FIFO, and state files with `/run/dseuhid/daemon.lock` plus the versioned Unix `SOCK_SEQPACKET` endpoint `/run/dseuhid/control.sock`. Commands receive explicit acknowledgements or structured errors, and connected clients receive complete `uhid_ready`/`needs_config` state snapshots.
+- dseuhid and edgemap now use kernel `flock` ownership for atomic single-instance enforcement. PID text remains diagnostic only and is no longer used as a liveness oracle.
+- edgemap keeps a persistent control connection and reacts immediately to daemon restart, controller reconnect, UHID recreation, and socket replacement. Process-profile matching remains a 3-second timer, while `edgemap.toml` reload and runtime state are event-driven.
+- `reload` and `switch-config` are transactional and reject requests while no active Proxy is ready. Success is reported only after load, validation, mapping construction, and live-state commit complete; failures preserve the previous mapping, path, and runtimes.
+- `-c` startup configs are loaded, validated, and converted before device discovery, so invalid configuration or `output_device` values fail before physical nodes are hidden or UHID is created.
+- Hardened failure isolation and cleanup: fatal proxy errors no longer enter reconnect paths, device-node restoration is preserved across setup failures, and edgemap recovers its config watch after directory replacement while treating unrecoverable monitor loss as fatal.
+- Simplified Proxy construction with named initialization, an explicit optional config path, a typed feature-report cache, and shared turbo/combo/macro runtime construction for startup and reload.
+- Upgrading requires matching dseuhid and edgemap binaries; restart both the system `dseuhid` service and user `edgemap` service after installation.
 
 ## v1.1.0 Release Notes
 
@@ -112,7 +126,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - Case-sensitive section names (uppercase rejected)
 
 ### Hot Reload
-- FIFO commands (`edgemap reload`, `edgemap switch-config`) trigger config re-read
+- Acknowledged Unix seqpacket commands (`edgemap reload`, `edgemap switch-config`) trigger config re-read
 - `Arc<RwLock<MappingConfig>>` — read lock per frame, write lock on reload
 - Failed reload keeps the previous live config, mapping, runtimes, output-device setting, and config path
 - Debug snapshots cleared on reload
@@ -193,7 +207,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - L2: macro detection reads L1 (Physical source) or combo injection (Combo source via `Target::Macro`)
 - L2: macro injection writes step buttons every frame (per-frame maintain, same principle as turbo bug #23 fix)
 - Config validation: empty sequence reject, release_ms > press_ms, macro name vs button name conflict, same-key turbo+macro mutual exclusion
-- Hot reload: macro runtimes rebuilt on FIFO reload
+- Hot reload: macro runtimes rebuilt after an acknowledged control-socket reload
 
 ### Keyboard Target (v0.8.0)
 - **Keyboard output via uinput**: `remap = "key:<keyname>"` creates keystrokes on a virtual keyboard
@@ -211,7 +225,8 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Manual input: typing `key:space` directly in editable comboboxes works, validated at TOML save time
 
 ### Device Detection
-- Scan `/dev/hidraw*`, ioctl HIDIOCGRAWINFO for VID/PID
+- Enumerate initialized hidraw devices through libudev and monitor add/remove events without polling
+- Use `HIDIOCGRAWINFO` to match VID/PID only after libudev identifies an initialized hidraw candidate
 - Physical-only: reject UHID virtual devices (check `/sys/class/hidraw/N/device/uevent`)
 - USB and Bluetooth source hidraw are accepted for DualSense and DualSense Edge
 - Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported
@@ -222,18 +237,12 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Multi-device: warn if more than one DualSense detected
 - Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
 
-### Rust Unit Tests (195 total: 114 dseuhid + 81 edgemap, all passing)
-| Module | Tests | Coverage |
+### Rust Unit Tests (218 total: 124 dseuhid + 94 edgemap, all passing)
+
+| Binary | Tests | Coverage |
 |--------|-------|----------|
-| `mapping.rs` | 15 | single/multi-key remap, cross-map, self-map, TriggerFull L2/R2, 8 stick dirs, analog clear, snapshots isolation, keyboard target |
-| `report.rs` | 10 | byte position for all button groups (face/shoulder/system/Edge), all-button roundtrip, byte11 preservation, stick/trigger values, seq |
-| `codec.rs` | 31 | codec selection, USB/BT source paths, USB target identities, BT auto identity, feature report policies/fallbacks, USB/BT feature report validation, DS5/DS4 output conversion, BT output framing/CRC/sequence, BT SET_REPORT non-forwarding policy, touchpad and motion frames |
-| `config.rs` | 49 | valid sources/targets (incl. key:xxx), trigger/stick targets, combo validation (key/output/duplicate/mutex/FN+face), macro validation (empty seq, release>press, name conflict, turbo+macro mutex, combo→macro, keyboard step), block→blocked_buttons, turbo+block allowed, uppercase rejection, default config parse |
-| `device.rs` | 1 | sysfs hidraw path resolution |
-| `proxy.rs` | 2 | BT repeat report sequence handling for DS5 USB and opt-in DS4 USB targets |
-| `keyboard.rs` | 2 | successful press tracking, failed press/release state preservation |
-| `uhid.rs` | 4 | malformed/oversized UHID OUTPUT and SET_REPORT parsing |
-| `edgemap.rs` | 5 | XDG absolute/fallback handling, missing HOME, absolute and tilde config paths |
+| `dseuhid` | 124 | codec/config/mapping/report behavior; libudev filtering and initialized-node handling; seqpacket protocol and daemon locks; signalfd shutdown; Proxy repeat behavior; UHID and keyboard error paths |
+| `edgemap` | 94 | shared config/mapping/report/control behavior; XDG and profile matching; config inotify recreation; child reaping; signalfd shutdown |
 
 ### GUI Tests (21 total, PyQt6 offscreen)
 
@@ -243,7 +252,7 @@ Coverage includes save/cancel results, macro initialization and reference integr
 | Tool | Binary | Description |
 |------|--------|-------------|
 | `dseuhid` | main | UHID proxy daemon (`-c`/`--config-path`, `version`, `help` subcommands) |
-| `edgemap` | `src/bin/edgemap.rs` | User-side CLI: validate, create-config, reload, switch-config (no root). Daemon mode (d/daemon): auto-create config, profile auto-switch, mtime hot reload, notify-send |
+| `edgemap` | `src/bin/edgemap.rs` | User-side CLI: validate, create-config, reload, switch-config (no root). Daemon mode (d/daemon): auto-create config, profile auto-switch, inotify config reload, seqpacket state subscription, notify-send |
 | `edgemap-gui-v6.py` | GUI | PyQt6 config editor: XDG-aware config paths, remap/turbo/combo/macro editing, macro reference management, safe TOML serialization |
 | `completions/` | zsh | zsh completions for `dseuhid` and `edgemap` commands (validate/switch-config auto-complete configs from `~/.config/edgemap/`) |
 
@@ -263,6 +272,6 @@ See [BUGFIX.md](./BUGFIX.md) for the complete list.
 
 | Feature | Reason |
 |---------|--------|
-| D-Bus interface (zbus) | Introduces async runtime, excessive complexity for marginal benefit |
-| inotify auto-reload | edgemap mtime-based reload sufficient |
+| D-Bus interface (zbus) | The versioned local seqpacket protocol provides acknowledged commands and state subscription without an async runtime |
+| Direct dseuhid config-file watch | edgemap owns config selection and sends transactional reload/switch requests over the control socket |
 | Multiple controllers | Not planned. |

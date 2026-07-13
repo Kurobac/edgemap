@@ -44,6 +44,15 @@ sudo systemctl enable --now dseuhid
 systemctl --user daemon-reload
 systemctl --user enable --now edgemap
 ```
+
+When upgrading, install both binaries from the same release and restart both
+services so the control protocol versions stay in sync:
+
+```bash
+sudo systemctl restart dseuhid
+systemctl --user restart edgemap
+```
+
 >**Note:** install.sh assumes a writable /usr.
 >If you are using an immutable distribution,
 >please install manually.
@@ -69,6 +78,7 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Keyboard target | Remap, combo, macro, and split-touchpad output to 107 uinput keyboard keys |
 | Profile auto-switch | Match running processes (comm/cmdline), auto-switch remap config |
 | Hot reload | inotify-based (`edgemap.toml`) or acknowledged Unix socket command |
+| Event-driven hotplug | libudev device discovery with immediate controller add/remove handling |
 | Native HID behavior | DS5 USB target keeps source backing where possible; BT physical output wraps USB target output into the DS5 BT main-output envelope |
 | Regular DualSense | DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported over USB and Bluetooth source hidraw |
 | DSE→DS virtualization | `output_device = "dualsense"` makes Edge appear as regular DS for game compatibility |
@@ -156,7 +166,7 @@ target repeat is disabled by default and can be enabled with
 ## Not supported
 
 - Multiple controllers
-- D‑Bus API, inotify watch
+- D‑Bus control API
 - Non-Sony device
 
 ## Requirements

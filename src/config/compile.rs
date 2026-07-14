@@ -1,7 +1,7 @@
 use crate::mapping::{
     ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, RemapRule, TurboConfig,
 };
-use crate::report::Button;
+use crate::model::Button;
 
 use super::targets::{resolve_step_target, resolve_target_or_macro};
 use super::Config;

@@ -2,15 +2,15 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use super::paths::resolve_config_path;
+use super::super::paths::resolve_config_path;
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct ProfileConfig {
-    pub(super) config: String,
+pub(crate) struct ProfileConfig {
+    pub(crate) config: String,
     #[serde(default)]
-    pub(super) match_process: String,
+    pub(crate) match_process: String,
     #[serde(default)]
-    pub(super) match_cmdline: String,
+    pub(crate) match_cmdline: String,
 }
 
 fn read_comm(pid: u32) -> Option<String> {
@@ -32,13 +32,13 @@ fn read_cmdline(pid: u32) -> Option<String> {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ProcessSnapshot {
-    pub(super) pid: u32,
-    pub(super) comm: Option<String>,
-    pub(super) cmdline: Option<String>,
+pub(crate) struct ProcessSnapshot {
+    pub(crate) pid: u32,
+    pub(crate) comm: Option<String>,
+    pub(crate) cmdline: Option<String>,
 }
 
-pub(super) fn profile_matches(process: &ProcessSnapshot, profile: &ProfileConfig) -> bool {
+pub(crate) fn profile_matches(process: &ProcessSnapshot, profile: &ProfileConfig) -> bool {
     if profile.match_process.is_empty() && profile.match_cmdline.is_empty() {
         return false;
     }
@@ -88,7 +88,7 @@ fn snapshot_processes(profiles: &[(String, ProfileConfig)]) -> Vec<ProcessSnapsh
         .collect()
 }
 
-pub(super) fn find_matching_profile(
+pub(crate) fn find_matching_profile(
     profiles: &[(String, ProfileConfig)],
     config_dir: &Path,
     base_config: &str,

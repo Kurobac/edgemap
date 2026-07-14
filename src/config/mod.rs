@@ -33,7 +33,6 @@ pub const ALL_BUTTON_NAMES: &[&str] = &[
     "right_fn",
 ];
 
-#[allow(dead_code)]
 pub fn default_content() -> &'static str {
     include_str!("default.toml")
 }
@@ -42,7 +41,7 @@ pub fn default_content() -> &'static str {
 mod tests {
     use super::*;
     use crate::mapping::{MacroMode, Target};
-    use crate::report::Button;
+    use crate::model::Button;
 
     fn parse(toml_str: &str) -> Config {
         let full = format!("version = 2\n{toml_str}");
@@ -257,6 +256,14 @@ mod tests {
         assert_eq!(cfg.buttons.len(), 22);
         assert_eq!(cfg.output_device, "auto");
         assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn default_config_matches_byte_golden_fixture() {
+        assert_eq!(
+            default_content().as_bytes(),
+            include_bytes!("../../tests/fixtures/default_config.toml")
+        );
     }
 
     #[test]

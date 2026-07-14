@@ -1,6 +1,8 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+pub(crate) const EDGEMAP_CONFIG_FILE: &str = "edgemap.toml";
+
 pub(super) fn required_home() -> Result<String, String> {
     match env::var("HOME") {
         Ok(home) if !home.is_empty() => Ok(home),

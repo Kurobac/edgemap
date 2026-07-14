@@ -1,12 +1,40 @@
-use crate::report::{self, Button, GamepadState};
+use crate::model::{Button, GamepadState};
 
-use super::parse_ds5_usb_touchpad_contact;
+use super::ds5_usb::{self, parse_touchpad_contact};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ds5UsbOutput {
+    pub(super) raw: Vec<u8>,
+}
+
+impl Ds5UsbOutput {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.raw
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ds4UsbOutput {
+    pub(super) raw: Vec<u8>,
+}
+
+impl Ds4UsbOutput {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.raw
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputCommand {
+    Ds5Usb(Ds5UsbOutput),
+    Ds4Usb(Ds4UsbOutput),
+}
 
 #[derive(Debug, Clone)]
 pub enum SourceReport {
-    Ds5Usb([u8; report::USB_INPUT_REPORT_SIZE]),
+    Ds5Usb([u8; ds5_usb::INPUT_REPORT_SIZE]),
     Ds5Bt {
-        usb_backing: [u8; report::USB_INPUT_REPORT_SIZE],
+        usb_backing: [u8; ds5_usb::INPUT_REPORT_SIZE],
     },
 }
 
@@ -43,15 +71,15 @@ impl ControllerFrame {
             SourceReport::Ds5Usb(raw) => Some(TouchpadFrame {
                 button: raw[10] & 0x02 != 0,
                 contacts: [
-                    parse_ds5_usb_touchpad_contact(raw, 33),
-                    parse_ds5_usb_touchpad_contact(raw, 37),
+                    parse_touchpad_contact(raw, 33),
+                    parse_touchpad_contact(raw, 37),
                 ],
             }),
             SourceReport::Ds5Bt { usb_backing, .. } => Some(TouchpadFrame {
                 button: usb_backing[10] & 0x02 != 0,
                 contacts: [
-                    parse_ds5_usb_touchpad_contact(usb_backing, 33),
-                    parse_ds5_usb_touchpad_contact(usb_backing, 37),
+                    parse_touchpad_contact(usb_backing, 33),
+                    parse_touchpad_contact(usb_backing, 37),
                 ],
             }),
         }

@@ -1,4 +1,4 @@
-use crate::report::{Button, GamepadState};
+use crate::model::{Button, GamepadState};
 
 #[derive(Debug, Clone)]
 pub enum Trigger {

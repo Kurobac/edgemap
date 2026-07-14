@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::mapping::{StickDir, Target, Trigger};
-use crate::report::Button;
+use crate::model::Button;
 
 use super::MacroConfig;
 

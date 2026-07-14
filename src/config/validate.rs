@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::mapping::StepTarget;
-use crate::report::Button;
+use crate::model::Button;
 
 use super::targets::{is_valid_src, is_valid_target, resolve_step_target, resolve_target};
 use super::Config;

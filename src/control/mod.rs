@@ -7,7 +7,9 @@ mod transport;
 pub use client::ControlClient;
 pub use lock::{DaemonLock, LOCK_FILE_NAME};
 #[cfg(test)]
-use protocol::{parse_request, MAX_CONFIG_SOURCE_SIZE, SWITCH_CONFIG_PREFIX};
+use protocol::{
+    hello_packet, parse_request, state_packet, MAX_CONFIG_SOURCE_SIZE, SWITCH_CONFIG_PREFIX,
+};
 pub use protocol::{
     parse_server_packet, ControlRequest, ControlState, ServerPacket, PROTOCOL_VERSION,
 };
@@ -87,6 +89,39 @@ mod tests {
         assert!(parse_request(b"reload").is_err());
         assert!(parse_request(&[0xff]).is_err());
         assert!(parse_server_packet(b"hello version=2 uhid_ready=1 needs_config=0").is_err());
+    }
+
+    #[test]
+    fn protocol_packet_bytes_are_stable() {
+        let state = ControlState {
+            uhid_ready: true,
+            needs_config: false,
+        };
+        assert_eq!(
+            hello_packet(state),
+            b"hello version=1 uhid_ready=1 needs_config=0"
+        );
+        assert_eq!(
+            state_packet(ControlState {
+                uhid_ready: false,
+                needs_config: true,
+            }),
+            b"state uhid_ready=0 needs_config=1"
+        );
+
+        let request = ControlRequest::SwitchConfig(active_config("profile.toml", "version = 2\n"));
+        assert_eq!(
+            request.encode(),
+            b"switch-config\0profile.toml\0version = 2\n"
+        );
+        assert_eq!(request.ok_packet(), b"ok switch-config");
+        assert_eq!(
+            parse_server_packet(b"error not-ready UHID proxy is not ready"),
+            Ok(ServerPacket::Error {
+                code: "not-ready".to_string(),
+                message: "UHID proxy is not ready".to_string(),
+            })
+        );
     }
 
     #[test]

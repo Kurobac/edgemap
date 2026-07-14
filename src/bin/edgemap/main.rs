@@ -1,22 +1,3 @@
-#[path = "../config.rs"]
-#[allow(dead_code)]
-mod config;
-#[path = "../control.rs"]
-#[allow(dead_code)]
-mod control;
-#[path = "../keyboard.rs"]
-#[allow(dead_code)]
-mod keyboard;
-#[path = "../mapping.rs"]
-#[allow(dead_code)]
-mod mapping;
-#[path = "../report.rs"]
-#[allow(dead_code)]
-mod report;
-#[path = "../shutdown.rs"]
-#[allow(dead_code)]
-mod shutdown;
-
 use std::env;
 use std::io::{self, Write};
 use std::os::fd::AsFd;
@@ -25,27 +6,25 @@ use std::time::{Duration, Instant};
 
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
-use serde::Deserialize;
+mod control_session;
+mod paths;
+mod profile;
 
+use control_session::*;
+use paths::*;
+use profile::{find_matching_profile, ProfileConfig};
+#[cfg(test)]
+use profile::{profile_matches, ProcessSnapshot};
+
+use dseuhid::{config, control, shutdown};
 use shutdown::{unblock_shutdown_signals_in_child, ShutdownSignal};
 
-const CONTROL_SOCKET_PATH: &str = "/run/dseuhid/control.sock";
 const DSEUHID_RUNTIME_DIR: &str = "/run/dseuhid";
 const RUN_DIR: &str = "/run";
 const CONTROL_FILE_NAME: &str = "control.sock";
 const EDGEMAP_CONFIG_FILE: &str = "edgemap.toml";
 const DEFAULT_CONFIG_FILE: &str = "default.toml";
 const PROFILE_INTERVAL: Duration = Duration::from_secs(3);
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[derive(Debug, Clone, Deserialize)]
-struct ProfileConfig {
-    config: String,
-    #[serde(default)]
-    match_process: String,
-    #[serde(default)]
-    match_cmdline: String,
-}
 
 const USAGE: &str = concat!(
     "edgemap — configuration CLI for dseuhid\n",
@@ -66,72 +45,6 @@ fn print_usage(to_stdout: bool) {
     } else {
         eprint!("{USAGE}");
     }
-}
-
-fn required_home() -> Result<String, String> {
-    match env::var("HOME") {
-        Ok(home) if !home.is_empty() => Ok(home),
-        Ok(_) | Err(env::VarError::NotPresent) => Err("HOME is not set or is empty".to_string()),
-        Err(env::VarError::NotUnicode(_)) => Err("HOME is not valid Unicode".to_string()),
-    }
-}
-
-fn resolve_xdg_dir(
-    xdg: Option<&Path>,
-    home: Option<&str>,
-    fallback: &Path,
-) -> Result<PathBuf, String> {
-    if let Some(xdg) = xdg {
-        if !xdg.as_os_str().is_empty() && xdg.is_absolute() {
-            return Ok(xdg.join("edgemap"));
-        }
-    }
-    let home = home.ok_or_else(|| "HOME is not set or is empty".to_string())?;
-    Ok(PathBuf::from(home).join(fallback).join("edgemap"))
-}
-
-fn xdg_dir(var: &str, fallback: &Path) -> Result<PathBuf, String> {
-    let xdg = env::var_os(var).map(PathBuf::from);
-    if xdg
-        .as_deref()
-        .is_some_and(|path| !path.as_os_str().is_empty() && path.is_absolute())
-    {
-        return resolve_xdg_dir(xdg.as_deref(), None, fallback);
-    }
-    let home = required_home()?;
-    resolve_xdg_dir(xdg.as_deref(), Some(&home), fallback)
-}
-
-fn edgemap_config_dir() -> Result<PathBuf, String> {
-    xdg_dir("XDG_CONFIG_HOME", Path::new(".config"))
-}
-
-fn edgemap_state_dir() -> Result<PathBuf, String> {
-    xdg_dir("XDG_STATE_HOME", Path::new(".local/state"))
-}
-
-fn resolve_config_path_with_home(
-    raw: &str,
-    base_dir: &Path,
-    home: Option<&str>,
-) -> Result<String, String> {
-    if raw.starts_with('/') {
-        return Ok(raw.to_string());
-    }
-    if let Some(rest) = raw.strip_prefix('~') {
-        let home = home.ok_or_else(|| "HOME is not set or is empty".to_string())?;
-        return Ok(home.to_string() + rest);
-    }
-    Ok(base_dir.join(raw).to_string_lossy().into())
-}
-
-fn resolve_config_path(raw: &str, base_dir: &Path) -> Result<String, String> {
-    let home = if raw.starts_with('~') {
-        Some(required_home()?)
-    } else {
-        None
-    };
-    resolve_config_path_with_home(raw, base_dir, home.as_deref())
 }
 
 #[derive(Default)]
@@ -506,261 +419,6 @@ fn reap_child(mut child: std::process::Child) -> std::io::Result<std::thread::Jo
                 log::debug!("failed to reap notify-send child: {error}");
             }
         })
-}
-
-fn drain_control_state(
-    client: &control::ControlClient,
-) -> Result<Option<control::ControlState>, String> {
-    let mut latest = None;
-    loop {
-        match client.receive().map_err(|e| e.to_string())? {
-            Some(control::ServerPacket::State(state)) => latest = Some(state),
-            Some(packet) => return Err(format!("unexpected control packet: {packet:?}")),
-            None => return Ok(latest),
-        }
-    }
-}
-
-enum DaemonRequestError {
-    Shutdown,
-    Failed(String),
-}
-
-fn send_daemon_control_request(
-    client: &control::ControlClient,
-    request: &control::ControlRequest,
-    shutdown: &ShutdownSignal,
-    state: &mut control::ControlState,
-) -> Result<(), DaemonRequestError> {
-    client
-        .send_request(request)
-        .map_err(|e| DaemonRequestError::Failed(e.to_string()))?;
-    let deadline = Instant::now() + CONTROL_TIMEOUT;
-    loop {
-        if let Some(packet) = client
-            .receive()
-            .map_err(|e| DaemonRequestError::Failed(e.to_string()))?
-        {
-            match packet {
-                control::ServerPacket::State(new_state) => *state = new_state,
-                control::ServerPacket::OkSwitchConfig
-                    if matches!(request, control::ControlRequest::SwitchConfig(_)) =>
-                {
-                    return Ok(())
-                }
-                control::ServerPacket::Error { code, message } => {
-                    return Err(DaemonRequestError::Failed(format!("{code}: {message}")))
-                }
-                packet => {
-                    return Err(DaemonRequestError::Failed(format!(
-                        "unexpected control response: {packet:?}"
-                    )))
-                }
-            }
-        }
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(DaemonRequestError::Failed(
-                "timed out waiting for dseuhid control response".to_string(),
-            ));
-        }
-        let timeout_ms = remaining.as_millis().min(u16::MAX as u128) as u16;
-        let mut fds = [
-            PollFd::new(
-                client.as_fd(),
-                PollFlags::POLLIN | PollFlags::POLLERR | PollFlags::POLLHUP,
-            ),
-            PollFd::new(shutdown.as_fd(), PollFlags::POLLIN),
-        ];
-        match poll(&mut fds, PollTimeout::from(timeout_ms)) {
-            Ok(0) => {
-                return Err(DaemonRequestError::Failed(
-                    "timed out waiting for dseuhid control response".to_string(),
-                ))
-            }
-            Ok(_) => {
-                let socket_events = fds[0].revents().unwrap_or(PollFlags::empty());
-                let shutdown_events = fds[1].revents().unwrap_or(PollFlags::empty());
-                if shutdown_events.contains(PollFlags::POLLIN) {
-                    let _ = shutdown.consume();
-                    return Err(DaemonRequestError::Shutdown);
-                }
-                if socket_events
-                    .intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL)
-                {
-                    return Err(DaemonRequestError::Failed(
-                        "dseuhid control socket disconnected".to_string(),
-                    ));
-                }
-            }
-            Err(nix::errno::Errno::EINTR) => continue,
-            Err(e) => {
-                return Err(DaemonRequestError::Failed(format!(
-                    "control socket poll failed: {e}"
-                )))
-            }
-        }
-    }
-}
-
-fn wait_for_control_packet(
-    client: &control::ControlClient,
-    deadline: Instant,
-) -> Result<control::ServerPacket, String> {
-    loop {
-        if let Some(packet) = client.receive().map_err(|e| e.to_string())? {
-            return Ok(packet);
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err("timed out waiting for dseuhid control response".to_string());
-        }
-        let timeout_ms = remaining.as_millis().min(u16::MAX as u128) as u16;
-        let mut fds = [PollFd::new(
-            client.as_fd(),
-            PollFlags::POLLIN | PollFlags::POLLERR | PollFlags::POLLHUP,
-        )];
-        match poll(&mut fds, PollTimeout::from(timeout_ms)) {
-            Ok(0) => return Err("timed out waiting for dseuhid control response".to_string()),
-            Ok(_) => {
-                let events = fds[0].revents().unwrap_or(PollFlags::empty());
-                if events.intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL)
-                {
-                    return Err("dseuhid control socket disconnected".to_string());
-                }
-            }
-            Err(nix::errno::Errno::EINTR) => continue,
-            Err(e) => return Err(format!("control socket poll failed: {e}")),
-        }
-    }
-}
-
-fn connect_control() -> Result<(control::ControlClient, control::ControlState), String> {
-    let path = Path::new(CONTROL_SOCKET_PATH);
-    let client = control::ControlClient::connect(path)
-        .map_err(|e| format!("cannot connect to {CONTROL_SOCKET_PATH}: {e}"))?;
-    let deadline = Instant::now() + CONTROL_TIMEOUT;
-    match wait_for_control_packet(&client, deadline)? {
-        control::ServerPacket::Hello(state) => Ok((client, state)),
-        packet => Err(format!("expected control hello, received {packet:?}")),
-    }
-}
-
-fn send_control_request(
-    request: &control::ControlRequest,
-) -> Result<control::ControlState, String> {
-    let (client, mut state) = connect_control()?;
-    client.send_request(request).map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + CONTROL_TIMEOUT;
-    loop {
-        match wait_for_control_packet(&client, deadline)? {
-            control::ServerPacket::State(new_state) => state = new_state,
-            control::ServerPacket::OkSwitchConfig
-                if matches!(request, control::ControlRequest::SwitchConfig(_)) =>
-            {
-                return Ok(state)
-            }
-            control::ServerPacket::Error { code, message } => {
-                return Err(format!("{code}: {message}"));
-            }
-            packet => return Err(format!("unexpected control response: {packet:?}")),
-        }
-    }
-}
-
-fn read_comm(pid: u32) -> Option<String> {
-    std::fs::read_to_string(format!("/proc/{pid}/comm"))
-        .ok()
-        .map(|s| s.trim().to_lowercase())
-}
-
-fn read_cmdline(pid: u32) -> Option<String> {
-    let data = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    if data.is_empty() {
-        return None;
-    }
-    Some(
-        String::from_utf8_lossy(&data)
-            .replace('\0', " ")
-            .to_lowercase(),
-    )
-}
-
-#[derive(Debug, Clone)]
-struct ProcessSnapshot {
-    pid: u32,
-    comm: Option<String>,
-    cmdline: Option<String>,
-}
-
-fn profile_matches(process: &ProcessSnapshot, profile: &ProfileConfig) -> bool {
-    // load_edgemap_config() lowercases profile match fields; process snapshots
-    // are lowercased when read from /proc, so comparisons here stay allocation-free.
-    if profile.match_process.is_empty() && profile.match_cmdline.is_empty() {
-        return false;
-    }
-    if !profile.match_process.is_empty() {
-        let comm = match process.comm.as_deref() {
-            Some(comm) => comm,
-            None => return false,
-        };
-        if comm != profile.match_process {
-            return false;
-        }
-    }
-    if !profile.match_cmdline.is_empty() {
-        let cmdline = match process.cmdline.as_deref() {
-            Some(cmdline) => cmdline,
-            None => return false,
-        };
-        if !cmdline.contains(&profile.match_cmdline) {
-            return false;
-        }
-    }
-    true
-}
-
-fn snapshot_processes(profiles: &[(String, ProfileConfig)]) -> Vec<ProcessSnapshot> {
-    let need_comm = profiles
-        .iter()
-        .any(|(_, profile)| !profile.match_process.is_empty());
-    let need_cmdline = profiles
-        .iter()
-        .any(|(_, profile)| !profile.match_cmdline.is_empty());
-
-    let entries = match std::fs::read_dir("/proc") {
-        Ok(entries) => entries,
-        Err(_) => return Vec::new(),
-    };
-    entries
-        .flatten()
-        .filter_map(|entry| {
-            let pid = entry.file_name().to_str()?.parse().ok()?;
-            Some(ProcessSnapshot {
-                pid,
-                comm: need_comm.then(|| read_comm(pid)).flatten(),
-                cmdline: need_cmdline.then(|| read_cmdline(pid)).flatten(),
-            })
-        })
-        .collect()
-}
-
-fn find_matching_profile(
-    profiles: &[(String, ProfileConfig)],
-    config_dir: &Path,
-    base_config: &str,
-) -> Result<Option<String>, String> {
-    let processes = snapshot_processes(profiles);
-    for (profile_name, profile_cfg) in profiles {
-        for process in &processes {
-            if profile_matches(process, profile_cfg) {
-                log::debug!("profile matched: name={profile_name}, pid={}", process.pid);
-                return resolve_config_path(&profile_cfg.config, config_dir).map(Some);
-            }
-        }
-    }
-    resolve_config_path(base_config, config_dir).map(Some)
 }
 
 fn cmd_validate(args: &[String]) -> ! {

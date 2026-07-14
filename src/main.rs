@@ -1,15 +1,11 @@
 mod codec;
-mod config;
-#[allow(dead_code)]
-mod control;
 mod descriptor;
 mod device;
 mod keyboard;
-mod mapping;
 mod proxy;
-mod report;
-mod shutdown;
 mod uhid;
+
+use dseuhid::{config, control, keycodes, mapping, report, shutdown};
 
 use log::{debug, error, info, warn};
 use std::env;

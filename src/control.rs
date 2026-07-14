@@ -11,14 +11,18 @@ use nix::sys::socket::{
     SockFlag, SockType, UnixAddr,
 };
 
+use crate::config::ActiveConfig;
+
 pub const LOCK_FILE_NAME: &str = "daemon.lock";
 pub const SOCKET_FILE_NAME: &str = "control.sock";
 pub const PROTOCOL_VERSION: u32 = 1;
-pub const MAX_PACKET_SIZE: usize = 8192;
+pub const MAX_PACKET_SIZE: usize = 72 * 1024;
 pub const MAX_CONTROL_CLIENTS: usize = 16;
 
 const LISTENER_TOKEN: u64 = u64::MAX;
 const MAX_ACCEPTS_PER_WAKE: usize = 16;
+const MAX_CONFIG_SOURCE_SIZE: usize = 4096;
+const SWITCH_CONFIG_PREFIX: &[u8] = b"switch-config\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlState {
@@ -28,24 +32,29 @@ pub struct ControlState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlRequest {
-    Reload,
-    SwitchConfig(String),
+    SwitchConfig(ActiveConfig),
 }
 
 impl ControlRequest {
     fn ok_packet(&self) -> &'static [u8] {
         match self {
-            Self::Reload => b"ok reload",
             Self::SwitchConfig(_) => b"ok switch-config",
         }
     }
 
     pub fn encode(&self) -> Vec<u8> {
         match self {
-            Self::Reload => b"reload".to_vec(),
-            Self::SwitchConfig(path) => {
-                let mut packet = b"switch-config ".to_vec();
-                packet.extend_from_slice(path.as_bytes());
+            Self::SwitchConfig(config) => {
+                let mut packet = Vec::with_capacity(
+                    SWITCH_CONFIG_PREFIX.len()
+                        + config.source().len()
+                        + 1
+                        + config.content().len(),
+                );
+                packet.extend_from_slice(SWITCH_CONFIG_PREFIX);
+                packet.extend_from_slice(config.source().as_bytes());
+                packet.push(0);
+                packet.extend_from_slice(config.content().as_bytes());
                 packet
             }
         }
@@ -56,7 +65,6 @@ impl ControlRequest {
 pub enum ServerPacket {
     Hello(ControlState),
     State(ControlState),
-    OkReload,
     OkSwitchConfig,
     Error { code: String, message: String },
 }
@@ -124,9 +132,6 @@ pub fn parse_server_packet(packet: &[u8]) -> Result<ServerPacket, String> {
     if let Some(fields) = text.strip_prefix("state ") {
         return parse_state_fields(fields).map(ServerPacket::State);
     }
-    if text == "ok reload" {
-        return Ok(ServerPacket::OkReload);
-    }
     if text == "ok switch-config" {
         return Ok(ServerPacket::OkSwitchConfig);
     }
@@ -146,17 +151,27 @@ pub fn parse_server_packet(packet: &[u8]) -> Result<ServerPacket, String> {
 }
 
 fn parse_request(packet: &[u8]) -> Result<ControlRequest, String> {
-    let text = std::str::from_utf8(packet).map_err(|_| "request is not UTF-8".to_string())?;
-    if text == "reload" {
-        return Ok(ControlRequest::Reload);
-    }
-    if let Some(path) = text.strip_prefix("switch-config ") {
-        if path.is_empty() {
-            return Err("switch-config path is empty".to_string());
+    if let Some(payload) = packet.strip_prefix(SWITCH_CONFIG_PREFIX) {
+        let separator = payload
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(|| "switch-config source delimiter is missing".to_string())?;
+        let (source, content_with_separator) = payload.split_at(separator);
+        if source.is_empty() {
+            return Err("switch-config source is empty".to_string());
         }
-        return Ok(ControlRequest::SwitchConfig(path.to_string()));
+        if source.len() > MAX_CONFIG_SOURCE_SIZE {
+            return Err("switch-config source exceeds size limit".to_string());
+        }
+        let source = std::str::from_utf8(source)
+            .map_err(|_| "switch-config source is not UTF-8".to_string())?;
+        let content = std::str::from_utf8(&content_with_separator[1..])
+            .map_err(|_| "switch-config content is not UTF-8".to_string())?;
+        let active_config = ActiveConfig::from_content(source.to_string(), content.to_string())?;
+        return Ok(ControlRequest::SwitchConfig(active_config));
     }
-    Err(format!("unknown command: {text:?}"))
+    let command = std::str::from_utf8(packet).map_err(|_| "request is not UTF-8".to_string())?;
+    Err(format!("unknown command: {command:?}"))
 }
 
 fn send_packet(fd: RawFd, packet: &[u8]) -> io::Result<()> {
@@ -481,6 +496,10 @@ impl DaemonLock {
 mod tests {
     use super::*;
 
+    fn active_config(source: &str, content: &str) -> ActiveConfig {
+        ActiveConfig::from_content(source.to_string(), content.to_string()).unwrap()
+    }
+
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -524,8 +543,11 @@ mod tests {
     }
 
     #[test]
-    fn protocol_preserves_switch_config_path_and_parses_state() {
-        let request = ControlRequest::SwitchConfig("/tmp/a path\nconfig.toml".to_string());
+    fn protocol_preserves_switch_config_source_and_content_and_parses_state() {
+        let request = ControlRequest::SwitchConfig(active_config(
+            "/tmp/a path\nconfig.toml",
+            "version = 2\n[cross]\nremap = \"circle\"\n",
+        ));
         assert_eq!(parse_request(&request.encode()), Ok(request));
         assert_eq!(
             parse_server_packet(b"hello version=1 uhid_ready=1 needs_config=0"),
@@ -534,9 +556,42 @@ mod tests {
                 needs_config: false,
             }))
         );
-        assert!(parse_request(b"switch-config ").is_err());
+        assert!(parse_request(b"switch-config\0\0content").is_err());
+        assert!(parse_request(b"switch-config\0source-without-delimiter").is_err());
+        assert!(parse_request(b"reload").is_err());
         assert!(parse_request(&[0xff]).is_err());
         assert!(parse_server_packet(b"hello version=2 uhid_ready=1 needs_config=0").is_err());
+    }
+
+    #[test]
+    fn switch_config_protocol_enforces_source_content_and_packet_limits() {
+        let maximum = ControlRequest::SwitchConfig(active_config(
+            &"s".repeat(MAX_CONFIG_SOURCE_SIZE),
+            &"x".repeat(crate::config::MAX_CONFIG_FILE_SIZE),
+        ));
+        let packet = maximum.encode();
+        assert!(packet.len() <= MAX_PACKET_SIZE);
+        assert_eq!(parse_request(&packet), Ok(maximum));
+
+        let oversized_source = ControlRequest::SwitchConfig(active_config(
+            &"s".repeat(MAX_CONFIG_SOURCE_SIZE + 1),
+            "version = 2\n",
+        ));
+        assert!(parse_request(&oversized_source.encode()).is_err());
+        assert!(ActiveConfig::from_content(
+            "source".to_string(),
+            "x".repeat(crate::config::MAX_CONFIG_FILE_SIZE + 1),
+        )
+        .is_err());
+
+        let mut invalid_source = SWITCH_CONFIG_PREFIX.to_vec();
+        invalid_source.extend_from_slice(&[0xff, 0, b'x']);
+        assert!(parse_request(&invalid_source).is_err());
+
+        let mut invalid_content = SWITCH_CONFIG_PREFIX.to_vec();
+        invalid_content.extend_from_slice(b"source\0");
+        invalid_content.push(0xff);
+        assert!(parse_request(&invalid_content).is_err());
     }
 
     #[test]
@@ -561,15 +616,22 @@ mod tests {
         assert!(server.drain_requests().unwrap().is_empty());
         assert_eq!(client.receive().unwrap(), Some(ServerPacket::Hello(initial)));
 
-        client.send_request(&ControlRequest::Reload).unwrap();
+        let first_request = ControlRequest::SwitchConfig(active_config(
+            "/tmp/one.toml",
+            "version = 2\n",
+        ));
+        client.send_request(&first_request).unwrap();
         let mut requests = server.drain_requests().unwrap();
         assert_eq!(requests.len(), 1);
         let pending = requests.pop().unwrap();
-        assert_eq!(pending.request, ControlRequest::Reload);
+        assert_eq!(pending.request, first_request);
         server.reply_ok(pending.client, &pending.request);
-        assert_eq!(client.receive().unwrap(), Some(ServerPacket::OkReload));
+        assert_eq!(
+            client.receive().unwrap(),
+            Some(ServerPacket::OkSwitchConfig)
+        );
 
-        client.send_request(&ControlRequest::Reload).unwrap();
+        client.send_request(&first_request).unwrap();
         let pending = server.drain_requests().unwrap().pop().unwrap();
         server.reply_error(pending.client, "not-ready", "UHID proxy is not ready");
         assert_eq!(
@@ -592,9 +654,12 @@ mod tests {
         assert_eq!(client.receive().unwrap(), Some(ServerPacket::State(ready)));
         assert_eq!(second.receive().unwrap(), Some(ServerPacket::State(ready)));
 
-        client.send_request(&ControlRequest::Reload).unwrap();
+        client.send_request(&first_request).unwrap();
         second
-            .send_request(&ControlRequest::SwitchConfig("/tmp/two.toml".to_string()))
+            .send_request(&ControlRequest::SwitchConfig(active_config(
+                "/tmp/two.toml",
+                "version = 2\n",
+            )))
             .unwrap();
         let mut requests = server.drain_requests().unwrap();
         assert_eq!(requests.len(), 1);
@@ -603,9 +668,13 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert!(requests
             .iter()
-            .any(|pending| pending.request == ControlRequest::Reload));
+            .any(|pending| pending.request == first_request));
         assert!(requests.iter().any(|pending| {
-            pending.request == ControlRequest::SwitchConfig("/tmp/two.toml".to_string())
+            pending.request
+                == ControlRequest::SwitchConfig(active_config(
+                    "/tmp/two.toml",
+                    "version = 2\n",
+                ))
         }));
 
         drop(client);
@@ -627,7 +696,12 @@ mod tests {
         assert!(server.drain_requests().unwrap().is_empty());
         assert_eq!(client.receive().unwrap(), Some(ServerPacket::Hello(initial)));
 
-        client.send_request(&ControlRequest::Reload).unwrap();
+        client
+            .send_request(&ControlRequest::SwitchConfig(active_config(
+                "/tmp/disconnected.toml",
+                "version = 2\n",
+            )))
+            .unwrap();
         let pending = server.drain_requests().unwrap().pop().unwrap();
         drop(client);
         server.reply_ok(pending.client, &pending.request);
@@ -669,10 +743,18 @@ mod tests {
             })
         );
 
-        clients[0].send_request(&ControlRequest::Reload).unwrap();
+        clients[0]
+            .send_request(&ControlRequest::SwitchConfig(active_config(
+                "/tmp/client-limit.toml",
+                "version = 2\n",
+            )))
+            .unwrap();
         let pending = server.drain_requests().unwrap().pop().unwrap();
         server.reply_ok(pending.client, &pending.request);
-        assert_eq!(clients[0].receive().unwrap(), Some(ServerPacket::OkReload));
+        assert_eq!(
+            clients[0].receive().unwrap(),
+            Some(ServerPacket::OkSwitchConfig)
+        );
 
         drop(rejected);
         drop(clients);

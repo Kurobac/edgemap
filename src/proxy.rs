@@ -12,6 +12,7 @@ use crate::codec::{
     CodecError, CodecPipeline, FeatureReportCache, PhysicalCodec, PhysicalOutputState,
     SourceCodec, TargetCodec,
 };
+use crate::config::ActiveConfig;
 use crate::control::{ControlRequest, ControlServer};
 use crate::device::{HidrawDevice, SonyDeviceKind};
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
@@ -431,7 +432,7 @@ pub(crate) struct ProxyInit {
     pub(crate) uhid: UhidDevice,
     pub(crate) keyboard: crate::keyboard::KeyboardDevice,
     pub(crate) mapping: Arc<RwLock<MappingConfig>>,
-    pub(crate) config_path: Option<String>,
+    pub(crate) active_config: Option<ActiveConfig>,
     pub(crate) report_cache: FeatureReportCache,
     pub(crate) codec: CodecPipeline,
     pub(crate) source_kind: SonyDeviceKind,
@@ -472,7 +473,7 @@ pub struct Proxy {
     hidraw: HidrawDevice,
     uhid: UhidDevice,
     mapping: Arc<RwLock<MappingConfig>>,
-    config_path: Option<String>,
+    active_config: Option<ActiveConfig>,
     report_cache: FeatureReportCache,
     codec: CodecPipeline,
     source_kind: SonyDeviceKind,
@@ -520,7 +521,7 @@ impl Proxy {
             uhid,
             keyboard,
             mapping,
-            config_path,
+            active_config,
             report_cache,
             codec,
             source_kind,
@@ -535,7 +536,7 @@ impl Proxy {
             hidraw,
             uhid,
             mapping,
-            config_path,
+            active_config,
             report_cache,
             codec,
             source_kind,
@@ -558,20 +559,15 @@ impl Proxy {
         self.hidraw.clear_restored_paths();
     }
 
-    pub fn config_path(&self) -> Option<&str> {
-        self.config_path.as_deref()
+    pub fn active_config(&self) -> Option<&ActiveConfig> {
+        self.active_config.as_ref()
     }
 
-    fn reload_config(&mut self) -> Result<(), (&'static str, String)> {
-        let path = self
-            .config_path
-            .clone()
-            .ok_or_else(|| ("no-config", "no config path is active".to_string()))?;
-        self.reload_config_from(path)
-    }
-
-    fn reload_config_from(&mut self, path: String) -> Result<(), (&'static str, String)> {
-        let cfg = match crate::config::Config::load(&path) {
+    fn apply_active_config(
+        &mut self,
+        active_config: ActiveConfig,
+    ) -> Result<(), (&'static str, String)> {
+        let cfg = match active_config.parse() {
             Ok(cfg) => cfg,
             Err(e) => {
                 return Err(("load-failed", e));
@@ -598,8 +594,11 @@ impl Proxy {
         let new_output_device = cfg.output_device.clone();
         let new_runtimes = MappingRuntimes::from_mapping(&new_mapping);
         *self.mapping.write().unwrap() = new_mapping;
-        info!("config reloaded: path={}", EscapedLogValue(&path));
-        self.config_path = Some(path);
+        info!(
+            "config applied: source={}",
+            EscapedLogValue(active_config.source())
+        );
+        self.active_config = Some(active_config);
         self.last_snapshot = None;
         self.last_output = None;
         if new_output_device != self.output_device_config {
@@ -796,16 +795,12 @@ impl Proxy {
         for pending in control.drain_requests()? {
             let request = pending.request;
             let result = match &request {
-                ControlRequest::Reload => {
-                    info!("control request received: action=reload");
-                    self.reload_config()
-                }
-                ControlRequest::SwitchConfig(path) => {
+                ControlRequest::SwitchConfig(active_config) => {
                     info!(
-                        "control request received: action=switch-config, path={}",
-                        EscapedLogValue(path)
+                        "control request received: action=switch-config, source={}",
+                        EscapedLogValue(active_config.source())
                     );
-                    self.reload_config_from(path.clone())
+                    self.apply_active_config(active_config.clone())
                 }
             };
             match result {
@@ -1258,7 +1253,6 @@ fn public_control_error_message(code: &str) -> &'static str {
         "load-failed" => "configuration load failed",
         "validation-failed" => "configuration validation failed",
         "mapping-failed" => "configuration mapping failed",
-        "no-config" => "no config path is active",
         _ => "control request failed",
     }
 }

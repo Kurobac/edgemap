@@ -85,13 +85,13 @@ fn create_config_without_path_reserves_stdout_for_toml() {
 
 #[test]
 fn argument_error_uses_stderr() {
-    let output = edgemap(&["reload", "extra"]);
+    let output = edgemap(&["switch-config", "one.toml", "extra"]);
 
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert_eq!(
         stderr(&output),
-        "error: command 'reload' does not accept arguments\nUsage: edgemap reload\n"
+        "error: too many arguments\nUsage: edgemap switch-config <PATH>\n"
     );
 }
 

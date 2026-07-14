@@ -1,4 +1,4 @@
-# edgemap — Project Status (2026-07-14)
+# edgemap — Project Status (2026-07-15)
 
 ## Overview
 
@@ -46,6 +46,13 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v1.1.0 | `02aeccc` | **Bluetooth source support**: DS5/Edge BT input, BT main-output forwarding, BT GET_REPORT cache, DS5 gyro cadence pacer, codec/error-handling cleanup, safer hot reload; 195 Rust + 21 GUI tests |
 | v1.2.0 | `88824b7` | **Event-driven daemon coordination**: libudev hotplug, signalfd shutdown, acknowledged Unix seqpacket IPC, atomic daemon locks, transactional startup/reload handling; 218 Rust + 21 GUI tests |
 | v1.2.1 | — | **Control-plane hardening**: generic config errors, bounded regular-file loading, client/request limits, and systemd resource ceilings; 223 Rust + 21 GUI tests |
+
+## Unreleased Changes
+
+- Replaced path-based runtime configuration loading with a bounded content transfer. `edgemap switch-config` reads and validates a regular file up to 64 KiB under the caller's permissions, then sends its source label and complete TOML content in one seqpacket; dseuhid never opens the client-provided path.
+- Added `ActiveConfig` so output-device-driven UHID recreation reuses the exact configuration content that was acknowledged, even if the source file changes afterward.
+- Removed the `reload` request, CLI command, zsh completion, and systemd `ExecReload`. Runtime configuration now has one transactional operation: `switch-config`.
+- Test suite: 243 Rust tests (136 dseuhid, 99 edgemap, 8 CLI integration) plus 21 GUI tests.
 
 ## v1.2.1 Release Notes
 
@@ -133,12 +140,13 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - Missing section warnings (all 22 buttons checked at startup)
 - Case-sensitive section names (uppercase rejected)
 
-### Hot Reload
-- Acknowledged Unix seqpacket commands (`edgemap reload`, `edgemap switch-config`) trigger config re-read
-- `Arc<RwLock<MappingConfig>>` — read lock per frame, write lock on reload
-- Failed reload keeps the previous live config, mapping, runtimes, output-device setting, and config path
-- Debug snapshots cleared on reload
-- Turbo/combo/macro runtimes rebuilt on reload
+### Runtime Config Application
+- `edgemap switch-config` reads and validates a regular file up to 64 KiB under the user account, then sends its source label and complete TOML content in one acknowledged seqpacket
+- dseuhid parses, validates, builds, and commits the received content without opening the source path
+- `Arc<RwLock<MappingConfig>>` — read lock per frame, write lock on a successful config apply
+- Failed applies keep the previous live content, mapping, runtimes, and output-device setting
+- Debug snapshots are cleared and turbo/combo/macro runtimes are rebuilt after a successful apply
+- Output-device changes recreate UHID from the retained `ActiveConfig` content
 
 ### Turbo System
 - **Turbo (hold-to-repeat)**: hold source → optional delay → toggle source at interval_ms for L2 processing
@@ -195,7 +203,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Single output or feature-report failures reply with an error or drop that request while the input path keeps running.
 - hidraw disconnect errors (`EIO`, `ENODEV`, `ENXIO`) stop the current proxy and wait for reconnect.
 - Malformed UHID events, UHID read errors, and UHID input write errors stop the current proxy loop.
-- Startup config and required daemon setup failures are fatal. Hot reload failures keep the previous live config.
+- Startup config and required daemon setup failures are fatal. Runtime config-apply failures keep the previous live config.
 - Permission hiding/restoration failures are warning-level unless a direct node restriction call returns an error to the caller.
 
 ### Combo System (v0.0.10)
@@ -215,7 +223,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - L2: macro detection reads L1 (Physical source) or combo injection (Combo source via `Target::Macro`)
 - L2: macro injection writes step buttons every frame (per-frame maintain, same principle as turbo bug #23 fix)
 - Config validation: empty sequence reject, release_ms > press_ms, macro name vs button name conflict, same-key turbo+macro mutual exclusion
-- Hot reload: macro runtimes rebuilt after an acknowledged control-socket reload
+- Runtime config apply: macro runtimes rebuilt after an acknowledged `switch-config`
 
 ### Keyboard Target (v0.8.0)
 - **Keyboard output via uinput**: `remap = "key:<keyname>"` creates keystrokes on a virtual keyboard
@@ -240,7 +248,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Both DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported
 - HID report descriptor read from physical device via HIDIOCGRDESC; read failure aborts device open
 - USB state validation reads the first full input report on open. BT skips open-time validation because BT may first deliver a minimal 0x01 report; runtime `SourceCodec` validation handles full 0x31 reports and CRC.
-- `output_device = "dualsense"` overrides the virtual device to regular DS (PID 0x0CE6 + `DS_USB_DESCRIPTOR`); changing it on reload recreates UHID
+- `output_device = "dualsense"` overrides the virtual device to regular DS (PID 0x0CE6 + `DS_USB_DESCRIPTOR`); applying a changed target recreates UHID from retained config content
 - `output_device = "dualshock4"` exposes a DualShock 4 target (PID 0x09CC + `DS4_USB_DESCRIPTOR`, Beta); native DS4 games under Proton should use the DS4 UHID MI_03 identity patch from `proton-eg-patch` for best compatibility
 - Multi-device: warn if more than one DualSense detected
 - Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
@@ -260,7 +268,7 @@ Coverage includes save/cancel results, macro initialization and reference integr
 | Tool | Binary | Description |
 |------|--------|-------------|
 | `dseuhid` | main | UHID proxy daemon (`-c`/`--config-path`, `version`, `help` subcommands) |
-| `edgemap` | `src/bin/edgemap.rs` | User-side CLI: validate, create-config, reload, switch-config (no root). Daemon mode (d/daemon): auto-create config, profile auto-switch, inotify config reload, seqpacket state subscription, notify-send |
+| `edgemap` | `src/bin/edgemap.rs` | User-side CLI: validate, create-config, switch-config (no root). Daemon mode (d/daemon): auto-create config, profile auto-switch, inotify config reload, seqpacket state subscription, notify-send |
 | `edgemap-gui-v6.py` | GUI | PyQt6 config editor: XDG-aware config paths, remap/turbo/combo/macro editing, macro reference management, safe TOML serialization |
 | `completions/` | zsh | zsh completions for `dseuhid` and `edgemap` commands (validate/switch-config auto-complete configs from `~/.config/edgemap/`) |
 
@@ -281,5 +289,5 @@ See [BUGFIX.md](./BUGFIX.md) for the complete list.
 | Feature | Reason |
 |---------|--------|
 | D-Bus interface (zbus) | The versioned local seqpacket protocol provides acknowledged commands and state subscription without an async runtime |
-| Direct dseuhid config-file watch | edgemap owns config selection and sends transactional reload/switch requests over the control socket |
+| Direct dseuhid config-file watch | edgemap owns config selection and sends bounded config content through transactional `switch-config` requests |
 | Multiple controllers | Not planned. |

@@ -55,7 +55,6 @@ const USAGE: &str = concat!(
     "Commands:\n",
     "  v, validate [PATH]           Validate one config or all configs\n",
     "  cc, create-config [PATH]     Create the default config; print it if PATH is omitted\n",
-    "  r, reload                    Reload the active config\n",
     "  sc, switch-config <PATH>     Switch to another config\n",
     "  d, daemon [--config <PATH>]  Watch dseuhid and manage config selection\n",
     "  help                         Print help\n",
@@ -557,8 +556,6 @@ fn send_daemon_control_request(
         {
             match packet {
                 control::ServerPacket::State(new_state) => *state = new_state,
-                control::ServerPacket::OkReload
-                    if matches!(request, control::ControlRequest::Reload) => return Ok(()),
                 control::ServerPacket::OkSwitchConfig
                     if matches!(request, control::ControlRequest::SwitchConfig(_)) => {
                         return Ok(())
@@ -669,8 +666,6 @@ fn send_control_request(request: &control::ControlRequest) -> Result<control::Co
     loop {
         match wait_for_control_packet(&client, deadline)? {
             control::ServerPacket::State(new_state) => state = new_state,
-            control::ServerPacket::OkReload
-                if matches!(request, control::ControlRequest::Reload) => return Ok(state),
             control::ServerPacket::OkSwitchConfig
                 if matches!(request, control::ControlRequest::SwitchConfig(_)) => return Ok(state),
             control::ServerPacket::Error { code, message } => {
@@ -772,6 +767,8 @@ fn find_matching_profile(
 }
 
 fn cmd_validate(args: &[String]) -> ! {
+    let load = |path: &str| config::ActiveConfig::read(path).and_then(|config| config.parse());
+
     if args.len() > 3 {
         eprintln!("error: too many arguments");
         eprintln!("Usage: edgemap validate [PATH]");
@@ -780,7 +777,7 @@ fn cmd_validate(args: &[String]) -> ! {
 
     if args.len() == 3 {
         let path = &args[2];
-        let cfg = match config::Config::load(path) {
+        let cfg = match load(path) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("error: {e}");
@@ -834,7 +831,7 @@ fn cmd_validate(args: &[String]) -> ! {
     for entry in entries {
         let path = entry.path();
         let display = entry.file_name().to_string_lossy().into_owned();
-        match config::Config::load(path.to_str().unwrap()) {
+        match load(path.to_str().unwrap()) {
             Ok(cfg) => match config::validate(&cfg) {
                 Ok(()) => {
                     let note = if cfg.buttons.is_empty() { " (passthrough only)" } else { "" };
@@ -896,9 +893,8 @@ fn cmd_create_config(args: &[String]) -> ! {
 
 fn send_control_command(request: control::ControlRequest) -> ! {
     let success = match &request {
-        control::ControlRequest::Reload => "Config reloaded".to_string(),
-        control::ControlRequest::SwitchConfig(path) => {
-            format!("Config switched: {path}")
+        control::ControlRequest::SwitchConfig(active_config) => {
+            format!("Config switched: {}", active_config.source())
         }
     };
     match send_control_request(&request) {
@@ -911,15 +907,6 @@ fn send_control_command(request: control::ControlRequest) -> ! {
             std::process::exit(1);
         }
     }
-}
-
-fn cmd_reload(args: &[String]) -> ! {
-    if args.len() > 2 {
-        eprintln!("error: command 'reload' does not accept arguments");
-        eprintln!("Usage: edgemap reload");
-        std::process::exit(1);
-    }
-    send_control_command(control::ControlRequest::Reload)
 }
 
 fn cmd_switch_config(args: &[String]) -> ! {
@@ -957,8 +944,15 @@ fn cmd_switch_config(args: &[String]) -> ! {
                 std::process::exit(1);
             })
     };
-    let cfg = match config::Config::load(&path_str) {
-        Ok(c) => c,
+    let active_config = match config::ActiveConfig::read(&path_str) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+    let cfg = match active_config.parse() {
+        Ok(config) => config,
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
@@ -968,7 +962,7 @@ fn cmd_switch_config(args: &[String]) -> ! {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
-    send_control_command(control::ControlRequest::SwitchConfig(path_str))
+    send_control_command(control::ControlRequest::SwitchConfig(active_config))
 }
 
 struct DaemonState {
@@ -1317,32 +1311,42 @@ fn cmd_daemon(args: &[String]) -> ! {
         if wanted != current_config {
             // validate before injecting — catches profiles configured before
             // their config files are created, or invalid save states
-            let is_valid = |p: &str| -> bool {
+            let load_valid = |p: &str| -> Option<config::ActiveConfig> {
                 if !Path::new(p).exists() {
                     log::warn!("config not found: path={p}");
-                    return false;
+                    return None;
                 }
-                match config::Config::load(p) {
-                    Ok(cfg) => {
-                        if let Err(e) = config::validate(&cfg) {
-                            log::warn!("config validation failed: path={p}, error={e}");
-                            false
-                        } else { true }
-                    }
+                match config::ActiveConfig::read(p) {
+                    Ok(active_config) => match active_config.parse() {
+                        Ok(cfg) => {
+                            if let Err(e) = config::validate(&cfg) {
+                                log::warn!("config validation failed: path={p}, error={e}");
+                                None
+                            } else {
+                                Some(active_config)
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("failed to parse config: path={p}, error={e}");
+                            None
+                        }
+                    },
                     Err(e) => {
                         log::warn!("failed to load config: path={p}, error={e}");
-                        false
+                        None
                     }
                 }
             };
 
             let mut target = wanted.clone();
-            if !is_valid(&target) {
+            let active_config = if let Some(active_config) = load_valid(&target) {
+                active_config
+            } else {
                 // profile config failed — try base_config as fallback
                 if target != state.base_config {
                     log::warn!("profile config invalid; using default config");
                     target = state.base_config.clone();
-                    if !is_valid(&target) {
+                    let Some(active_config) = load_valid(&target) else {
                         log::warn!("default config also invalid; previous config retained");
                         if let Err(wait_error) = wait_for_daemon_activity(
                             &mut monitor,
@@ -1358,7 +1362,8 @@ fn cmd_daemon(args: &[String]) -> ! {
                             break;
                         }
                         continue;
-                    }
+                    };
+                    active_config
                 } else {
                     // base_config itself is invalid — just warn, don't spam
                     log::warn!("default config invalid; previous config retained");
@@ -1377,9 +1382,9 @@ fn cmd_daemon(args: &[String]) -> ! {
                     }
                     continue;
                 }
-            }
+            };
 
-            let request = control::ControlRequest::SwitchConfig(target.clone());
+            let request = control::ControlRequest::SwitchConfig(active_config);
             let result = match (control_client.as_ref(), control_state.as_mut()) {
                 (Some(client), Some(control_state)) => {
                     send_daemon_control_request(client, &request, &shutdown, control_state)
@@ -1439,7 +1444,6 @@ fn main() {
     match args[1].as_str() {
         "v" | "validate" => cmd_validate(&args),
         "cc" | "create-config" => cmd_create_config(&args),
-        "r" | "reload" => cmd_reload(&args),
         "sc" | "switch-config" => cmd_switch_config(&args),
         "d" | "daemon" => cmd_daemon(&args),
         "help" | "--help" | "-h" => {
@@ -1462,6 +1466,7 @@ mod path_tests {
     fn usage_uses_conventional_placeholders() {
         assert!(USAGE.contains("Usage: edgemap <COMMAND> [ARGS]"));
         assert!(USAGE.contains("switch-config <PATH>"));
+        assert!(!USAGE.contains("  r, reload"));
         assert!(!USAGE.contains("<path>"));
     }
 

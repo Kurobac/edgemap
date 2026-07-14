@@ -8,7 +8,6 @@ RuntimeDirectory=dseuhid
 RuntimeDirectoryMode=0755
 ExecStart=/usr/bin/dseuhid
 Environment=RUST_LOG=info
-ExecReload=/usr/bin/edgemap reload
 Restart=on-failure
 RestartSec=2
 MemoryMax=64M

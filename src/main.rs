@@ -201,9 +201,12 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut config_path = parse_config_path();
-    if let Some(path) = config_path.as_deref() {
-        let cfg = config::Config::load(path).unwrap_or_else(|e| {
+    let mut active_config = parse_config_path().map(|path| {
+        let active = config::ActiveConfig::read(&path).unwrap_or_else(|e| {
+            error!("failed to load startup config: {e}");
+            std::process::exit(1);
+        });
+        let cfg = active.parse().unwrap_or_else(|e| {
             error!("failed to load startup config: {e}");
             std::process::exit(1);
         });
@@ -211,7 +214,8 @@ fn main() {
             error!("startup config validation failed: {e}");
             std::process::exit(1);
         });
-    }
+        active
+    });
 
     info!("dseuhid daemon starting");
     let shutdown = ShutdownSignal::new().unwrap_or_else(|e| {
@@ -228,7 +232,7 @@ fn main() {
         std::path::Path::new(RUNTIME_DIR),
         control::ControlState {
             uhid_ready: false,
-            needs_config: config_path.is_none(),
+            needs_config: active_config.is_none(),
         },
     )
     .unwrap_or_else(|e| {
@@ -344,19 +348,13 @@ fn main() {
             dev_info.path.display()
         );
 
-        let loaded_config = match config_path.as_deref() {
-            Some(path) => {
-                info!("loading config: path={path}");
-                match config::Config::load(path) {
-                    Ok(cfg) => match config::validate(&cfg) {
-                        Ok(()) => Some(cfg),
-                        Err(e) => {
-                            error!("config validation failed: {e}");
-                            break 'outer DaemonExit::Fatal;
-                        }
-                    },
+        let loaded_config = match active_config.as_ref() {
+            Some(active) => {
+                info!("loading config: source={}", active.source());
+                match active.parse() {
+                    Ok(cfg) => Some(cfg),
                     Err(e) => {
-                        error!("failed to load config: {e}");
+                        error!("failed to parse active config: {e}");
                         break 'outer DaemonExit::Fatal;
                     }
                 }
@@ -493,7 +491,7 @@ fn main() {
             uhid,
             keyboard,
             mapping,
-            config_path: config_path.clone(),
+            active_config: active_config.clone(),
             report_cache,
             codec: codec_pipeline,
             source_kind: dev_info.kind,
@@ -501,7 +499,7 @@ fn main() {
         });
         match proxy.run(&shutdown, &mut control) {
             proxy::ExitReason::ConfigChanged => {
-                config_path = proxy.config_path().map(str::to_owned);
+                active_config = proxy.active_config().cloned();
                 let mut state = control.state();
                 state.uhid_ready = false;
                 state.needs_config = false;
@@ -509,7 +507,7 @@ fn main() {
                 info!("output device changed; recreating virtual HID device");
             }
             proxy::ExitReason::DeviceGone => {
-                config_path = None;
+                active_config = None;
                 proxy.forget_restore_on_physical_disconnect();
                 drop(proxy);
                 control.set_state(control::ControlState {
@@ -592,7 +590,11 @@ mod main_tests {
 
         client
             .send_request(&control::ControlRequest::SwitchConfig(
-                "/tmp/default.toml".to_string(),
+                config::ActiveConfig::from_content(
+                    "/tmp/default.toml".to_string(),
+                    "version = 2\n".to_string(),
+                )
+                .unwrap(),
             ))
             .unwrap();
         reject_inactive_control(&mut server).unwrap();

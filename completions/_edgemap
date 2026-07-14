@@ -15,9 +15,8 @@ _edgemap() {
         "validate[Validate config file]" \
         "v[Validate config file]" \
         "create-config[Print default config template]" \
-        "reload[Reload config on running dseuhid]" \
-        "switch-config[Switch to config file and reload]" \
-        "sc[Switch to config file and reload]" \
+        "switch-config[Apply a config file to running dseuhid]" \
+        "sc[Apply a config file to running dseuhid]" \
         "d[Run in daemon mode (auto-create, auto-switch)]" \
         "daemon[Run in daemon mode]" \
         "help[Print help]"

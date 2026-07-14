@@ -74,12 +74,13 @@ The daemons communicate through the versioned Unix `SOCK_SEQPACKET` endpoint
 and delivers at most one request per event-loop turn so control traffic cannot
 starve HID processing.
 
-Configuration paths must resolve to regular files no larger than 256 KiB.
-Nonblocking open and a bounded read prevent FIFOs, device nodes, and dynamically
-generated pseudo-files from causing unbounded reads. Socket-triggered configuration
-failures return fixed category messages without echoing parser details or file
-contents; run `edgemap validate <path>` for detailed diagnostics under the caller's
-own permissions.
+Configuration paths must resolve to regular files no larger than 64 KiB.
+`edgemap switch-config` opens and validates the file under the caller's permissions,
+then sends its source label and complete TOML content in one bounded seqpacket.
+`dseuhid` validates and commits that in-memory content transactionally; it does not
+reopen a client-provided path. Configuration failures return fixed category messages
+without echoing parser details or file contents; run `edgemap validate <path>` for
+detailed local diagnostics.
 
 Both systemd units cap memory at 64 MiB, tasks at 32, and open file descriptors at
 128, and disable core dumps. These limits are final containment boundaries rather
@@ -95,7 +96,7 @@ than normal operating targets.
 | Macro | Timed key sequences, hold (loop) and single (one-shot) modes |
 | Keyboard target | Remap, combo, macro, and split-touchpad output to 107 uinput keyboard keys |
 | Profile auto-switch | Match running processes (comm/cmdline), auto-switch remap config |
-| Hot reload | inotify-based (`edgemap.toml`) or acknowledged Unix socket command |
+| Config switching | inotify-based profile selection plus acknowledged Unix socket content transfer |
 | Event-driven hotplug | libudev device discovery with immediate controller add/remove handling |
 | Native HID behavior | DS5 USB target keeps source backing where possible; BT physical output wraps USB target output into the DS5 BT main-output envelope |
 | Regular DualSense | DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported over USB and Bluetooth source hidraw |
@@ -197,7 +198,7 @@ target repeat is disabled by default and can be enabled with
 - Root for `dseuhid` only
 - `python-pyqt6` for GUI support (optional)
 - `libnotify` for profile-switch notifications (optional)
-- Configuration files must be regular files no larger than 256 KiB
+- Configuration files must be regular files no larger than 64 KiB
 
 ## Special Thanks
 

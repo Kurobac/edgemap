@@ -7,7 +7,44 @@ use std::os::unix::fs::OpenOptionsExt;
 use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, RemapRule, StickDir, Target, Trigger, TurboConfig};
 use crate::report::Button;
 
-pub const MAX_CONFIG_FILE_SIZE: usize = 256 * 1024;
+pub const MAX_CONFIG_FILE_SIZE: usize = 64 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveConfig {
+    source: String,
+    content: String,
+}
+
+impl ActiveConfig {
+    pub fn read(path: &str) -> Result<Self, String> {
+        let content = read_config_content(path)?;
+        Ok(Self {
+            source: path.to_string(),
+            content,
+        })
+    }
+
+    pub fn from_content(source: String, content: String) -> Result<Self, String> {
+        if content.len() > MAX_CONFIG_FILE_SIZE {
+            return Err(format!(
+                "Config content exceeds {MAX_CONFIG_FILE_SIZE} byte limit"
+            ));
+        }
+        Ok(Self { source, content })
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    pub fn parse(&self) -> Result<Config, String> {
+        Config::parse(&self.source, &self.content)
+    }
+}
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
@@ -153,38 +190,8 @@ fn resolve_step_target(key: &str) -> Option<crate::mapping::StepTarget> {
 }
 
 impl Config {
-    pub fn load(path: &str) -> Result<Self, String> {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(path)
-            .map_err(|e| format!("Cannot open {path}: {e}"))?;
-        let metadata = file
-            .metadata()
-            .map_err(|e| format!("Cannot inspect {path}: {e}"))?;
-        if !metadata.file_type().is_file() {
-            return Err(format!("Config path is not a regular file: {path}"));
-        }
-        if metadata.len() > MAX_CONFIG_FILE_SIZE as u64 {
-            return Err(format!(
-                "Config file exceeds {MAX_CONFIG_FILE_SIZE} byte limit: {path}"
-            ));
-        }
-
-        // The bounded read also protects against pseudo-files whose metadata
-        // reports a zero size while generating data on demand.
-        let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        file.take(MAX_CONFIG_FILE_SIZE as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("Cannot read {path}: {e}"))?;
-        if bytes.len() > MAX_CONFIG_FILE_SIZE {
-            return Err(format!(
-                "Config file exceeds {MAX_CONFIG_FILE_SIZE} byte limit: {path}"
-            ));
-        }
-        let content = String::from_utf8(bytes)
-            .map_err(|e| format!("Invalid UTF-8 in config {path}: {e}"))?;
-        toml::from_str(&content).map_err(|e| format!("Invalid config {path}: {e}"))
+    pub fn parse(source: &str, content: &str) -> Result<Self, String> {
+        toml::from_str(content).map_err(|e| format!("Invalid config {source}: {e}"))
     }
 
     pub fn to_mapping_config(&self) -> Result<MappingConfig, String> {
@@ -367,6 +374,38 @@ impl Config {
 
         configs
     }
+}
+
+fn read_config_content(path: &str) -> Result<String, String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|e| format!("Cannot open {path}: {e}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("Cannot inspect {path}: {e}"))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!("Config path is not a regular file: {path}"));
+    }
+    if metadata.len() > MAX_CONFIG_FILE_SIZE as u64 {
+        return Err(format!(
+            "Config file exceeds {MAX_CONFIG_FILE_SIZE} byte limit: {path}"
+        ));
+    }
+
+    // The bounded read also protects against pseudo-files whose metadata
+    // reports a zero size while generating data on demand.
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_CONFIG_FILE_SIZE as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Cannot read {path}: {e}"))?;
+    if bytes.len() > MAX_CONFIG_FILE_SIZE {
+        return Err(format!(
+            "Config file exceeds {MAX_CONFIG_FILE_SIZE} byte limit: {path}"
+        ));
+    }
+    String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8 in config {path}: {e}"))
 }
 
 pub const ALL_BUTTON_NAMES: &[&str] = &[
@@ -857,8 +896,8 @@ mod tests {
     }
 
     #[test]
-    fn config_load_rejects_non_regular_and_oversized_files() {
-        let non_regular = Config::load("/dev/null").unwrap_err();
+    fn active_config_read_rejects_non_regular_and_oversized_files() {
+        let non_regular = ActiveConfig::read("/dev/null").unwrap_err();
         assert!(non_regular.contains("not a regular file"));
 
         let unique = std::time::SystemTime::now()
@@ -873,8 +912,28 @@ mod tests {
         file.set_len(MAX_CONFIG_FILE_SIZE as u64 + 1).unwrap();
         drop(file);
 
-        let error = Config::load(path.to_str().unwrap()).unwrap_err();
+        let error = ActiveConfig::read(path.to_str().unwrap()).unwrap_err();
         assert!(error.contains("exceeds"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn active_config_keeps_the_content_that_was_read() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "dseuhid-active-config-{}-{unique}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "version = 2\n[cross]\nremap = \"circle\"\n").unwrap();
+
+        let active = ActiveConfig::read(path.to_str().unwrap()).unwrap();
+        std::fs::write(&path, "not valid TOML").unwrap();
+
+        let config = active.parse().unwrap();
+        assert_eq!(config.buttons["cross"].remap.as_deref(), Some("circle"));
         std::fs::remove_file(path).unwrap();
     }
 

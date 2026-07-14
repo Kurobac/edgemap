@@ -152,7 +152,7 @@
 
 ---
 
-## #38–#62: after v0.2.0 (edgemap daemon, packaging, GUI)
+## #38–#105: v0.2.0 through v1.1.0 (daemon, packaging, GUI, Bluetooth)
 
 ### #38 — mkfifo/chmod `ENAMETOOLONG` / garbage filenames
 **Root cause:** `&str::as_ptr()` is not null-terminated. `libc::mkfifo()` and `libc::chmod()` scan memory past the string until hitting a random zero byte, producing either `ENAMETOOLONG` or files with garbage-suffixed names.
@@ -555,3 +555,171 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 **Root cause:** The BT gyro cadence workaround initially sent every physical BT input to UHID immediately, then also sent repeated frames from the scheduler. The configured repeat rate therefore behaved like `physical report rate + repeat rate`; even `1Hz` still produced hundreds of UHID reports per second.
 
 **Fix:** In repeat mode, physical BT frames only update the latest encoded target report. The repeat scheduler is the sole UHID input sender, so `DSEUHID_BT_DS5_USB_REPEAT_HZ` and the opt-in `DSEUHID_BT_DS4_USB_REPEAT_HZ` control the actual virtual input cadence.
+
+---
+
+## #106–#120: v1.2.0 (daemon coordination and runtime hardening)
+
+### #106 — Successful config switches logged a duplicate controller connection
+
+**Root cause:** The config-switch success path emitted a stale connected message even though no controller or UHID lifecycle transition had occurred. Profile changes therefore looked like new device connections.
+
+**Fix:** Remove the config-switch connection message and leave lifecycle reporting to the actual UHID ready/stopped transitions. (`f52dfa5`)
+
+### #107 — edgemap could overwrite a manual config switch
+
+**Root cause:** edgemap inferred dseuhid readiness from PID and state-file changes. Restart and disconnect windows could clear its selected-config state at the wrong time, causing it to re-inject a profile even when dseuhid had not requested one.
+
+**Fix:** Publish an explicit `needs_config` state and only re-inject when dseuhid requests configuration, edgemap.toml changes, or profile matching selects a genuinely different config. Order UHID teardown and readiness publication so consumers never observe a stale connected state. (`958ae37`)
+
+### #108 — Shutdown signals depended on polling and leaked into child helpers
+
+**Root cause:** SIGINT/SIGTERM were handled by an asynchronous handler plus a shared atomic flag. Device waits and retry delays had to wake periodically to notice the flag, while helper children could inherit the daemon's signal state.
+
+**Fix:** Block shutdown signals process-wide and consume them through `signalfd` in the normal poll/epoll loops. Make discovery and retry waits immediately interruptible, reset the signal mask in ACL/notification children, and report poll failures explicitly. (`9cf7b09`, `83200db`)
+
+### #109 — Device nodes could be hidden before udev finished initializing them
+
+**Root cause:** `/dev` inotify reported node creation before all associated hidraw/event/js udev processing had completed. Late udev or logind rules could then restore permissions after dseuhid hid the nodes.
+
+**Fix:** Use libudev enumeration and hotplug monitoring, require initialized devices, and wait for every associated input node to finish udev initialization before applying restrictions. (`ce929ce`)
+
+### #110 — PID, FIFO, and state files could disagree about daemon state
+
+**Root cause:** Singleton ownership, commands, and readiness were spread across independent runtime files. PID liveness checks were racy, FIFO commands had no acknowledgement, and readers could observe mixed state during daemon or UHID transitions.
+
+**Fix:** Replace the runtime files with an atomic `flock` guard and a versioned Unix `SOCK_SEQPACKET` control protocol. Commands now receive success/failure replies, state snapshots carry `uhid_ready` and `needs_config`, and reload/switch operations commit transactionally. (`36f6976`)
+
+### #111 — Invalid startup config was not rejected until a controller appeared
+
+**Root cause:** An explicit startup config was loaded only after device discovery. A daemon with no connected controller could therefore appear healthy indefinitely despite an unreadable or invalid config, and some read failures silently fell back to automatic target selection.
+
+**Fix:** Load and validate the startup config before control resources or device discovery, extract `output_device` before opening devices, and propagate config read failures as fatal startup errors. (`e699c42`)
+
+### #112 — Stale PID files and concurrent starts broke edgemap singleton detection
+
+**Root cause:** edgemap used a PID file plus a liveness check, which was subject to PID reuse and check-then-create races. A stale file could also block a valid start.
+
+**Fix:** Hold an exclusive kernel `flock` on `edgemap.lock` for the daemon lifetime. Keep the PID only as diagnostic content; lock ownership is now the sole source of truth. (`88416d8`)
+
+### #113 — A control client disconnect could terminate dseuhid
+
+**Root cause:** Failure to send a control reply was propagated as a proxy-wide error. A client that closed its socket immediately after sending a request could therefore stop the daemon.
+
+**Fix:** Treat reply and client-registration failures as local to that control connection, remove the client, and keep the proxy input loop running. (`4f172f7`)
+
+### #114 — Desktop notification children accumulated as zombies
+
+**Root cause:** edgemap spawned `notify-send` without reaping completed children. A long-running daemon could accumulate zombie processes after repeated notifications.
+
+**Fix:** Track notification children and reap them non-blockingly from the daemon loop. (`4f172f7`)
+
+### #115 — Config failure could occur after device resources were already modified
+
+**Root cause:** The active config was loaded and converted after hidraw/UHID setup had begun. A fatal config error could therefore happen only after opening devices or changing physical-node permissions.
+
+**Fix:** Load, validate, and build the complete active mapping before opening hidraw or UHID resources, while retaining the normal cleanup path for failures after resource acquisition. (`4f172f7`)
+
+### #116 — Missing input devnodes could be treated as ready
+
+**Root cause:** An initialized udev object did not guarantee that its event/js devnode still existed when restrictions were applied. Discovery could proceed with an incomplete set of nodes.
+
+**Fix:** Require every initialized associated devnode to exist before declaring device setup ready, and restrict the physical hidraw node independently so cleanup remains well-defined. (`4f172f7`)
+
+### #117 — inotify queue overflow left edgemap config state stale
+
+**Root cause:** An `IN_Q_OVERFLOW` meant one or more config events had been lost, but the daemon continued from its cached state as if every change had been observed.
+
+**Fix:** Treat overflow as a resynchronization boundary and reload the watched configuration/runtime state from disk. (`4f172f7`)
+
+### #118 — Failed config changes could corrupt output-device comparison state
+
+**Root cause:** The remembered `output_device` comparison value was updated before the new config had fully succeeded. A failed attempt could suppress a later required UHID recreation or trigger one from state that was never committed.
+
+**Fix:** Update output-device comparison state only as part of the successful config transaction. (`4f172f7`)
+
+### #119 — Fatal proxy failures were reported as normal shutdown or disconnect
+
+**Root cause:** Setup/runtime failures shared exit paths with user shutdown and controller loss. Callers could not reliably decide whether to reconnect, exit cleanly, or report an infrastructure failure.
+
+**Fix:** Add a distinct `FatalError` exit reason, reserve `DeviceGone` for known hidraw disconnect errors, and keep all cases on the normal resource-cleanup path. (`a1d3552`)
+
+### #120 — Deleting the config directory permanently broke edgemap monitoring
+
+**Root cause:** The inotify watch disappeared when the config directory was removed. edgemap had no reliable way to notice its recreation and could continue without monitoring future edits.
+
+**Fix:** Temporarily watch the parent directory while the config directory is absent, restore the narrow watch after recreation, and fail explicitly if the recovery watch itself is lost. (`a1d3552`)
+
+---
+
+## #121–#124: v1.2.1 (security hardening)
+
+### #121 — Config loading could block or consume unbounded memory
+
+**Root cause:** Config paths were opened as ordinary files and read without an independent byte cap. FIFO/device paths could block a root daemon, while pseudo-files or oversized files could cause unbounded reads.
+
+**Fix:** Open configs nonblocking, require a regular file, reject files larger than 256 KiB, and cap the actual read independently of metadata. (`b22c909`)
+
+### #122 — Control replies and logs could expose privileged or forged text
+
+**Root cause:** Detailed config/parser failures were returned to unprivileged control clients, and untrusted paths were interpolated into logs without escaping control characters. This could disclose root-readable details or forge multiline log entries.
+
+**Fix:** Return fixed error categories over the control socket and escape untrusted path values before logging them. (`b22c909`)
+
+### #123 — Control clients could monopolize daemon work and file descriptors
+
+**Root cause:** The public control socket had no strict active-client limit or per-iteration accept/request budget. A local client could consume descriptors or keep the event loop busy at the expense of controller input.
+
+**Fix:** Limit the server to 16 active clients, bound accepts and delivered requests per event-loop turn, and isolate registration failures to the offending client. (`b22c909`)
+
+### #124 — Service units lacked conservative resource and core-dump limits
+
+**Root cause:** dseuhid and edgemap inherited broad default limits despite processing local untrusted control/config input. A fault or resource-exhaustion attempt had a larger impact than necessary.
+
+**Fix:** Add memory, task, file-descriptor, and core-dump limits to both systemd units. (`b22c909`)
+
+---
+
+## #125–#131: after v1.2.1
+
+### #125 — Invalid BT repeat environment values silently disabled repeat mode
+
+**Root cause:** Invalid repeat mode/rate environment values were interpreted as if repeat had simply been disabled. A typo therefore changed runtime behavior without preventing startup.
+
+**Fix:** Validate repeat environment configuration during startup and reject unsupported or malformed values as fatal configuration errors. (`8eed208`)
+
+### #126 — CLI help and failures used inconsistent output streams
+
+**Root cause:** Help, successful command results, and argument/config failures were printed through mixed stdout/stderr paths. Scripts could not reliably separate normal output from diagnostics, and batch validation ordering was unstable across streams.
+
+**Fix:** Send successful results and requested help to stdout, diagnostics and usage errors to stderr, and keep batch validation results ordered on stdout. (`8eed208`)
+
+### #127 — UHID STOP and a broken UHID event stream did not stop the proxy immediately
+
+**Root cause:** `UHID_STOP` was treated as an informational event, while UHID epoll HUP/ERR, EOF, and malformed short events did not all produce an explicit fatal exit. The proxy could remain alive after the kernel had already stopped the virtual device or spin until another operation failed.
+
+**Fix:** Treat UHID STOP, poll failures, EOF, malformed events, and UHID infrastructure errors as immediate `FatalError` exits. Continue sending/logging UHID DESTROY during normal userspace teardown. (`0b5970f`)
+
+### #128 — Fatal runtime cleanup exited with success, preventing systemd restart
+
+**Root cause:** The daemon performed cleanup after a fatal proxy error but then returned status 0. With `Restart=on-failure`, systemd considered the failure a clean stop and did not restart it.
+
+**Fix:** Preserve the exit reason through cleanup and return a nonzero process status for fatal failures; user shutdown remains successful and hidraw loss remains a reconnect path. (`0b5970f`)
+
+### #129 — Persistent setup failures were mistaken for controller reconnect races
+
+**Root cause:** Controller open failures were retried without consistently distinguishing device-loss races from permanent errors, and required UHID open/create failures entered recovery paths intended for hot-unplug.
+
+**Fix:** Retry controller open only for known device-loss errors, distinguish retry timeout/shutdown/fatal outcomes, and treat required UHID open or creation failures as fatal. (`0b5970f`)
+
+### #130 — Keyboard setup could continue with incomplete uinput capabilities
+
+**Root cause:** A failed capability ioctl did not necessarily abort uinput keyboard initialization. The daemon could create a keyboard that advertised only part of the configured key set and fail later at runtime.
+
+**Fix:** Make every required uinput capability setup step mandatory and reject partially initialized keyboard devices before creation. (`0b5970f`)
+
+### #131 — Logging refactor regressed escaping of untrusted config paths
+
+**Root cause:** The unified logging rewrite reintroduced direct interpolation for config paths in reload and control-request messages, bypassing the v1.2.1 control-character escaping boundary.
+
+**Fix:** Route every untrusted log value through a display wrapper that escapes control characters, and add a regression test covering newline, tab, and quote characters. (`0b5970f`)

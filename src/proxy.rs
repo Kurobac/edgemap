@@ -9,13 +9,15 @@ use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use std::os::fd::BorrowedFd;
 
 use crate::codec::{
-    CodecError, CodecPipeline, FeatureReportCache, PhysicalCodec, PhysicalOutputState,
-    SourceCodec, TargetCodec,
+    CodecError, CodecPipeline, FeatureReportCache, PhysicalCodec, PhysicalOutputState, SourceCodec,
+    TargetCodec,
 };
 use crate::config::ActiveConfig;
 use crate::control::{ControlRequest, ControlServer};
 use crate::device::{HidrawDevice, SonyDeviceKind};
-use crate::mapping::{ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig};
+use crate::mapping::{
+    ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, Target, Trigger, TurboConfig,
+};
 use crate::report::Button;
 use crate::shutdown::ShutdownSignal;
 use crate::uhid::UhidDevice;
@@ -26,21 +28,73 @@ fn apply_target_to_state(state: &mut crate::report::GamepadState, target: &Targe
     match target {
         Target::Button(btn) => state.set_button(*btn, on),
         Target::TriggerFull(t) => match t {
-            Trigger::L2 => { state.set_button(Button::L2, on); state.l2_analog = if on { 255 } else { 0 }; }
-            Trigger::R2 => { state.set_button(Button::R2, on); state.r2_analog = if on { 255 } else { 0 }; }
-        },
-        Target::Stick(dir) => {
-            match dir {
-                StickDir::LsUp => if on { state.left_stick_y = 0 } else { state.left_stick_y = 128 },
-                StickDir::LsDown => if on { state.left_stick_y = 255 } else { state.left_stick_y = 128 },
-                StickDir::LsLeft => if on { state.left_stick_x = 0 } else { state.left_stick_x = 128 },
-                StickDir::LsRight => if on { state.left_stick_x = 255 } else { state.left_stick_x = 128 },
-                StickDir::RsUp => if on { state.right_stick_y = 0 } else { state.right_stick_y = 128 },
-                StickDir::RsDown => if on { state.right_stick_y = 255 } else { state.right_stick_y = 128 },
-                StickDir::RsLeft => if on { state.right_stick_x = 0 } else { state.right_stick_x = 128 },
-                StickDir::RsRight => if on { state.right_stick_x = 255 } else { state.right_stick_x = 128 },
+            Trigger::L2 => {
+                state.set_button(Button::L2, on);
+                state.l2_analog = if on { 255 } else { 0 };
             }
-        }
+            Trigger::R2 => {
+                state.set_button(Button::R2, on);
+                state.r2_analog = if on { 255 } else { 0 };
+            }
+        },
+        Target::Stick(dir) => match dir {
+            StickDir::LsUp => {
+                if on {
+                    state.left_stick_y = 0
+                } else {
+                    state.left_stick_y = 128
+                }
+            }
+            StickDir::LsDown => {
+                if on {
+                    state.left_stick_y = 255
+                } else {
+                    state.left_stick_y = 128
+                }
+            }
+            StickDir::LsLeft => {
+                if on {
+                    state.left_stick_x = 0
+                } else {
+                    state.left_stick_x = 128
+                }
+            }
+            StickDir::LsRight => {
+                if on {
+                    state.left_stick_x = 255
+                } else {
+                    state.left_stick_x = 128
+                }
+            }
+            StickDir::RsUp => {
+                if on {
+                    state.right_stick_y = 0
+                } else {
+                    state.right_stick_y = 128
+                }
+            }
+            StickDir::RsDown => {
+                if on {
+                    state.right_stick_y = 255
+                } else {
+                    state.right_stick_y = 128
+                }
+            }
+            StickDir::RsLeft => {
+                if on {
+                    state.right_stick_x = 0
+                } else {
+                    state.right_stick_x = 128
+                }
+            }
+            StickDir::RsRight => {
+                if on {
+                    state.right_stick_x = 255
+                } else {
+                    state.right_stick_x = 128
+                }
+            }
+        },
         Target::Macro(_) => {}
         Target::Keyboard(_) => {}
     }
@@ -113,13 +167,17 @@ impl MacroRuntime {
         Self {
             name: rule.name.clone(),
             trigger: rule.trigger,
-            steps: rule.steps.iter().map(|s| MacroStepRuntime {
-                action: s.action.clone(),
-                press_ms: s.press_ms,
-                release_ms: s.release_ms,
-                pressed: false,
-                done: false,
-            }).collect(),
+            steps: rule
+                .steps
+                .iter()
+                .map(|s| MacroStepRuntime {
+                    action: s.action.clone(),
+                    press_ms: s.press_ms,
+                    release_ms: s.release_ms,
+                    pressed: false,
+                    done: false,
+                })
+                .collect(),
             active: false,
             mode: rule.mode.clone(),
             source: rule.source.clone(),
@@ -139,12 +197,18 @@ impl MacroRuntime {
         }
     }
 
-    fn deactivate(&mut self, state: &mut crate::report::GamepadState, keyboard_events: &mut Vec<(u16, bool)>) {
+    fn deactivate(
+        &mut self,
+        state: &mut crate::report::GamepadState,
+        keyboard_events: &mut Vec<(u16, bool)>,
+    ) {
         for step in &mut self.steps {
             if step.pressed {
                 match &step.action {
                     crate::mapping::StepTarget::Gamepad(btn) => state.set_button(*btn, false),
-                    crate::mapping::StepTarget::Keyboard(code) => keyboard_events.push((*code, false)),
+                    crate::mapping::StepTarget::Keyboard(code) => {
+                        keyboard_events.push((*code, false))
+                    }
                 }
             }
             step.pressed = false;
@@ -153,7 +217,12 @@ impl MacroRuntime {
         self.active = false;
     }
 
-    fn tick(&mut self, state: &mut crate::report::GamepadState, now: Instant, keyboard_events: &mut Vec<(u16, bool)>) {
+    fn tick(
+        &mut self,
+        state: &mut crate::report::GamepadState,
+        now: Instant,
+        keyboard_events: &mut Vec<(u16, bool)>,
+    ) {
         let elapsed = now.duration_since(self.step_start).as_millis() as u64;
         let mut all_done = true;
         for step in &mut self.steps {
@@ -164,25 +233,37 @@ impl MacroRuntime {
                 step.pressed = true;
                 match &step.action {
                     crate::mapping::StepTarget::Gamepad(btn) => state.set_button(*btn, true),
-                    crate::mapping::StepTarget::Keyboard(code) => keyboard_events.push((*code, true)),
+                    crate::mapping::StepTarget::Keyboard(code) => {
+                        keyboard_events.push((*code, true))
+                    }
                 }
-                debug!("macro step pressed: name={}, elapsed_ms={elapsed}, target={:?}", self.name, step.action);
+                debug!(
+                    "macro step pressed: name={}, elapsed_ms={elapsed}, target={:?}",
+                    self.name, step.action
+                );
             }
             if elapsed >= step.release_ms && step.pressed {
                 step.pressed = false;
                 step.done = true;
                 match &step.action {
                     crate::mapping::StepTarget::Gamepad(btn) => state.set_button(*btn, false),
-                    crate::mapping::StepTarget::Keyboard(code) => keyboard_events.push((*code, false)),
+                    crate::mapping::StepTarget::Keyboard(code) => {
+                        keyboard_events.push((*code, false))
+                    }
                 }
-                debug!("macro step released: name={}, elapsed_ms={elapsed}, target={:?}", self.name, step.action);
+                debug!(
+                    "macro step released: name={}, elapsed_ms={elapsed}, target={:?}",
+                    self.name, step.action
+                );
             } else if !step.done {
                 all_done = false;
             }
             if step.pressed {
                 match &step.action {
                     crate::mapping::StepTarget::Gamepad(btn) => state.set_button(*btn, true),
-                    crate::mapping::StepTarget::Keyboard(code) => keyboard_events.push((*code, true)),
+                    crate::mapping::StepTarget::Keyboard(code) => {
+                        keyboard_events.push((*code, true))
+                    }
                 }
             }
         }
@@ -206,12 +287,31 @@ impl MacroRuntime {
 }
 
 static ALL_BUTTONS: &[Button] = &[
-    Button::Square, Button::Cross, Button::Circle, Button::Triangle,
-    Button::L1, Button::R1, Button::L2, Button::R2,
-    Button::Create, Button::Options, Button::L3, Button::R3,
-    Button::PS, Button::Touchpad, Button::TouchpadLeft, Button::TouchpadRight, Button::Mic,
-    Button::DpadUp, Button::DpadDown, Button::DpadLeft, Button::DpadRight,
-    Button::FnLeft, Button::FnRight, Button::LeftPaddle, Button::RightPaddle,
+    Button::Square,
+    Button::Cross,
+    Button::Circle,
+    Button::Triangle,
+    Button::L1,
+    Button::R1,
+    Button::L2,
+    Button::R2,
+    Button::Create,
+    Button::Options,
+    Button::L3,
+    Button::R3,
+    Button::PS,
+    Button::Touchpad,
+    Button::TouchpadLeft,
+    Button::TouchpadRight,
+    Button::Mic,
+    Button::DpadUp,
+    Button::DpadDown,
+    Button::DpadLeft,
+    Button::DpadRight,
+    Button::FnLeft,
+    Button::FnRight,
+    Button::LeftPaddle,
+    Button::RightPaddle,
 ];
 
 struct RepeatInput {
@@ -509,10 +609,13 @@ impl Proxy {
                 data: data.to_vec(),
             });
         }
-        self.codec.target.fallback_feature_report(report_id).map(|data| CachedReport {
-            source: CachedReportSource::TargetFallback,
-            data,
-        })
+        self.codec
+            .target
+            .fallback_feature_report(report_id)
+            .map(|data| CachedReport {
+                source: CachedReportSource::TargetFallback,
+                data,
+            })
     }
 
     pub(crate) fn new(init: ProxyInit) -> Self {
@@ -604,8 +707,7 @@ impl Proxy {
         if new_output_device != self.output_device_config {
             info!(
                 "output device changed: previous={}, current={}",
-                self.output_device_config,
-                new_output_device
+                self.output_device_config, new_output_device
             );
             info!("virtual HID device recreation requested");
             self.recreate_uhid = true;
@@ -617,7 +719,11 @@ impl Proxy {
         Ok(())
     }
 
-    fn log_button_diff(&mut self, snapshot: &crate::report::GamepadState, output: &crate::report::GamepadState) {
+    fn log_button_diff(
+        &mut self,
+        snapshot: &crate::report::GamepadState,
+        output: &crate::report::GamepadState,
+    ) {
         let mut phys_changes: Vec<String> = Vec::new();
         let prev = self.last_snapshot.as_ref();
 
@@ -636,8 +742,15 @@ impl Proxy {
                     out_names.push(btn.name());
                 }
             }
-            let out_display = if out_names.is_empty() { "[none]".to_string() } else { out_names.join(" ") };
-            debug!("controller button changes: buttons=[{}]", phys_changes.join(" "));
+            let out_display = if out_names.is_empty() {
+                "[none]".to_string()
+            } else {
+                out_names.join(" ")
+            };
+            debug!(
+                "controller button changes: buttons=[{}]",
+                phys_changes.join(" ")
+            );
             debug!("virtual buttons active: buttons=[{out_display}]");
         }
 
@@ -656,12 +769,8 @@ impl Proxy {
             }
         };
 
-        let hidraw_bfd = unsafe {
-            BorrowedFd::borrow_raw(self.hidraw.as_raw_fd())
-        };
-        let uhid_bfd = unsafe {
-            BorrowedFd::borrow_raw(self.uhid.as_raw_fd())
-        };
+        let hidraw_bfd = unsafe { BorrowedFd::borrow_raw(self.hidraw.as_raw_fd()) };
+        let uhid_bfd = unsafe { BorrowedFd::borrow_raw(self.uhid.as_raw_fd()) };
 
         let hidraw_event = EpollEvent::new(
             EpollFlags::EPOLLIN | EpollFlags::EPOLLERR | EpollFlags::EPOLLHUP,
@@ -702,7 +811,8 @@ impl Proxy {
         let mut events = [EpollEvent::empty(); 8];
 
         let exit_reason = 'run: loop {
-            let timeout = self.repeat_input
+            let timeout = self
+                .repeat_input
                 .as_ref()
                 .map_or(16u16, RepeatInput::timeout_ms);
             match ep_fd.wait(&mut events, timeout) {
@@ -756,7 +866,9 @@ impl Proxy {
                             break 'run match shutdown.consume() {
                                 Ok(true) => ExitReason::UserShutdown,
                                 Ok(false) => {
-                                    error!("shutdown signal fd was readable but contained no signal");
+                                    error!(
+                                        "shutdown signal fd was readable but contained no signal"
+                                    );
                                     ExitReason::FatalError
                                 }
                                 Err(e) => {
@@ -812,11 +924,7 @@ impl Proxy {
                 }
                 Err((code, _detail)) => {
                     error!("control request failed; previous config retained: code={code}");
-                    control.reply_error(
-                        pending.client,
-                        code,
-                        public_control_error_message(code),
-                    );
+                    control.reply_error(pending.client, code, public_control_error_message(code));
                 }
             }
         }
@@ -841,7 +949,9 @@ impl Proxy {
                 Ok(n) if n >= input_report_size => {
                     *seq = seq.wrapping_add(1);
 
-                    let out_report = if let Ok(mut frame) = self.codec.source.decode_input(&buf[..n]) {
+                    let out_report = if let Ok(mut frame) =
+                        self.codec.source.decode_input(&buf[..n])
+                    {
                         let mut state = frame.state.clone();
                         let physical_snapshot = state.clone();
 
@@ -894,13 +1004,21 @@ impl Proxy {
                             } else if t.active && !t.turbo_active {
                                 t.turbo_active = true;
                                 t.last_toggle = Instant::now();
-                                debug!("turbo toggling started: source={:?}, interval_ms={}", t.src, t.interval_ms);
-                            } else if t.active && t.turbo_active
-                                && t.last_toggle.elapsed().as_millis() >= t.interval_ms as u128 {
-                                    t.phase = !t.phase;
-                                    t.last_toggle = Instant::now();
-                                    debug!("turbo phase changed: source={:?}, active={}", t.src, t.phase);
-                                }
+                                debug!(
+                                    "turbo toggling started: source={:?}, interval_ms={}",
+                                    t.src, t.interval_ms
+                                );
+                            } else if t.active
+                                && t.turbo_active
+                                && t.last_toggle.elapsed().as_millis() >= t.interval_ms as u128
+                            {
+                                t.phase = !t.phase;
+                                t.last_toggle = Instant::now();
+                                debug!(
+                                    "turbo phase changed: source={:?}, active={}",
+                                    t.src, t.phase
+                                );
+                            }
                             if t.active {
                                 state.set_button(t.src, t.phase);
                             }
@@ -990,8 +1108,12 @@ impl Proxy {
                         }
                         // deactivate Combo-source macros when no active combo references them
                         for m in &mut self.macro_runtimes {
-                            if m.source != MacroSource::Combo || !m.active { continue; }
-                            if !matches!(m.mode, MacroMode::Hold) { continue; }
+                            if m.source != MacroSource::Combo || !m.active {
+                                continue;
+                            }
+                            if !matches!(m.mode, MacroMode::Hold) {
+                                continue;
+                            }
                             let any_combo_active = self.combo_runtimes.iter().any(|c| {
                                 c.active && matches!(&c.output, Target::Macro(n) if n == &m.name)
                             });
@@ -1035,7 +1157,9 @@ impl Proxy {
 
                         // ========== L3: Output ==========
                         frame.state = state.clone();
-                        let out = self.codec.target
+                        let out = self
+                            .codec
+                            .target
                             .encode_input(&frame, *seq)
                             .expect("DS5 USB source should encode to selected USB target");
                         if self.codec.target == TargetCodec::Ds4Usb {
@@ -1129,16 +1253,23 @@ impl Proxy {
                                 // TargetCodec identifies the virtual output
                                 // format; PhysicalCodec converts it for the
                                 // real hidraw transport before the final write.
-                                let encoded = self.codec.target
-                                    .decode_output(data)
-                                    .and_then(|command| self.codec.physical.encode_output(&command, &mut self.physical_output_state));
+                                let encoded =
+                                    self.codec.target.decode_output(data).and_then(|command| {
+                                        self.codec.physical.encode_output(
+                                            &command,
+                                            &mut self.physical_output_state,
+                                        )
+                                    });
                                 match encoded {
                                     Ok(encoded) => {
                                         if let Err(e) = self.hidraw.write_output(&encoded) {
                                             if is_disconnect_io_error(&e) {
                                                 warn!("failed to write output report: {e}");
                                                 info!("controller disconnected");
-                                                DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                DISCONNECTED.store(
+                                                    true,
+                                                    std::sync::atomic::Ordering::SeqCst,
+                                                );
                                                 break;
                                             }
                                             error!("failed to write output report: {e}");
@@ -1177,7 +1308,9 @@ impl Proxy {
                                             trace!("GET_REPORT served from target response: rnum={rnum}");
                                         }
                                     }
-                                    if let Err(e) = self.uhid.send_get_report_reply(id, 0, &report.data) {
+                                    if let Err(e) =
+                                        self.uhid.send_get_report_reply(id, 0, &report.data)
+                                    {
                                         warn!("failed to send GET_REPORT reply: {e}");
                                     }
                                 }
@@ -1192,7 +1325,12 @@ impl Proxy {
                         UhidEvent::Unknown(t) => {
                             warn!("unknown UHID event type: type={t}");
                         }
-                        UhidEvent::SetReport { id, rnum, rtype, ref data } => {
+                        UhidEvent::SetReport {
+                            id,
+                            rnum,
+                            rtype,
+                            ref data,
+                        } => {
                             trace!(
                                 "UHID SET_REPORT received: id={id}, rnum={rnum}, rtype={rtype}, size={}, report_id={}",
                                 data.len(),
@@ -1205,18 +1343,19 @@ impl Proxy {
                                 // BT forwards only reports whose shape/CRC is
                                 // known; other vendor/test commands are
                                 // dropped without affecting the input path.
-                                if let Some(full_data) =
-                                    self.codec.physical.encode_set_report(
-                                        self.codec.target,
-                                        rnum,
-                                        data,
-                                    )
-                                {
+                                if let Some(full_data) = self.codec.physical.encode_set_report(
+                                    self.codec.target,
+                                    rnum,
+                                    data,
+                                ) {
                                     if let Err(e) = self.hidraw.send_feature_report(&full_data) {
-                                        warn!("failed to forward SET_REPORT: rnum={rnum}, error={e}");
+                                        warn!(
+                                            "failed to forward SET_REPORT: rnum={rnum}, error={e}"
+                                        );
                                         reply_err = 1;
                                         if is_disconnect_io_error(&e) {
-                                            DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                                            DISCONNECTED
+                                                .store(true, std::sync::atomic::Ordering::SeqCst);
                                         }
                                     }
                                 } else if self.codec.physical == PhysicalCodec::Ds5Bt
@@ -1227,7 +1366,10 @@ impl Proxy {
                                         data.len(),
                                         report_id_label(data)
                                     );
-                                    debug!("Bluetooth SET_REPORT data: prefix_32={}", hex_prefix(data, 32));
+                                    debug!(
+                                        "Bluetooth SET_REPORT data: prefix_32={}",
+                                        hex_prefix(data, 32)
+                                    );
                                 }
                             }
                             if let Err(e) = self.uhid.send_set_report_reply(id, reply_err) {
@@ -1270,7 +1412,10 @@ pub(crate) fn warn_ignored_edge_passthroughs(
     }
 
     for name in ["left_paddle", "right_paddle", "left_fn", "right_fn"] {
-        let remap = cfg.buttons.get(name).and_then(|button| button.remap.as_deref());
+        let remap = cfg
+            .buttons
+            .get(name)
+            .and_then(|button| button.remap.as_deref());
         if remap.is_none() || remap == Some("passthrough") {
             warn!("passthrough source may be ignored by target: source={name}");
         }
@@ -1320,9 +1465,18 @@ mod tests {
 
     #[test]
     fn repeat_mode_validation_accepts_only_named_modes() {
-        assert!(matches!(parse_repeat_mode("passthrough"), Ok(RepeatMode::Passthrough)));
-        assert!(matches!(parse_repeat_mode("seq_only"), Ok(RepeatMode::SeqOnly)));
-        assert!(matches!(parse_repeat_mode("seq_ts"), Ok(RepeatMode::SeqAndTimestamp)));
+        assert!(matches!(
+            parse_repeat_mode("passthrough"),
+            Ok(RepeatMode::Passthrough)
+        ));
+        assert!(matches!(
+            parse_repeat_mode("seq_only"),
+            Ok(RepeatMode::SeqOnly)
+        ));
+        assert!(matches!(
+            parse_repeat_mode("seq_ts"),
+            Ok(RepeatMode::SeqAndTimestamp)
+        ));
         let error = match parse_repeat_mode("invalid") {
             Err(error) => error,
             Ok(_) => panic!("invalid repeat mode was accepted"),
@@ -1340,9 +1494,7 @@ mod tests {
         for value in ["0", "2001", "invalid"] {
             assert_eq!(
                 parse_repeat_hz("TEST_REPEAT_HZ", value).unwrap_err(),
-                format!(
-                    "invalid TEST_REPEAT_HZ={value}; expected integer 1..=2000"
-                )
+                format!("invalid TEST_REPEAT_HZ={value}; expected integer 1..=2000")
             );
         }
     }

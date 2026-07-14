@@ -108,10 +108,7 @@ fn create_and_validate_report_results_on_stdout() {
 
     let validated = edgemap(&["validate", path_arg]);
     assert!(validated.status.success());
-    assert_eq!(
-        stdout(&validated),
-        format!("Valid: {path_arg}\n")
-    );
+    assert_eq!(stdout(&validated), format!("Valid: {path_arg}\n"));
     assert!(validated.stderr.is_empty());
 
     std::fs::remove_dir_all(dir).unwrap();
@@ -122,7 +119,11 @@ fn batch_validation_keeps_result_table_on_stdout() {
     let xdg = temp_dir("batch-config");
     let config_dir = xdg.join("edgemap");
     std::fs::create_dir_all(&config_dir).unwrap();
-    std::fs::write(config_dir.join("valid.toml"), stdout(&edgemap(&["create-config"]))).unwrap();
+    std::fs::write(
+        config_dir.join("valid.toml"),
+        stdout(&edgemap(&["create-config"])),
+    )
+    .unwrap();
     std::fs::write(config_dir.join("broken.toml"), "not valid toml").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_edgemap"))

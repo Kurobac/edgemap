@@ -1,5 +1,5 @@
-mod config;
 mod codec;
+mod config;
 #[allow(dead_code)]
 mod control;
 mod descriptor;
@@ -42,11 +42,7 @@ fn is_controller_gone_error(error: &std::io::Error) -> bool {
 
 fn reject_inactive_control(control: &mut control::ControlServer) -> std::io::Result<()> {
     for pending in control.drain_requests()? {
-        control.reply_error(
-            pending.client,
-            "not-ready",
-            "UHID proxy is not ready",
-        );
+        control.reply_error(pending.client, "not-ready", "UHID proxy is not ready");
     }
     Ok(())
 }
@@ -152,9 +148,7 @@ fn print_usage(to_stdout: bool) {
     }
 }
 
-use device::{
-    find_dualsense, probe_dualsense, HidrawMonitor, HidrawWait, InputNodesWait,
-};
+use device::{find_dualsense, probe_dualsense, HidrawMonitor, HidrawWait, InputNodesWait};
 use proxy::{Proxy, ProxyInit};
 use shutdown::ShutdownSignal;
 use uhid::UhidDevice;
@@ -164,7 +158,10 @@ fn main() {
     if args.len() >= 2 {
         // reject duplicate subcommands: all known subcommands take no extra args
         let sub = args[1].as_str();
-        let known = matches!(sub, "version" | "--version" | "-V" | "help" | "--help" | "-h");
+        let known = matches!(
+            sub,
+            "version" | "--version" | "-V" | "help" | "--help" | "-h"
+        );
         if known && args.len() > 2 {
             eprintln!("error: command '{}' does not accept arguments", args[1]);
             eprintln!("hint: run 'dseuhid help' for usage");
@@ -283,7 +280,9 @@ fn main() {
                         }
                         Ok(InputNodesWait::Control) => {
                             if let Err(e) = reject_inactive_control(&mut control) {
-                                error!("failed to reject control request while proxy is inactive: {e}");
+                                error!(
+                                    "failed to reject control request while proxy is inactive: {e}"
+                                );
                                 break 'outer DaemonExit::Fatal;
                             }
                             found = Some(device);
@@ -329,7 +328,10 @@ fn main() {
                                 Some(libc::ENOENT | libc::ENODEV | libc::ENXIO)
                             ) => {}
                         Err(e) => {
-                            warn!("failed to probe hidraw device: path={}, error={e}", path.display())
+                            warn!(
+                                "failed to probe hidraw device: path={}, error={e}",
+                                path.display()
+                            )
                         }
                     }
                 }
@@ -426,28 +428,44 @@ fn main() {
         let mut report_cache = codec::FeatureReportCache::new();
         // Physical transport decides which real-device reports are safe to read.
         // main owns the hidraw ioctl; codec owns the source/target policy.
-        for request in codec_pipeline.physical.feature_reports_to_cache(codec_pipeline.target) {
+        for request in codec_pipeline
+            .physical
+            .feature_reports_to_cache(codec_pipeline.target)
+        {
             let mut buf = vec![request.report_id];
             buf.resize(request.size, 0);
             if device::ioctl_get_feature_report(hidraw.as_raw_fd(), &mut buf).is_ok() {
                 match codec_pipeline.physical.decode_feature_report(*request, buf) {
                     Ok(data) => {
-                        debug!("feature report cached: report_id=0x{:02x}", request.report_id);
+                        debug!(
+                            "feature report cached: report_id=0x{:02x}",
+                            request.report_id
+                        );
                         report_cache.insert(request.report_id, data);
                     }
                     Err(_) => {
-                        warn!("invalid feature report; using target response: report_id=0x{:02x}", request.report_id);
+                        warn!(
+                            "invalid feature report; using target response: report_id=0x{:02x}",
+                            request.report_id
+                        );
                     }
                 }
             } else {
-                warn!("failed to read feature report; using target response: report_id=0x{:02x}", request.report_id);
+                warn!(
+                    "failed to read feature report; using target response: report_id=0x{:02x}",
+                    request.report_id
+                );
             }
         }
-        codec_pipeline.target.seed_feature_reports(&mut report_cache);
+        codec_pipeline
+            .target
+            .seed_feature_reports(&mut report_cache);
 
         // Target devices are USB-only for now. Auto mode reuses the physical
         // USB descriptor; revisit this when a BT source can back a USB target.
-        let target_identity = codec_pipeline.target.usb_identity(&dev_info, hidraw.report_descriptor());
+        let target_identity = codec_pipeline
+            .target
+            .usb_identity(&dev_info, hidraw.report_descriptor());
         if let Err(e) = uhid.create(
             &target_identity.name,
             "",
@@ -463,7 +481,10 @@ fn main() {
             break 'outer DaemonExit::Fatal;
         }
 
-        info!("virtual HID device created: name={}, output={}", target_identity.name, target_identity.label);
+        info!(
+            "virtual HID device created: name={}, output={}",
+            target_identity.name, target_identity.label
+        );
 
         if let Err(e) = hidraw.restrict_evdev_nodes() {
             warn!("failed to restrict input nodes: {e}");
@@ -556,10 +577,14 @@ mod main_tests {
     #[test]
     fn controller_open_retries_only_device_gone_errors() {
         for errno in [libc::ENOENT, libc::EIO, libc::ENODEV, libc::ENXIO] {
-            assert!(is_controller_gone_error(&std::io::Error::from_raw_os_error(errno)));
+            assert!(is_controller_gone_error(
+                &std::io::Error::from_raw_os_error(errno)
+            ));
         }
         for errno in [libc::EACCES, libc::EINVAL, libc::EBADF] {
-            assert!(!is_controller_gone_error(&std::io::Error::from_raw_os_error(errno)));
+            assert!(!is_controller_gone_error(
+                &std::io::Error::from_raw_os_error(errno)
+            ));
         }
     }
 

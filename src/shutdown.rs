@@ -19,10 +19,7 @@ impl ShutdownSignal {
 
         let mut old_mask = SigSet::empty();
         pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&mask), Some(&mut old_mask))?;
-        let fd = match SignalFd::with_flags(
-            &mask,
-            SfdFlags::SFD_CLOEXEC | SfdFlags::SFD_NONBLOCK,
-        ) {
+        let fd = match SignalFd::with_flags(&mask, SfdFlags::SFD_CLOEXEC | SfdFlags::SFD_NONBLOCK) {
             Ok(fd) => fd,
             Err(error) => {
                 let _ = pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&old_mask), None);
@@ -43,7 +40,6 @@ impl ShutdownSignal {
         }
         Ok(consumed)
     }
-
 }
 
 impl Drop for ShutdownSignal {

@@ -147,48 +147,110 @@ impl Drop for KeyboardDevice {
 
 pub fn resolve_keycode(name: &str) -> Option<u16> {
     match name {
-        "a" => Some(KEY_A), "b" => Some(KEY_B), "c" => Some(KEY_C), "d" => Some(KEY_D),
-        "e" => Some(KEY_E), "f" => Some(KEY_F), "g" => Some(KEY_G), "h" => Some(KEY_H),
-        "i" => Some(KEY_I), "j" => Some(KEY_J), "k" => Some(KEY_K), "l" => Some(KEY_L),
-        "m" => Some(KEY_M), "n" => Some(KEY_N), "o" => Some(KEY_O), "p" => Some(KEY_P),
-        "q" => Some(KEY_Q), "r" => Some(KEY_R), "s" => Some(KEY_S), "t" => Some(KEY_T),
-        "u" => Some(KEY_U), "v" => Some(KEY_V), "w" => Some(KEY_W), "x" => Some(KEY_X),
-        "y" => Some(KEY_Y), "z" => Some(KEY_Z),
-        "0" => Some(KEY_0), "1" => Some(KEY_1), "2" => Some(KEY_2), "3" => Some(KEY_3),
-        "4" => Some(KEY_4), "5" => Some(KEY_5), "6" => Some(KEY_6), "7" => Some(KEY_7),
-        "8" => Some(KEY_8), "9" => Some(KEY_9),
-        "f1" => Some(KEY_F1), "f2" => Some(KEY_F2), "f3" => Some(KEY_F3), "f4" => Some(KEY_F4),
-        "f5" => Some(KEY_F5), "f6" => Some(KEY_F6), "f7" => Some(KEY_F7), "f8" => Some(KEY_F8),
-        "f9" => Some(KEY_F9), "f10" => Some(KEY_F10), "f11" => Some(KEY_F11), "f12" => Some(KEY_F12),
-        "up" => Some(KEY_UP), "down" => Some(KEY_DOWN), "left" => Some(KEY_LEFT),
+        "a" => Some(KEY_A),
+        "b" => Some(KEY_B),
+        "c" => Some(KEY_C),
+        "d" => Some(KEY_D),
+        "e" => Some(KEY_E),
+        "f" => Some(KEY_F),
+        "g" => Some(KEY_G),
+        "h" => Some(KEY_H),
+        "i" => Some(KEY_I),
+        "j" => Some(KEY_J),
+        "k" => Some(KEY_K),
+        "l" => Some(KEY_L),
+        "m" => Some(KEY_M),
+        "n" => Some(KEY_N),
+        "o" => Some(KEY_O),
+        "p" => Some(KEY_P),
+        "q" => Some(KEY_Q),
+        "r" => Some(KEY_R),
+        "s" => Some(KEY_S),
+        "t" => Some(KEY_T),
+        "u" => Some(KEY_U),
+        "v" => Some(KEY_V),
+        "w" => Some(KEY_W),
+        "x" => Some(KEY_X),
+        "y" => Some(KEY_Y),
+        "z" => Some(KEY_Z),
+        "0" => Some(KEY_0),
+        "1" => Some(KEY_1),
+        "2" => Some(KEY_2),
+        "3" => Some(KEY_3),
+        "4" => Some(KEY_4),
+        "5" => Some(KEY_5),
+        "6" => Some(KEY_6),
+        "7" => Some(KEY_7),
+        "8" => Some(KEY_8),
+        "9" => Some(KEY_9),
+        "f1" => Some(KEY_F1),
+        "f2" => Some(KEY_F2),
+        "f3" => Some(KEY_F3),
+        "f4" => Some(KEY_F4),
+        "f5" => Some(KEY_F5),
+        "f6" => Some(KEY_F6),
+        "f7" => Some(KEY_F7),
+        "f8" => Some(KEY_F8),
+        "f9" => Some(KEY_F9),
+        "f10" => Some(KEY_F10),
+        "f11" => Some(KEY_F11),
+        "f12" => Some(KEY_F12),
+        "up" => Some(KEY_UP),
+        "down" => Some(KEY_DOWN),
+        "left" => Some(KEY_LEFT),
         "right" => Some(KEY_RIGHT),
-        "home" => Some(KEY_HOME), "end" => Some(KEY_END),
-        "pageup" | "pgup" => Some(KEY_PAGEUP), "pagedown" | "pgdn" => Some(KEY_PAGEDOWN),
-        "insert" | "ins" => Some(KEY_INSERT), "delete" | "del" => Some(KEY_DELETE),
-        "leftctrl" | "lctrl" => Some(KEY_LEFTCTRL), "rightctrl" | "rctrl" => Some(KEY_RIGHTCTRL),
-        "leftshift" | "lshift" => Some(KEY_LEFTSHIFT), "rightshift" | "rshift" => Some(KEY_RIGHTSHIFT),
-        "leftalt" | "lalt" => Some(KEY_LEFTALT), "rightalt" | "ralt" => Some(KEY_RIGHTALT),
+        "home" => Some(KEY_HOME),
+        "end" => Some(KEY_END),
+        "pageup" | "pgup" => Some(KEY_PAGEUP),
+        "pagedown" | "pgdn" => Some(KEY_PAGEDOWN),
+        "insert" | "ins" => Some(KEY_INSERT),
+        "delete" | "del" => Some(KEY_DELETE),
+        "leftctrl" | "lctrl" => Some(KEY_LEFTCTRL),
+        "rightctrl" | "rctrl" => Some(KEY_RIGHTCTRL),
+        "leftshift" | "lshift" => Some(KEY_LEFTSHIFT),
+        "rightshift" | "rshift" => Some(KEY_RIGHTSHIFT),
+        "leftalt" | "lalt" => Some(KEY_LEFTALT),
+        "rightalt" | "ralt" => Some(KEY_RIGHTALT),
         "leftsuper" | "lsuper" | "leftmeta" | "lmeta" => Some(KEY_LEFTMETA),
         "rightsuper" | "rsuper" | "rightmeta" | "rmeta" => Some(KEY_RIGHTMETA),
-        "enter" | "return" => Some(KEY_ENTER), "space" => Some(KEY_SPACE),
-        "tab" => Some(KEY_TAB), "escape" | "esc" => Some(KEY_ESC),
-        "backspace" | "bksp" => Some(KEY_BACKSPACE), "capslock" | "caps" => Some(KEY_CAPSLOCK),
-        "kp0" => Some(KEY_KP0), "kp1" => Some(KEY_KP1), "kp2" => Some(KEY_KP2),
-        "kp3" => Some(KEY_KP3), "kp4" => Some(KEY_KP4), "kp5" => Some(KEY_KP5),
-        "kp6" => Some(KEY_KP6), "kp7" => Some(KEY_KP7), "kp8" => Some(KEY_KP8),
-        "kp9" => Some(KEY_KP9), "kpdot" | "kp." => Some(KEY_KPDOT),
-        "kpenter" => Some(KEY_KPENTER), "kpplus" | "kp+" => Some(KEY_KPPLUS),
-        "kpminus" | "kp-" => Some(KEY_KPMINUS), "kp*" => Some(KEY_KPASTERISK),
-        "kpslash" => Some(KEY_KPSLASH), "numlock" | "numlk" => Some(KEY_NUMLOCK),
-        "minus" | "-" => Some(KEY_MINUS), "equal" | "=" => Some(KEY_EQUAL),
-        "leftbrace" | "[" => Some(KEY_LEFTBRACE), "rightbrace" | "]" => Some(KEY_RIGHTBRACE),
+        "enter" | "return" => Some(KEY_ENTER),
+        "space" => Some(KEY_SPACE),
+        "tab" => Some(KEY_TAB),
+        "escape" | "esc" => Some(KEY_ESC),
+        "backspace" | "bksp" => Some(KEY_BACKSPACE),
+        "capslock" | "caps" => Some(KEY_CAPSLOCK),
+        "kp0" => Some(KEY_KP0),
+        "kp1" => Some(KEY_KP1),
+        "kp2" => Some(KEY_KP2),
+        "kp3" => Some(KEY_KP3),
+        "kp4" => Some(KEY_KP4),
+        "kp5" => Some(KEY_KP5),
+        "kp6" => Some(KEY_KP6),
+        "kp7" => Some(KEY_KP7),
+        "kp8" => Some(KEY_KP8),
+        "kp9" => Some(KEY_KP9),
+        "kpdot" | "kp." => Some(KEY_KPDOT),
+        "kpenter" => Some(KEY_KPENTER),
+        "kpplus" | "kp+" => Some(KEY_KPPLUS),
+        "kpminus" | "kp-" => Some(KEY_KPMINUS),
+        "kp*" => Some(KEY_KPASTERISK),
+        "kpslash" => Some(KEY_KPSLASH),
+        "numlock" | "numlk" => Some(KEY_NUMLOCK),
+        "minus" | "-" => Some(KEY_MINUS),
+        "equal" | "=" => Some(KEY_EQUAL),
+        "leftbrace" | "[" => Some(KEY_LEFTBRACE),
+        "rightbrace" | "]" => Some(KEY_RIGHTBRACE),
         "backslash" | "\\" => Some(KEY_BACKSLASH),
-        "semicolon" | ";" => Some(KEY_SEMICOLON), "apostrophe" | "'" => Some(KEY_APOSTROPHE),
-        "comma" | "," => Some(KEY_COMMA), "dot" | "." => Some(KEY_DOT),
-        "slash" | "/" => Some(KEY_SLASH), "grave" | "`" => Some(KEY_GRAVE),
+        "semicolon" | ";" => Some(KEY_SEMICOLON),
+        "apostrophe" | "'" => Some(KEY_APOSTROPHE),
+        "comma" | "," => Some(KEY_COMMA),
+        "dot" | "." => Some(KEY_DOT),
+        "slash" | "/" => Some(KEY_SLASH),
+        "grave" | "`" => Some(KEY_GRAVE),
         "volumeup" | "volup" => Some(KEY_VOLUMEUP),
         "volumedown" | "voldown" => Some(KEY_VOLUMEDOWN),
-        "mute" => Some(KEY_MUTE), "playpause" | "play" => Some(KEY_PLAYPAUSE),
+        "mute" => Some(KEY_MUTE),
+        "playpause" | "play" => Some(KEY_PLAYPAUSE),
         "stop" => Some(KEY_STOPCD),
         "previoussong" | "prev" => Some(KEY_PREVIOUSSONG),
         "nextsong" | "next" => Some(KEY_NEXTSONG),
@@ -212,10 +274,16 @@ impl KeyboardDevice {
         let raw = fd.as_raw_fd();
 
         set_bit(raw, UI_SET_EVBIT, 0x01).map_err(|e| {
-            io::Error::new(e.kind(), format!("failed to enable uinput EV_KEY capability: {e}"))
+            io::Error::new(
+                e.kind(),
+                format!("failed to enable uinput EV_KEY capability: {e}"),
+            )
         })?;
         set_bit(raw, UI_SET_EVBIT, 0x00).map_err(|e| {
-            io::Error::new(e.kind(), format!("failed to enable uinput EV_SYN capability: {e}"))
+            io::Error::new(
+                e.kind(),
+                format!("failed to enable uinput EV_SYN capability: {e}"),
+            )
         })?;
 
         for code in ALL_KEYCODES {
@@ -227,17 +295,27 @@ impl KeyboardDevice {
             })?;
         }
 
-        unsafe { Self::create_device(raw)?; }
+        unsafe {
+            Self::create_device(raw)?;
+        }
 
-        Ok(Self { fd: Some(fd), held_keys: HashSet::new() })
+        Ok(Self {
+            fd: Some(fd),
+            held_keys: HashSet::new(),
+        })
     }
 
     pub fn dummy() -> Self {
-        Self { fd: None, held_keys: HashSet::new() }
+        Self {
+            fd: None,
+            held_keys: HashSet::new(),
+        }
     }
 
     pub fn press(&mut self, code: u16) -> bool {
-        if self.held_keys.contains(&code) { return true; }
+        if self.held_keys.contains(&code) {
+            return true;
+        }
         if self.send_event(code, 1).is_ok() {
             self.held_keys.insert(code);
             true
@@ -247,7 +325,9 @@ impl KeyboardDevice {
     }
 
     pub fn release(&mut self, code: u16) -> bool {
-        if !self.held_keys.contains(&code) { return true; }
+        if !self.held_keys.contains(&code) {
+            return true;
+        }
         if self.send_event(code, 0).is_ok() {
             self.held_keys.remove(&code);
             true
@@ -258,15 +338,29 @@ impl KeyboardDevice {
 
     pub fn flush_held(&mut self) {
         let held: Vec<u16> = self.held_keys.iter().copied().collect();
-        for code in held { let _ = self.release(code); }
+        for code in held {
+            let _ = self.release(code);
+        }
     }
 
     fn send_event(&self, code: u16, value: i32) -> io::Result<()> {
         if let Some(ref fd) = self.fd {
-            let ev = InputEvent { time_sec: 0, time_usec: 0, ev_type: 0x01, code, value };
+            let ev = InputEvent {
+                time_sec: 0,
+                time_usec: 0,
+                ev_type: 0x01,
+                code,
+                value,
+            };
             write_input_event(fd.as_raw_fd(), &ev)
                 .inspect_err(|e| log::error!("failed to write uinput key event: {e}"))?;
-            let syn = InputEvent { time_sec: 0, time_usec: 0, ev_type: 0x00, code: 0, value: 0 };
+            let syn = InputEvent {
+                time_sec: 0,
+                time_usec: 0,
+                ev_type: 0x00,
+                code: 0,
+                value: 0,
+            };
             write_input_event(fd.as_raw_fd(), &syn)
                 .inspect_err(|e| log::error!("failed to write uinput SYN event: {e}"))?;
         }
@@ -286,7 +380,12 @@ impl KeyboardDevice {
         }
         #[repr(C)]
         #[derive(Clone, Copy)]
-        struct InputId { bustype: u16, vendor: u16, product: u16, version: u16 }
+        struct InputId {
+            bustype: u16,
+            vendor: u16,
+            product: u16,
+            version: u16,
+        }
 
         let name = b"edgemap Keyboard\0";
         let mut name_buf = [0u8; 80];
@@ -294,18 +393,33 @@ impl KeyboardDevice {
 
         let dev = UinputUserDev {
             name: name_buf,
-            id: InputId { bustype: 0x0003, vendor: 0x054C, product: 0x0DF2, version: 0x0100 },
+            id: InputId {
+                bustype: 0x0003,
+                vendor: 0x054C,
+                product: 0x0DF2,
+                version: 0x0100,
+            },
             ff_effects_max: 0,
-            absmax: [0i32; 64], absmin: [0i32; 64],
-            absfuzz: [0i32; 64], absflat: [0i32; 64],
+            absmax: [0i32; 64],
+            absmin: [0i32; 64],
+            absfuzz: [0i32; 64],
+            absflat: [0i32; 64],
         };
 
-        let ret = libc::write(fd, &dev as *const UinputUserDev as *const libc::c_void, std::mem::size_of::<UinputUserDev>());
-        if ret < 0 { return Err(io::Error::last_os_error()); }
+        let ret = libc::write(
+            fd,
+            &dev as *const UinputUserDev as *const libc::c_void,
+            std::mem::size_of::<UinputUserDev>(),
+        );
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
 
         let request = ((0x55u64) << 8) | (0x01u64);
         let ret = libc::ioctl(fd, request);
-        if ret < 0 { return Err(io::Error::last_os_error()); }
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
 
         Ok(())
     }
@@ -313,13 +427,14 @@ impl KeyboardDevice {
 
 fn write_input_event(fd: libc::c_int, event: &InputEvent) -> io::Result<()> {
     let size = std::mem::size_of::<InputEvent>();
-    let ret = unsafe {
-        libc::write(fd, event as *const InputEvent as *const libc::c_void, size)
-    };
+    let ret = unsafe { libc::write(fd, event as *const InputEvent as *const libc::c_void, size) };
     if ret < 0 {
         Err(io::Error::last_os_error())
     } else if ret as usize != size {
-        Err(io::Error::new(io::ErrorKind::WriteZero, "short uinput event write"))
+        Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "short uinput event write",
+        ))
     } else {
         Ok(())
     }
@@ -333,25 +448,121 @@ fn set_bit(fd: libc::c_int, cmd: u32, bit: u16) -> io::Result<()> {
     };
     let request = ((1u64) << 30) | ((0x55u64) << 8) | (cmd_nr as u64) | ((4u64) << 16);
     let ret = unsafe { libc::ioctl(fd, request, bit as libc::c_ulong) };
-    if ret < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+    if ret < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 const ALL_KEYCODES: &[u16] = &[
-    KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F, KEY_G, KEY_H, KEY_I, KEY_J,
-    KEY_K, KEY_L, KEY_M, KEY_N, KEY_O, KEY_P, KEY_Q, KEY_R, KEY_S, KEY_T,
-    KEY_U, KEY_V, KEY_W, KEY_X, KEY_Y, KEY_Z,
-    KEY_0, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9,
-    KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8, KEY_F9, KEY_F10, KEY_F11, KEY_F12,
-    KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_HOME, KEY_END, KEY_PAGEUP, KEY_PAGEDOWN,
-    KEY_INSERT, KEY_DELETE,
-    KEY_LEFTCTRL, KEY_RIGHTCTRL, KEY_LEFTSHIFT, KEY_RIGHTSHIFT, KEY_LEFTALT, KEY_RIGHTALT,
-    KEY_LEFTMETA, KEY_RIGHTMETA,
-    KEY_ENTER, KEY_SPACE, KEY_TAB, KEY_ESC, KEY_BACKSPACE, KEY_CAPSLOCK,
-    KEY_KP0, KEY_KP1, KEY_KP2, KEY_KP3, KEY_KP4, KEY_KP5, KEY_KP6, KEY_KP7, KEY_KP8, KEY_KP9,
-    KEY_KPDOT, KEY_KPENTER, KEY_KPPLUS, KEY_KPMINUS, KEY_KPASTERISK, KEY_KPSLASH, KEY_NUMLOCK,
-    KEY_MINUS, KEY_EQUAL, KEY_LEFTBRACE, KEY_RIGHTBRACE, KEY_BACKSLASH,
-    KEY_SEMICOLON, KEY_APOSTROPHE, KEY_COMMA, KEY_DOT, KEY_SLASH, KEY_GRAVE,
-    KEY_VOLUMEUP, KEY_VOLUMEDOWN, KEY_MUTE, KEY_PLAYPAUSE, KEY_STOPCD, KEY_PREVIOUSSONG, KEY_NEXTSONG,
+    KEY_A,
+    KEY_B,
+    KEY_C,
+    KEY_D,
+    KEY_E,
+    KEY_F,
+    KEY_G,
+    KEY_H,
+    KEY_I,
+    KEY_J,
+    KEY_K,
+    KEY_L,
+    KEY_M,
+    KEY_N,
+    KEY_O,
+    KEY_P,
+    KEY_Q,
+    KEY_R,
+    KEY_S,
+    KEY_T,
+    KEY_U,
+    KEY_V,
+    KEY_W,
+    KEY_X,
+    KEY_Y,
+    KEY_Z,
+    KEY_0,
+    KEY_1,
+    KEY_2,
+    KEY_3,
+    KEY_4,
+    KEY_5,
+    KEY_6,
+    KEY_7,
+    KEY_8,
+    KEY_9,
+    KEY_F1,
+    KEY_F2,
+    KEY_F3,
+    KEY_F4,
+    KEY_F5,
+    KEY_F6,
+    KEY_F7,
+    KEY_F8,
+    KEY_F9,
+    KEY_F10,
+    KEY_F11,
+    KEY_F12,
+    KEY_UP,
+    KEY_DOWN,
+    KEY_LEFT,
+    KEY_RIGHT,
+    KEY_HOME,
+    KEY_END,
+    KEY_PAGEUP,
+    KEY_PAGEDOWN,
+    KEY_INSERT,
+    KEY_DELETE,
+    KEY_LEFTCTRL,
+    KEY_RIGHTCTRL,
+    KEY_LEFTSHIFT,
+    KEY_RIGHTSHIFT,
+    KEY_LEFTALT,
+    KEY_RIGHTALT,
+    KEY_LEFTMETA,
+    KEY_RIGHTMETA,
+    KEY_ENTER,
+    KEY_SPACE,
+    KEY_TAB,
+    KEY_ESC,
+    KEY_BACKSPACE,
+    KEY_CAPSLOCK,
+    KEY_KP0,
+    KEY_KP1,
+    KEY_KP2,
+    KEY_KP3,
+    KEY_KP4,
+    KEY_KP5,
+    KEY_KP6,
+    KEY_KP7,
+    KEY_KP8,
+    KEY_KP9,
+    KEY_KPDOT,
+    KEY_KPENTER,
+    KEY_KPPLUS,
+    KEY_KPMINUS,
+    KEY_KPASTERISK,
+    KEY_KPSLASH,
+    KEY_NUMLOCK,
+    KEY_MINUS,
+    KEY_EQUAL,
+    KEY_LEFTBRACE,
+    KEY_RIGHTBRACE,
+    KEY_BACKSLASH,
+    KEY_SEMICOLON,
+    KEY_APOSTROPHE,
+    KEY_COMMA,
+    KEY_DOT,
+    KEY_SLASH,
+    KEY_GRAVE,
+    KEY_VOLUMEUP,
+    KEY_VOLUMEDOWN,
+    KEY_MUTE,
+    KEY_PLAYPAUSE,
+    KEY_STOPCD,
+    KEY_PREVIOUSSONG,
+    KEY_NEXTSONG,
 ];
 
 #[cfg(test)]
@@ -360,8 +571,14 @@ mod tests {
 
     #[test]
     fn press_tracks_key_only_after_successful_write() {
-        let file = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
-        let mut keyboard = KeyboardDevice { fd: Some(OwnedFd::from(file)), held_keys: HashSet::new() };
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        let mut keyboard = KeyboardDevice {
+            fd: Some(OwnedFd::from(file)),
+            held_keys: HashSet::new(),
+        };
 
         assert!(keyboard.press(KEY_A));
 
@@ -371,7 +588,10 @@ mod tests {
     #[test]
     fn failed_press_is_retried_and_failed_release_stays_held() {
         let file = std::fs::File::open("/dev/null").unwrap();
-        let mut keyboard = KeyboardDevice { fd: Some(OwnedFd::from(file)), held_keys: HashSet::new() };
+        let mut keyboard = KeyboardDevice {
+            fd: Some(OwnedFd::from(file)),
+            held_keys: HashSet::new(),
+        };
 
         assert!(!keyboard.press(KEY_A));
         assert!(!keyboard.held_keys.contains(&KEY_A));

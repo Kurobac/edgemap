@@ -23,9 +23,8 @@ makepkg -si              # build + install via PKGBUILD
 ```
 
 ## important notice
-- 在 commit 间切换测试时，始终 `cargo clean` 后再 `cargo build`，避免增量编译缓存污染结果（见 BUGFIX #64）。
-- 使用中文。技术名词可以使用英语。
-- 本项目所有重点均在HIDRAW，以及原生支持dualsense的游戏。
+- This project is focused on games which supports sony controller natively.
+- PKGBUILD in root directory is for local testing only. It is a vcs package. No need to update pkgver.
 
 ## Architecture
 

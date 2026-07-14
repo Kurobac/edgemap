@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags};
 use nix::sys::socket::{
-    accept4, bind, connect, listen, recv, send, socket, AddressFamily, Backlog, MsgFlags,
-    SockFlag, SockType, UnixAddr,
+    accept4, bind, connect, listen, recv, send, socket, AddressFamily, Backlog, MsgFlags, SockFlag,
+    SockType, UnixAddr,
 };
 
 use crate::config::ActiveConfig;
@@ -46,10 +46,7 @@ impl ControlRequest {
         match self {
             Self::SwitchConfig(config) => {
                 let mut packet = Vec::with_capacity(
-                    SWITCH_CONFIG_PREFIX.len()
-                        + config.source().len()
-                        + 1
-                        + config.content().len(),
+                    SWITCH_CONFIG_PREFIX.len() + config.source().len() + 1 + config.content().len(),
                 );
                 packet.extend_from_slice(SWITCH_CONFIG_PREFIX);
                 packet.extend_from_slice(config.source().as_bytes());
@@ -76,7 +73,11 @@ pub struct PendingRequest {
 }
 
 fn bool_digit(value: bool) -> char {
-    if value { '1' } else { '0' }
+    if value {
+        '1'
+    } else {
+        '0'
+    }
 }
 
 fn hello_packet(state: ControlState) -> Vec<u8> {
@@ -324,7 +325,10 @@ impl ControlServer {
                         continue;
                     }
                     match parse_request(&packet) {
-                        Ok(request) => requests.push(PendingRequest { client: fd, request }),
+                        Ok(request) => requests.push(PendingRequest {
+                            client: fd,
+                            request,
+                        }),
                         Err(message) => {
                             self.reply_error(fd, "protocol", &message);
                         }
@@ -357,7 +361,9 @@ impl ControlServer {
 
     fn reply(&mut self, client: RawFd, packet: &[u8]) {
         if let Err(error) = send_packet(client, packet) {
-            log::debug!("control client disconnected after reply failure: fd={client}, error={error}");
+            log::debug!(
+                "control client disconnected after reply failure: fd={client}, error={error}"
+            );
             self.clients.remove(&client);
         }
     }
@@ -476,9 +482,7 @@ impl DaemonLock {
                 let detail = if owner.is_empty() {
                     format!("another {process_name} instance holds the daemon lock")
                 } else {
-                    format!(
-                        "another {process_name} instance holds the daemon lock (PID {owner})"
-                    )
+                    format!("another {process_name} instance holds the daemon lock (PID {owner})")
                 };
                 return Err(io::Error::new(io::ErrorKind::AlreadyExists, detail));
             }
@@ -505,10 +509,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "dseuhid-{name}-{}-{unique}",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("dseuhid-{name}-{}-{unique}", std::process::id()))
     }
 
     #[test]
@@ -604,22 +605,20 @@ mod tests {
         let mut server = ControlServer::bind(&dir, initial).unwrap();
         let outer_epoll = Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC).unwrap();
         outer_epoll
-            .add(
-                server.as_fd(),
-                EpollEvent::new(EpollFlags::EPOLLIN, 1),
-            )
+            .add(server.as_fd(), EpollEvent::new(EpollFlags::EPOLLIN, 1))
             .unwrap();
         let client = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
         let mut outer_events = [EpollEvent::empty(); 1];
         assert_eq!(outer_epoll.wait(&mut outer_events, 1000u16).unwrap(), 1);
 
         assert!(server.drain_requests().unwrap().is_empty());
-        assert_eq!(client.receive().unwrap(), Some(ServerPacket::Hello(initial)));
+        assert_eq!(
+            client.receive().unwrap(),
+            Some(ServerPacket::Hello(initial))
+        );
 
-        let first_request = ControlRequest::SwitchConfig(active_config(
-            "/tmp/one.toml",
-            "version = 2\n",
-        ));
+        let first_request =
+            ControlRequest::SwitchConfig(active_config("/tmp/one.toml", "version = 2\n"));
         client.send_request(&first_request).unwrap();
         let mut requests = server.drain_requests().unwrap();
         assert_eq!(requests.len(), 1);
@@ -644,7 +643,10 @@ mod tests {
 
         let second = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
         assert!(server.drain_requests().unwrap().is_empty());
-        assert_eq!(second.receive().unwrap(), Some(ServerPacket::Hello(initial)));
+        assert_eq!(
+            second.receive().unwrap(),
+            Some(ServerPacket::Hello(initial))
+        );
 
         let ready = ControlState {
             uhid_ready: true,
@@ -671,10 +673,7 @@ mod tests {
             .any(|pending| pending.request == first_request));
         assert!(requests.iter().any(|pending| {
             pending.request
-                == ControlRequest::SwitchConfig(active_config(
-                    "/tmp/two.toml",
-                    "version = 2\n",
-                ))
+                == ControlRequest::SwitchConfig(active_config("/tmp/two.toml", "version = 2\n"))
         }));
 
         drop(client);
@@ -694,7 +693,10 @@ mod tests {
         let mut server = ControlServer::bind(&dir, initial).unwrap();
         let client = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
         assert!(server.drain_requests().unwrap().is_empty());
-        assert_eq!(client.receive().unwrap(), Some(ServerPacket::Hello(initial)));
+        assert_eq!(
+            client.receive().unwrap(),
+            Some(ServerPacket::Hello(initial))
+        );
 
         client
             .send_request(&ControlRequest::SwitchConfig(active_config(
@@ -728,7 +730,10 @@ mod tests {
         for _ in 0..MAX_CONTROL_CLIENTS {
             let client = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
             assert!(server.drain_requests().unwrap().is_empty());
-            assert_eq!(client.receive().unwrap(), Some(ServerPacket::Hello(initial)));
+            assert_eq!(
+                client.receive().unwrap(),
+                Some(ServerPacket::Hello(initial))
+            );
             clients.push(client);
         }
         assert_eq!(server.clients.len(), MAX_CONTROL_CLIENTS);

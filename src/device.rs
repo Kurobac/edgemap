@@ -229,9 +229,7 @@ struct HidrawDevinfo {
 
 fn hidraw_get_raw_info(fd: RawFd, info: &mut HidrawDevinfo) -> io::Result<()> {
     let request = ioc_read(0x03, std::mem::size_of::<HidrawDevinfo>());
-    let ret = unsafe {
-        libc::ioctl(fd, request, info as *mut HidrawDevinfo)
-    };
+    let ret = unsafe { libc::ioctl(fd, request, info as *mut HidrawDevinfo) };
     if ret < 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -254,14 +252,15 @@ fn ioc_readwrite(nr: u32, size: usize) -> u64 {
 pub fn hidraw_get_report_descriptor(fd: RawFd) -> io::Result<Vec<u8>> {
     let mut desc_size: i32 = 0;
     let request = ioc_read(0x01, std::mem::size_of::<i32>());
-    let ret = unsafe {
-        libc::ioctl(fd, request, &mut desc_size as *mut i32)
-    };
+    let ret = unsafe { libc::ioctl(fd, request, &mut desc_size as *mut i32) };
     if ret < 0 {
         return Err(io::Error::last_os_error());
     }
     if desc_size <= 0 || desc_size > 4096 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("invalid descriptor size: {desc_size}")));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid descriptor size: {desc_size}"),
+        ));
     }
 
     let request = ioc_read(0x02, 4100);
@@ -271,9 +270,7 @@ pub fn hidraw_get_report_descriptor(fd: RawFd) -> io::Result<Vec<u8>> {
     let len = (desc_size as u32).min(4096);
     buf[0..4].copy_from_slice(&len.to_ne_bytes());
 
-    let ret = unsafe {
-        libc::ioctl(fd, request, buf.as_mut_ptr())
-    };
+    let ret = unsafe { libc::ioctl(fd, request, buf.as_mut_ptr()) };
     if ret < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -340,9 +337,9 @@ impl HidrawDevice {
                     debug!("device check passed: first USB input report valid");
                 }
                 Ok(n) => {
-                    return Err(io::Error::other(
-                        format!("unexpected first USB report: {n} bytes"),
-                    ));
+                    return Err(io::Error::other(format!(
+                        "unexpected first USB report: {n} bytes"
+                    )));
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     debug!("device check deferred: no USB input available");
@@ -401,7 +398,10 @@ impl HidrawDevice {
         } else if n as usize != data.len() {
             Err(io::Error::new(
                 io::ErrorKind::WriteZero,
-                format!("short hidraw output write: wrote {n} of {} bytes", data.len()),
+                format!(
+                    "short hidraw output write: wrote {n} of {} bytes",
+                    data.len()
+                ),
             ))
         } else {
             Ok(n as usize)
@@ -438,15 +438,25 @@ impl HidrawDevice {
         unblock_shutdown_signals_in_child(&mut command);
         match command.output() {
             Ok(output) if output.status.success() => {}
-            Ok(output) => warn!("failed to clear node ACL: path={}, status={}", path.display(), output.status),
-            Err(e) => warn!("failed to clear node ACL: path={}, error={e}", path.display()),
+            Ok(output) => warn!(
+                "failed to clear node ACL: path={}, status={}",
+                path.display(),
+                output.status
+            ),
+            Err(e) => warn!(
+                "failed to clear node ACL: path={}, error={e}",
+                path.display()
+            ),
         }
     }
 
     fn restrict_node(path: &Path, restored: &mut Vec<RestoredNode>) -> io::Result<()> {
         let mode = fs::metadata(path)?.permissions().mode();
         let acl = Self::read_acl(path).unwrap_or_else(|e| {
-            warn!("failed to capture node ACL: path={}, error={e}", path.display());
+            warn!(
+                "failed to capture node ACL: path={}, error={e}",
+                path.display()
+            );
             String::new()
         });
 
@@ -520,7 +530,10 @@ impl HidrawDevice {
             let mode = match fs::metadata(&node.path) {
                 Ok(metadata) => metadata.permissions().mode(),
                 Err(e) => {
-                    warn!("failed to inspect node permissions: path={}, error={e}", node.path.display());
+                    warn!(
+                        "failed to inspect node permissions: path={}, error={e}",
+                        node.path.display()
+                    );
                     continue;
                 }
             };
@@ -544,7 +557,10 @@ impl HidrawDevice {
             Self::clear_acl(&node.path);
             match fs::set_permissions(&node.path, fs::Permissions::from_mode(0o000)) {
                 Ok(()) => restricted.push(node.path.clone()),
-                Err(e) => warn!("failed to re-restrict input node: path={}, error={e}", node.path.display()),
+                Err(e) => warn!(
+                    "failed to re-restrict input node: path={}, error={e}",
+                    node.path.display()
+                ),
             }
         }
 
@@ -563,7 +579,10 @@ impl HidrawDevice {
         if self.restored_nodes.is_empty() {
             return;
         }
-        info!("restoring input node permissions: count={}", self.restored_nodes.len());
+        info!(
+            "restoring input node permissions: count={}",
+            self.restored_nodes.len()
+        );
         let mut acl_batch = String::new();
         for node in &self.restored_nodes {
             if !node.path.exists() {
@@ -572,7 +591,10 @@ impl HidrawDevice {
             if let Err(e) =
                 fs::set_permissions(&node.path, std::fs::Permissions::from_mode(node.mode))
             {
-                log::warn!("failed to restore node permissions: path={}, error={e}", node.path.display());
+                log::warn!(
+                    "failed to restore node permissions: path={}, error={e}",
+                    node.path.display()
+                );
             } else {
                 log::debug!("node permissions restored: path={}", node.path.display());
             }
@@ -599,7 +621,9 @@ impl HidrawDevice {
                     }
                     match child.wait() {
                         Ok(status) if status.success() => {}
-                        Ok(status) => log::warn!("failed to restore ACLs with setfacl: status={status}"),
+                        Ok(status) => {
+                            log::warn!("failed to restore ACLs with setfacl: status={status}")
+                        }
                         Err(e) => log::warn!("failed to wait for setfacl ACL restore: {e}"),
                     }
                 }
@@ -616,7 +640,8 @@ impl Drop for HidrawDevice {
 }
 
 fn is_physical_device(hidraw_name: &str) -> bool {
-    if let Ok(uevent) = fs::read_to_string(format!("/sys/class/hidraw/{hidraw_name}/device/uevent")) {
+    if let Ok(uevent) = fs::read_to_string(format!("/sys/class/hidraw/{hidraw_name}/device/uevent"))
+    {
         if is_uhid_uevent(&uevent) {
             debug!("virtual UHID device skipped: node={hidraw_name}");
             return false;
@@ -719,11 +744,7 @@ struct AssociatedInputNode {
 
 impl AssociatedInputNode {
     fn is_ready(&self) -> bool {
-        self.initialized
-            && self
-                .dev_path
-                .as_ref()
-                .is_some_and(|path| path.exists())
+        self.initialized && self.dev_path.as_ref().is_some_and(|path| path.exists())
     }
 }
 
@@ -776,7 +797,10 @@ fn input_nodes_state(hidraw_path: &Path) -> io::Result<InputNodesState> {
         .map(|node| node.name.as_str())
         .collect();
     if !pending.is_empty() {
-        debug!("waiting for udev to initialize input nodes: nodes={}", pending.join(", "));
+        debug!(
+            "waiting for udev to initialize input nodes: nodes={}",
+            pending.join(", ")
+        );
         return Ok(InputNodesState::Pending);
     }
     Ok(InputNodesState::Ready)
@@ -796,7 +820,9 @@ mod tests {
 
     #[test]
     fn uhid_driver_detection_requires_exact_uevent_line() {
-        assert!(is_uhid_uevent("DRIVER=uhid\nHID_ID=0003:0000054C:00000DF2\n"));
+        assert!(is_uhid_uevent(
+            "DRIVER=uhid\nHID_ID=0003:0000054C:00000DF2\n"
+        ));
         assert!(!is_uhid_uevent("PARENT_DRIVER=uhid\n"));
         assert!(!is_uhid_uevent("DRIVER=uhid-extra\n"));
     }

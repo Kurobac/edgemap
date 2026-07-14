@@ -309,10 +309,18 @@ pub fn build_input_report(state: &GamepadState) -> [u8; USB_INPUT_REPORT_SIZE] {
         b2 |= 0x04;
     }
     // Edge buttons in vendor usage 0x21 bits 0-3
-    if state.button(Button::FnLeft) { b2 |= 0x10; }
-    if state.button(Button::FnRight) { b2 |= 0x20; }
-    if state.button(Button::LeftPaddle) { b2 |= 0x40; }
-    if state.button(Button::RightPaddle) { b2 |= 0x80; }
+    if state.button(Button::FnLeft) {
+        b2 |= 0x10;
+    }
+    if state.button(Button::FnRight) {
+        b2 |= 0x20;
+    }
+    if state.button(Button::LeftPaddle) {
+        b2 |= 0x40;
+    }
+    if state.button(Button::RightPaddle) {
+        b2 |= 0x80;
+    }
     data[10] = b2;
 
     data[11] = 0;
@@ -335,10 +343,18 @@ pub fn apply_state_to_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) 
     raw[7] = seq;
 
     let mut b0: u8 = 0;
-    if state.button(Button::Square) { b0 |= 0x10; }
-    if state.button(Button::Cross) { b0 |= 0x20; }
-    if state.button(Button::Circle) { b0 |= 0x40; }
-    if state.button(Button::Triangle) { b0 |= 0x80; }
+    if state.button(Button::Square) {
+        b0 |= 0x10;
+    }
+    if state.button(Button::Cross) {
+        b0 |= 0x20;
+    }
+    if state.button(Button::Circle) {
+        b0 |= 0x40;
+    }
+    if state.button(Button::Triangle) {
+        b0 |= 0x80;
+    }
 
     let up = state.button(Button::DpadUp);
     let down = state.button(Button::DpadDown);
@@ -360,28 +376,58 @@ pub fn apply_state_to_report(raw: &mut [u8; 64], state: &GamepadState, seq: u8) 
     raw[8] = b0;
 
     let mut b1: u8 = 0;
-    if state.button(Button::L1) { b1 |= 0x01; }
-    if state.button(Button::R1) { b1 |= 0x02; }
-    if state.button(Button::L2) { b1 |= 0x04; }
-    if state.button(Button::R2) { b1 |= 0x08; }
-    if state.button(Button::Create) { b1 |= 0x10; }
-    if state.button(Button::Options) { b1 |= 0x20; }
-    if state.button(Button::L3) { b1 |= 0x40; }
-    if state.button(Button::R3) { b1 |= 0x80; }
+    if state.button(Button::L1) {
+        b1 |= 0x01;
+    }
+    if state.button(Button::R1) {
+        b1 |= 0x02;
+    }
+    if state.button(Button::L2) {
+        b1 |= 0x04;
+    }
+    if state.button(Button::R2) {
+        b1 |= 0x08;
+    }
+    if state.button(Button::Create) {
+        b1 |= 0x10;
+    }
+    if state.button(Button::Options) {
+        b1 |= 0x20;
+    }
+    if state.button(Button::L3) {
+        b1 |= 0x40;
+    }
+    if state.button(Button::R3) {
+        b1 |= 0x80;
+    }
     raw[9] = b1;
 
     let mut b2: u8 = 0;
-    if state.button(Button::PS) { b2 |= 0x01; }
-    if state.button(Button::Touchpad) { b2 |= 0x02; }
-    if state.button(Button::Mic) { b2 |= 0x04; }
+    if state.button(Button::PS) {
+        b2 |= 0x01;
+    }
+    if state.button(Button::Touchpad) {
+        b2 |= 0x02;
+    }
+    if state.button(Button::Mic) {
+        b2 |= 0x04;
+    }
     // Edge buttons in vendor usage 0x21 bits 0-3 (byte 10 high nibble).
     // DS5 targets keep writing them because the descriptor advertises these
     // usages; games may still ignore them. DS4 target encoding has no matching
     // fields, so Edge-only passthrough state is dropped there.
-    if state.button(Button::FnLeft) { b2 |= 0x10; }
-    if state.button(Button::FnRight) { b2 |= 0x20; }
-    if state.button(Button::LeftPaddle) { b2 |= 0x40; }
-    if state.button(Button::RightPaddle) { b2 |= 0x80; }
+    if state.button(Button::FnLeft) {
+        b2 |= 0x10;
+    }
+    if state.button(Button::FnRight) {
+        b2 |= 0x20;
+    }
+    if state.button(Button::LeftPaddle) {
+        b2 |= 0x40;
+    }
+    if state.button(Button::RightPaddle) {
+        b2 |= 0x80;
+    }
     raw[10] = b2;
 
     let b3: u8 = raw[11] & 0x0F;
@@ -399,10 +445,18 @@ pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: 
     raw[4] = state.right_stick_y;
 
     let mut b5: u8 = 0;
-    if state.button(Button::Square) { b5 |= 0x10; }
-    if state.button(Button::Cross) { b5 |= 0x20; }
-    if state.button(Button::Circle) { b5 |= 0x40; }
-    if state.button(Button::Triangle) { b5 |= 0x80; }
+    if state.button(Button::Square) {
+        b5 |= 0x10;
+    }
+    if state.button(Button::Cross) {
+        b5 |= 0x20;
+    }
+    if state.button(Button::Circle) {
+        b5 |= 0x40;
+    }
+    if state.button(Button::Triangle) {
+        b5 |= 0x80;
+    }
 
     let up = state.button(Button::DpadUp);
     let down = state.button(Button::DpadDown);
@@ -424,32 +478,52 @@ pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: 
     raw[5] = b5;
 
     let mut b6: u8 = 0;
-    if state.button(Button::L1) { b6 |= 0x01; }
-    if state.button(Button::R1) { b6 |= 0x02; }
-    if state.button(Button::L2) { b6 |= 0x04; }
-    if state.button(Button::R2) { b6 |= 0x08; }
-    if state.button(Button::Create) { b6 |= 0x10; }
-    if state.button(Button::Options) { b6 |= 0x20; }
-    if state.button(Button::L3) { b6 |= 0x40; }
-    if state.button(Button::R3) { b6 |= 0x80; }
+    if state.button(Button::L1) {
+        b6 |= 0x01;
+    }
+    if state.button(Button::R1) {
+        b6 |= 0x02;
+    }
+    if state.button(Button::L2) {
+        b6 |= 0x04;
+    }
+    if state.button(Button::R2) {
+        b6 |= 0x08;
+    }
+    if state.button(Button::Create) {
+        b6 |= 0x10;
+    }
+    if state.button(Button::Options) {
+        b6 |= 0x20;
+    }
+    if state.button(Button::L3) {
+        b6 |= 0x40;
+    }
+    if state.button(Button::R3) {
+        b6 |= 0x80;
+    }
     raw[6] = b6;
 
     let mut b7: u8 = (seq & 0x3F) << 2;
-    if state.button(Button::PS) { b7 |= 0x01; }
-    if state.button(Button::Touchpad) { b7 |= 0x02; }
+    if state.button(Button::PS) {
+        b7 |= 0x01;
+    }
+    if state.button(Button::Touchpad) {
+        b7 |= 0x02;
+    }
     raw[7] = b7;
 
     raw[8] = state.l2_analog;
     raw[9] = state.r2_analog;
 
-    let p0_contact  = raw[33];
-    let p0_x_lo     = raw[34];
+    let p0_contact = raw[33];
+    let p0_x_lo = raw[34];
     let p0_x_hi_ylo = raw[35];
-    let p0_y_hi     = raw[36];
-    let p1_contact  = raw[37];
-    let p1_x_lo     = raw[38];
+    let p0_y_hi = raw[36];
+    let p1_contact = raw[37];
+    let p1_x_lo = raw[38];
     let p1_x_hi_ylo = raw[39];
-    let p1_y_hi     = raw[40];
+    let p1_y_hi = raw[40];
 
     let gyro_accel: [u8; 12] = raw[16..28].try_into().unwrap();
 
@@ -466,7 +540,7 @@ pub fn apply_state_to_ds4_report(raw: &mut [u8; 64], state: &GamepadState, seq: 
             let y_lo = (comb >> 4) & 0x0F;
             let y = ((y_hi as u16) << 4) | (y_lo as u16);
             let ys = ((y as u32) * 942 / 1080) as u16;
-            raw[base]     = contact;
+            raw[base] = contact;
             raw[base + 1] = x_lo;
             raw[base + 2] = (comb & 0x0F) | (((ys & 0x0F) as u8) << 4);
             raw[base + 3] = (ys >> 4) as u8;
@@ -498,7 +572,11 @@ pub fn convert_ds4_output_to_ds5(ds4: &[u8]) -> [u8; 63] {
         return ds5;
     }
 
-    let off = if ds4.len() >= 32 && ds4[0] == 0x05 { 1 } else { 0 };
+    let off = if ds4.len() >= 32 && ds4[0] == 0x05 {
+        1
+    } else {
+        0
+    };
     if ds4.len() < off + 11 {
         return ds5;
     }
@@ -632,7 +710,9 @@ mod tests {
         buf[10] = 0x40;
         assert!(parse_input_report(&buf).unwrap().button(Button::LeftPaddle));
         buf[10] = 0x80;
-        assert!(parse_input_report(&buf).unwrap().button(Button::RightPaddle));
+        assert!(parse_input_report(&buf)
+            .unwrap()
+            .button(Button::RightPaddle));
     }
 
     #[test]
@@ -649,8 +729,12 @@ mod tests {
         let r2 = parse_input_report(&dst).unwrap();
 
         for btn in ALL_BUTTONS {
-            assert_eq!(r2.button(*btn), parsed.button(*btn),
-                "roundtrip mismatch for {}", btn.name());
+            assert_eq!(
+                r2.button(*btn),
+                parsed.button(*btn),
+                "roundtrip mismatch for {}",
+                btn.name()
+            );
         }
     }
 
@@ -667,9 +751,12 @@ mod tests {
     #[test]
     fn sticks_triggers_roundtrip() {
         let mut src = raw_buf();
-        src[1] = 0x80; src[2] = 0x40; // left stick
-        src[3] = 0xFF; src[4] = 0x00; // right stick
-        src[5] = 0xC0; src[6] = 0x20; // triggers
+        src[1] = 0x80;
+        src[2] = 0x40; // left stick
+        src[3] = 0xFF;
+        src[4] = 0x00; // right stick
+        src[5] = 0xC0;
+        src[6] = 0x20; // triggers
 
         let s = parse_input_report(&src).unwrap();
         let mut dst = raw_buf();
@@ -693,11 +780,30 @@ mod tests {
     }
 
     static ALL_BUTTONS: &[Button] = &[
-        Button::Square, Button::Cross, Button::Circle, Button::Triangle,
-        Button::L1, Button::R1, Button::L2, Button::R2,
-        Button::Create, Button::Options, Button::L3, Button::R3,
-        Button::PS, Button::Touchpad, Button::TouchpadLeft, Button::TouchpadRight, Button::Mic,
-        Button::DpadUp, Button::DpadDown, Button::DpadLeft, Button::DpadRight,
-        Button::FnLeft, Button::FnRight, Button::LeftPaddle, Button::RightPaddle,
+        Button::Square,
+        Button::Cross,
+        Button::Circle,
+        Button::Triangle,
+        Button::L1,
+        Button::R1,
+        Button::L2,
+        Button::R2,
+        Button::Create,
+        Button::Options,
+        Button::L3,
+        Button::R3,
+        Button::PS,
+        Button::Touchpad,
+        Button::TouchpadLeft,
+        Button::TouchpadRight,
+        Button::Mic,
+        Button::DpadUp,
+        Button::DpadDown,
+        Button::DpadLeft,
+        Button::DpadRight,
+        Button::FnLeft,
+        Button::FnRight,
+        Button::LeftPaddle,
+        Button::RightPaddle,
     ];
 }

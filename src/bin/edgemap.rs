@@ -1,21 +1,21 @@
-#[path = "../report.rs"]
-#[allow(dead_code)]
-mod report;
-#[path = "../mapping.rs"]
-#[allow(dead_code)]
-mod mapping;
-#[path = "../keyboard.rs"]
-#[allow(dead_code)]
-mod keyboard;
 #[path = "../config.rs"]
 #[allow(dead_code)]
 mod config;
-#[path = "../shutdown.rs"]
-#[allow(dead_code)]
-mod shutdown;
 #[path = "../control.rs"]
 #[allow(dead_code)]
 mod control;
+#[path = "../keyboard.rs"]
+#[allow(dead_code)]
+mod keyboard;
+#[path = "../mapping.rs"]
+#[allow(dead_code)]
+mod mapping;
+#[path = "../report.rs"]
+#[allow(dead_code)]
+mod report;
+#[path = "../shutdown.rs"]
+#[allow(dead_code)]
+mod shutdown;
 
 use std::env;
 use std::io::{self, Write};
@@ -92,9 +92,10 @@ fn resolve_xdg_dir(
 
 fn xdg_dir(var: &str, fallback: &Path) -> Result<PathBuf, String> {
     let xdg = env::var_os(var).map(PathBuf::from);
-    if xdg.as_deref().is_some_and(|path| {
-        !path.as_os_str().is_empty() && path.is_absolute()
-    }) {
+    if xdg
+        .as_deref()
+        .is_some_and(|path| !path.as_os_str().is_empty() && path.is_absolute())
+    {
         return resolve_xdg_dir(xdg.as_deref(), None, fallback);
     }
     let home = required_home()?;
@@ -201,23 +202,19 @@ impl DaemonMonitor {
                 )
             })?
             .to_os_string();
-        let config_watch = inotify
-            .add_watch(&config_dir, watch_flags)
-            .map_err(|e| {
-                format!(
-                    "failed to watch path: path={}, error={e}",
-                    config_dir.display()
-                )
-            })?;
+        let config_watch = inotify.add_watch(&config_dir, watch_flags).map_err(|e| {
+            format!(
+                "failed to watch path: path={}, error={e}",
+                config_dir.display()
+            )
+        })?;
         let runtime_exists = Path::new(DSEUHID_RUNTIME_DIR).is_dir();
         let runtime_watch = if runtime_exists {
             Some(
                 inotify
                     .add_watch(DSEUHID_RUNTIME_DIR, watch_flags)
                     .map_err(|e| {
-                        format!(
-                            "failed to watch path: path={DSEUHID_RUNTIME_DIR}, error={e}"
-                        )
+                        format!("failed to watch path: path={DSEUHID_RUNTIME_DIR}, error={e}")
                     })?,
             )
         } else {
@@ -229,9 +226,7 @@ impl DaemonMonitor {
             Some(
                 inotify
                     .add_watch(RUN_DIR, run_discovery_flags())
-                    .map_err(|e| {
-                        format!("failed to watch path: path={RUN_DIR}, error={e}")
-                    })?,
+                    .map_err(|e| format!("failed to watch path: path={RUN_DIR}, error={e}"))?,
             )
         };
         let config_name = config_path
@@ -305,17 +300,13 @@ impl DaemonMonitor {
                 self.inotify
                     .add_watch(DSEUHID_RUNTIME_DIR, daemon_watch_flags())
                     .map_err(|e| {
-                        format!(
-                            "failed to watch path: path={DSEUHID_RUNTIME_DIR}, error={e}"
-                        )
+                        format!("failed to watch path: path={DSEUHID_RUNTIME_DIR}, error={e}")
                     })?,
             );
             if let Some(run_watch) = self.run_watch.take() {
-                self.inotify
-                    .rm_watch(run_watch)
-                    .map_err(|e| {
-                        format!("failed to remove path watch: path={RUN_DIR}, error={e}")
-                    })?;
+                self.inotify.rm_watch(run_watch).map_err(|e| {
+                    format!("failed to remove path watch: path={RUN_DIR}, error={e}")
+                })?;
             }
         }
         Ok(())
@@ -326,9 +317,7 @@ impl DaemonMonitor {
             self.run_watch = Some(
                 self.inotify
                     .add_watch(RUN_DIR, run_discovery_flags())
-                    .map_err(|e| {
-                        format!("failed to watch path: path={RUN_DIR}, error={e}")
-                    })?,
+                    .map_err(|e| format!("failed to watch path: path={RUN_DIR}, error={e}"))?,
             );
         }
         Ok(())
@@ -509,9 +498,7 @@ fn send_notification(summary: &str, body: &str) {
     }
 }
 
-fn reap_child(
-    mut child: std::process::Child,
-) -> std::io::Result<std::thread::JoinHandle<()>> {
+fn reap_child(mut child: std::process::Child) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name("edgemap-child-reaper".to_string())
         .spawn(move || {
@@ -557,9 +544,10 @@ fn send_daemon_control_request(
             match packet {
                 control::ServerPacket::State(new_state) => *state = new_state,
                 control::ServerPacket::OkSwitchConfig
-                    if matches!(request, control::ControlRequest::SwitchConfig(_)) => {
-                        return Ok(())
-                    }
+                    if matches!(request, control::ControlRequest::SwitchConfig(_)) =>
+                {
+                    return Ok(())
+                }
                 control::ServerPacket::Error { code, message } => {
                     return Err(DaemonRequestError::Failed(format!("{code}: {message}")))
                 }
@@ -598,9 +586,9 @@ fn send_daemon_control_request(
                     let _ = shutdown.consume();
                     return Err(DaemonRequestError::Shutdown);
                 }
-                if socket_events.intersects(
-                    PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL,
-                ) {
+                if socket_events
+                    .intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL)
+                {
                     return Err(DaemonRequestError::Failed(
                         "dseuhid control socket disconnected".to_string(),
                     ));
@@ -659,7 +647,9 @@ fn connect_control() -> Result<(control::ControlClient, control::ControlState), 
     }
 }
 
-fn send_control_request(request: &control::ControlRequest) -> Result<control::ControlState, String> {
+fn send_control_request(
+    request: &control::ControlRequest,
+) -> Result<control::ControlState, String> {
     let (client, mut state) = connect_control()?;
     client.send_request(request).map_err(|e| e.to_string())?;
     let deadline = Instant::now() + CONTROL_TIMEOUT;
@@ -667,7 +657,10 @@ fn send_control_request(request: &control::ControlRequest) -> Result<control::Co
         match wait_for_control_packet(&client, deadline)? {
             control::ServerPacket::State(new_state) => state = new_state,
             control::ServerPacket::OkSwitchConfig
-                if matches!(request, control::ControlRequest::SwitchConfig(_)) => return Ok(state),
+                if matches!(request, control::ControlRequest::SwitchConfig(_)) =>
+            {
+                return Ok(state)
+            }
             control::ServerPacket::Error { code, message } => {
                 return Err(format!("{code}: {message}"));
             }
@@ -687,7 +680,11 @@ fn read_cmdline(pid: u32) -> Option<String> {
     if data.is_empty() {
         return None;
     }
-    Some(String::from_utf8_lossy(&data).replace('\0', " ").to_lowercase())
+    Some(
+        String::from_utf8_lossy(&data)
+            .replace('\0', " ")
+            .to_lowercase(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -812,11 +809,14 @@ fn cmd_validate(args: &[String]) -> ! {
     let mut ok = 0;
     let mut fail = 0;
     let mut entries: Vec<_> = match std::fs::read_dir(&dir) {
-        Ok(d) => d.flatten().filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|n| n.ends_with(".toml") && n != EDGEMAP_CONFIG_FILE)
-        }).collect(),
+        Ok(d) => d
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.ends_with(".toml") && n != EDGEMAP_CONFIG_FILE)
+            })
+            .collect(),
         Err(e) => {
             eprintln!(
                 "error: failed to read config directory '{}': {e}",
@@ -834,7 +834,11 @@ fn cmd_validate(args: &[String]) -> ! {
         match load(path.to_str().unwrap()) {
             Ok(cfg) => match config::validate(&cfg) {
                 Ok(()) => {
-                    let note = if cfg.buttons.is_empty() { " (passthrough only)" } else { "" };
+                    let note = if cfg.buttons.is_empty() {
+                        " (passthrough only)"
+                    } else {
+                        ""
+                    };
                     println!("  OK    {display}{note}");
                     ok += 1;
                 }
@@ -869,9 +873,7 @@ fn cmd_create_config(args: &[String]) -> ! {
         }
         if let Some(parent) = Path::new(path).parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!(
-                    "error: failed to create parent directory for '{path}': {e}"
-                );
+                eprintln!("error: failed to create parent directory for '{path}': {e}");
                 std::process::exit(1);
             }
         }
@@ -977,7 +979,8 @@ fn extract_profile_order(raw: &str) -> Vec<String> {
     raw.lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            trimmed.strip_prefix("[profiles.")
+            trimmed
+                .strip_prefix("[profiles.")
                 .and_then(|rest| rest.strip_suffix(']'))
                 .map(|s| s.to_string())
         })
@@ -999,7 +1002,8 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
     })?;
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
-    let base_config_raw = root.get("config")
+    let base_config_raw = root
+        .get("config")
         .and_then(|v| v.as_str())
         .unwrap_or(DEFAULT_CONFIG_FILE)
         .to_string();
@@ -1024,7 +1028,10 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
     // sort by declaration order in the TOML file
     let decl_order = extract_profile_order(&content);
     profiles.sort_by_key(|(name, _)| {
-        decl_order.iter().position(|n| n == name).unwrap_or(usize::MAX)
+        decl_order
+            .iter()
+            .position(|n| n == name)
+            .unwrap_or(usize::MAX)
     });
 
     let mut valid_profiles: Vec<(String, String)> = Vec::new();
@@ -1066,8 +1073,9 @@ fn cmd_daemon(args: &[String]) -> ! {
 
     let edgemap_config_path = match config_arg {
         Some(path) if Path::new(path).is_absolute() => Ok(PathBuf::from(path)),
-        Some(path) if path.starts_with('~') => resolve_config_path(path, Path::new(""))
-            .map(PathBuf::from),
+        Some(path) if path.starts_with('~') => {
+            resolve_config_path(path, Path::new("")).map(PathBuf::from)
+        }
         Some(path) => edgemap_config_dir()
             .and_then(|dir| resolve_config_path(path, &dir))
             .map(PathBuf::from),
@@ -1084,15 +1092,12 @@ fn cmd_daemon(args: &[String]) -> ! {
         log::error!("failed to resolve state directory: {e}");
         std::process::exit(1);
     });
-    let _daemon_lock = control::DaemonLock::acquire_named(
-        &state_dir,
-        "edgemap.lock",
-        "edgemap daemon",
-    )
-    .unwrap_or_else(|e| {
-        log::error!("failed to acquire edgemap daemon lock: {e}");
-        std::process::exit(1);
-    });
+    let _daemon_lock =
+        control::DaemonLock::acquire_named(&state_dir, "edgemap.lock", "edgemap daemon")
+            .unwrap_or_else(|e| {
+                log::error!("failed to acquire edgemap daemon lock: {e}");
+                std::process::exit(1);
+            });
 
     let dir = edgemap_config_path.parent().unwrap_or(Path::new("."));
 
@@ -1220,7 +1225,9 @@ fn cmd_daemon(args: &[String]) -> ! {
                 if was_alive {
                     log::warn!(
                         "dseuhid control connection lost: reason={}",
-                        disconnect_reason.as_deref().unwrap_or("control socket closed")
+                        disconnect_reason
+                            .as_deref()
+                            .unwrap_or("control socket closed")
                     );
                 }
             } else if let Some(state) = control_state {
@@ -1395,7 +1402,9 @@ fn cmd_daemon(args: &[String]) -> ! {
             };
             match result {
                 Ok(()) => {
-                    let label = state.profiles.iter()
+                    let label = state
+                        .profiles
+                        .iter()
                         .find(|(_, pc)| {
                             resolve_config_path(&pc.config, &state.dir).as_deref()
                                 == Ok(target.as_str())
@@ -1504,14 +1513,9 @@ mod path_tests {
 
     #[test]
     fn tilde_config_path_requires_home() {
-        assert!(resolve_config_path_with_home("~/config.toml", Path::new("/base"), None)
-            .is_err());
+        assert!(resolve_config_path_with_home("~/config.toml", Path::new("/base"), None).is_err());
         assert_eq!(
-            resolve_config_path_with_home(
-                "~/config.toml",
-                Path::new("/base"),
-                Some("/home/test")
-            ),
+            resolve_config_path_with_home("~/config.toml", Path::new("/base"), Some("/home/test")),
             Ok("/home/test/config.toml".to_string())
         );
     }
@@ -1578,7 +1582,8 @@ mod path_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("edgemap-inotify-{}-{unique}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("edgemap-inotify-{}-{unique}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
         let config_path = dir.join("edgemap.toml");
         std::fs::write(&config_path, "config = \"default.toml\"\n").unwrap();
@@ -1669,11 +1674,7 @@ mod path_tests {
         assert!(monitor.config_parent_watch.is_some());
 
         std::fs::remove_dir(&root).unwrap();
-        let error = match monitor.wait(
-            Instant::now() + Duration::from_secs(1),
-            &shutdown,
-            None,
-        ) {
+        let error = match monitor.wait(Instant::now() + Duration::from_secs(1), &shutdown, None) {
             Err(error) => error,
             Ok(_) => panic!("config parent removal should fail the monitor"),
         };

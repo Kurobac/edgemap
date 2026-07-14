@@ -76,9 +76,7 @@ pub struct UhidDevice {
 }
 
 fn write_all_fd(fd: RawFd, data: &[u8]) -> io::Result<()> {
-    let written = unsafe {
-        libc::write(fd, data.as_ptr() as *const libc::c_void, data.len())
-    };
+    let written = unsafe { libc::write(fd, data.as_ptr() as *const libc::c_void, data.len()) };
     if written < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -118,7 +116,9 @@ fn parse_uhid_event(buf: &[u8]) -> io::Result<Option<UhidEvent>> {
             }
             let size = u16::from_le_bytes([buf[4100], buf[4101]]) as usize;
             if size > 4096 {
-                return Err(invalid_event(format!("UHID OUTPUT too large: {size} bytes")));
+                return Err(invalid_event(format!(
+                    "UHID OUTPUT too large: {size} bytes"
+                )));
             }
             let end = 4 + size;
             if buf.len() < end {
@@ -156,7 +156,9 @@ fn parse_uhid_event(buf: &[u8]) -> io::Result<Option<UhidEvent>> {
             let rtype = buf[9];
             let size = u16::from_le_bytes([buf[10], buf[11]]) as usize;
             if size > 4096 {
-                return Err(invalid_event(format!("UHID SET_REPORT too large: {size} bytes")));
+                return Err(invalid_event(format!(
+                    "UHID SET_REPORT too large: {size} bytes"
+                )));
             }
             let end = 12 + size;
             if buf.len() < end {
@@ -243,8 +245,7 @@ impl UhidDevice {
         let uniq_len = uniq_bytes.len().min(63);
         buf[off_uniq..off_uniq + uniq_len].copy_from_slice(&uniq_bytes[..uniq_len]);
 
-        buf[off_rd_size..off_rd_size + 2]
-            .copy_from_slice(&(rd_data.len() as u16).to_le_bytes());
+        buf[off_rd_size..off_rd_size + 2].copy_from_slice(&(rd_data.len() as u16).to_le_bytes());
         buf[off_bus..off_bus + 2].copy_from_slice(&bus.to_le_bytes());
         buf[off_vendor..off_vendor + 4].copy_from_slice(&vendor.to_le_bytes());
         buf[off_product..off_product + 4].copy_from_slice(&product.to_le_bytes());
@@ -337,9 +338,7 @@ impl UhidDevice {
         let mut buf = [0u8; UHID_EVENT_SIZE];
         let fd = self.fd.as_raw_fd();
 
-        let n = unsafe {
-            libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, UHID_EVENT_SIZE)
-        };
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, UHID_EVENT_SIZE) };
         if n < 0 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::WouldBlock {

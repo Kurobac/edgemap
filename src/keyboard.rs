@@ -3,11 +3,12 @@ use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 
-use log::info;
+use log::{info, warn};
 
 // uinput ioctls
 const UI_SET_EVBIT: u32 = 0x40045564;
 const UI_SET_KEYBIT: u32 = 0x40045565;
+const UI_DEV_DESTROY: u64 = (0x55u64 << 8) | 0x02;
 
 // key codes (from linux/input-event-codes.h)
 const KEY_A: u16 = 30;
@@ -131,9 +132,14 @@ impl Drop for KeyboardDevice {
     fn drop(&mut self) {
         self.flush_held();
         if let Some(fd) = &self.fd {
-            info!("virtual keyboard destroyed");
-            unsafe {
-                libc::ioctl(fd.as_raw_fd(), ((0x55u64) << 8) | (0x02u64));
+            let ret = unsafe { libc::ioctl(fd.as_raw_fd(), UI_DEV_DESTROY) };
+            if ret < 0 {
+                warn!(
+                    "failed to destroy virtual keyboard: {}",
+                    io::Error::last_os_error()
+                );
+            } else {
+                info!("uinput UI_DEV_DESTROY sent");
             }
         }
     }

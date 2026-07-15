@@ -5,7 +5,7 @@ mod control_session;
 mod daemon;
 mod paths;
 
-use cli::{cmd_create_config, cmd_switch_config, cmd_validate, print_usage};
+use cli::{cmd_capabilities, cmd_create_config, cmd_switch_config, cmd_validate, print_usage};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -14,6 +14,7 @@ fn main() {
         std::process::exit(1);
     }
     match args[1].as_str() {
+        "capabilities" => cmd_capabilities(&args),
         "v" | "validate" => cmd_validate(&args),
         "cc" | "create-config" => cmd_create_config(&args),
         "sc" | "switch-config" => cmd_switch_config(&args),

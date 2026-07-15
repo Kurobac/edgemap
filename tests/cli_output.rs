@@ -65,6 +65,20 @@ fn edgemap_help_uses_stdout() {
 }
 
 #[test]
+fn edgemap_capabilities_is_stable_parseable_toml() {
+    let output = edgemap(&["capabilities"]);
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let parsed: toml::Value = toml::from_str(stdout(&output)).unwrap();
+    assert_eq!(parsed["version"].as_integer(), Some(1));
+    assert_eq!(parsed["output_devices"][0].as_str(), Some("auto"));
+    assert_eq!(parsed["source_buttons"][0].as_str(), Some("cross"));
+    assert_eq!(parsed["keyboard_keys"][0]["name"].as_str(), Some("a"));
+    assert_eq!(parsed["keyboard_keys"][0]["code"].as_integer(), Some(30));
+}
+
+#[test]
 fn edgemap_missing_command_uses_stderr() {
     let output = edgemap(&[]);
 

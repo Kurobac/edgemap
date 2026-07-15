@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use dseuhid::{config, control};
+use dseuhid::{capabilities, config, control};
 
 use super::control_session::send_control_request;
 use super::paths::{edgemap_config_dir, resolve_config_path, EDGEMAP_CONFIG_FILE};
@@ -12,12 +12,23 @@ pub(crate) const USAGE: &str = concat!(
     "Usage: edgemap <COMMAND> [ARGS]\n",
     "\n",
     "Commands:\n",
+    "  capabilities                 Print GUI capability metadata as TOML\n",
     "  v, validate [PATH]           Validate one config or all configs\n",
     "  cc, create-config [PATH]     Create the default config; print it if PATH is omitted\n",
     "  sc, switch-config <PATH>     Switch to another config\n",
     "  d, daemon [--config <PATH>]  Watch dseuhid and manage config selection\n",
     "  help                         Print help\n",
 );
+
+pub(crate) fn cmd_capabilities(args: &[String]) -> ! {
+    if args.len() > 2 {
+        eprintln!("error: too many arguments");
+        eprintln!("Usage: edgemap capabilities");
+        std::process::exit(1);
+    }
+    print!("{}", capabilities::to_toml());
+    std::process::exit(0);
+}
 
 pub(crate) fn print_usage(to_stdout: bool) {
     if to_stdout {

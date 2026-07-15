@@ -5,11 +5,11 @@ use crate::model::Button;
 
 use super::MacroConfig;
 
-pub(super) fn is_valid_src(name: &str) -> bool {
+pub(crate) fn is_valid_src(name: &str) -> bool {
     Button::from_name(name).is_some() && name != "mic" && name != "l2_analog" && name != "r2_analog"
 }
 
-pub(super) fn is_valid_target(name: &str) -> bool {
+pub(crate) fn is_valid_target(name: &str) -> bool {
     if matches!(name, "combo" | "passthrough") {
         return true;
     }

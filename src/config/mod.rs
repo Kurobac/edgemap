@@ -1,7 +1,7 @@
 mod compile;
 mod io;
 mod schema;
-mod targets;
+pub(crate) mod targets;
 mod validate;
 
 pub use io::{ActiveConfig, MAX_CONFIG_FILE_SIZE};

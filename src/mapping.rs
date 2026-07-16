@@ -376,7 +376,8 @@ mod tests {
             s.right_stick_x
         }
 
-        let cases: Vec<(StickDir, fn(&GamepadState) -> u8, u8)> = vec![
+        type StickCase = (StickDir, fn(&GamepadState) -> u8, u8);
+        let cases: Vec<StickCase> = vec![
             (StickDir::LsUp, ls_y, 0),
             (StickDir::LsDown, ls_y, 255),
             (StickDir::LsLeft, ls_x, 0),

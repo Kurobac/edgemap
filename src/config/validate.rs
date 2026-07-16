@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use crate::mapping::StepTarget;
 use crate::model::Button;
 
-use super::targets::{is_valid_src, is_valid_target, resolve_step_target, resolve_target};
+use super::targets::{
+    is_reserved_macro_name, is_valid_src, is_valid_target, resolve_step_target, resolve_target,
+};
 use super::Config;
 
 pub fn validate(cfg: &Config) -> Result<(), String> {
@@ -163,6 +165,9 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             return Err(format!(
                 "Macro name '{name}' conflicts with a built-in target"
             ));
+        }
+        if is_reserved_macro_name(name) {
+            return Err(format!("Macro name '{name}' is reserved"));
         }
         if m.mode != "hold" && m.mode != "single" {
             return Err(format!("Macro '{name}': mode must be 'hold' or 'single'"));

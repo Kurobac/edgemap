@@ -136,6 +136,31 @@ class HelperTests(unittest.TestCase):
             package_gui.rename_macro(config, "one", "two")
         self.assertEqual(set(config["macros"]), {"one", "two"})
 
+    def test_profile_config_rejects_invalid_field_types(self):
+        cases = (
+            ('config = 1\n', "'config' must be a string"),
+            ('profiles = "invalid"\n', "'profiles' must be a table"),
+            (
+                '[profiles]\ngame = "invalid"\n',
+                "profile 'game' must be a table",
+            ),
+            (
+                '[profiles.game]\nconfig = 1\n',
+                "profile 'game' field 'config' must be a string",
+            ),
+            (
+                '[profiles.game]\nmatch_process = ["game"]\n',
+                "profile 'game' field 'match_process' must be a string",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "edgemap.toml"
+            for content, message in cases:
+                with self.subTest(content=content):
+                    path.write_text(content)
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        package_gui.load_profile_config(str(path))
+
 
 class WidgetTests(unittest.TestCase):
     @classmethod

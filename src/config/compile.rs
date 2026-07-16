@@ -4,7 +4,32 @@ use crate::mapping::{
 use crate::model::Button;
 
 use super::targets::{resolve_step_target, resolve_target_or_macro};
-use super::Config;
+use super::{Config, MacroConfig};
+
+fn compile_macro(
+    name: &str,
+    config: &MacroConfig,
+) -> Result<(MacroMode, Vec<crate::mapping::MacroStep>), String> {
+    let mode = match config.mode.as_str() {
+        "hold" => MacroMode::Hold,
+        "single" => MacroMode::Single,
+        _ => return Err(format!("Macro '{name}': mode must be 'hold' or 'single'")),
+    };
+    let steps = config
+        .sequence
+        .iter()
+        .map(|step| {
+            let action = resolve_step_target(&step.key)
+                .ok_or_else(|| format!("Macro '{name}': unknown key '{}'", step.key))?;
+            Ok(crate::mapping::MacroStep {
+                action,
+                press_ms: step.press_ms,
+                release_ms: step.release_ms,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((mode, steps))
+}
 
 impl Config {
     pub fn parse(source: &str, content: &str) -> Result<Self, String> {
@@ -104,7 +129,7 @@ impl Config {
         mapping.turbo_configs = self.build_turbo_configs();
         mapping.blocked_buttons = blocked_buttons;
         mapping.combo_configs = combo_configs;
-        mapping.macro_configs = self.build_macro_configs();
+        mapping.macro_configs = self.build_macro_configs()?;
         Ok(mapping)
     }
 
@@ -127,7 +152,7 @@ impl Config {
         configs
     }
 
-    pub fn build_macro_configs(&self) -> Vec<MacroRule> {
+    fn build_macro_configs(&self) -> Result<Vec<MacroRule>, String> {
         let mut configs = Vec::new();
         for (btn_name, btn_conf) in &self.buttons {
             if btn_conf.turbo {
@@ -147,20 +172,7 @@ impl Config {
                 Some(m) => m,
                 None => continue,
             };
-            let mode = match mcfg.mode.as_str() {
-                "single" => MacroMode::Single,
-                _ => MacroMode::Hold,
-            };
-            let steps = mcfg
-                .sequence
-                .iter()
-                .map(|s| crate::mapping::MacroStep {
-                    action: resolve_step_target(&s.key)
-                        .unwrap_or(crate::mapping::StepTarget::Gamepad(Button::Cross)),
-                    press_ms: s.press_ms,
-                    release_ms: s.release_ms,
-                })
-                .collect();
+            let (mode, steps) = compile_macro(macro_name, mcfg)?;
             configs.push(MacroRule {
                 trigger,
                 name: macro_name.to_string(),
@@ -179,20 +191,7 @@ impl Config {
                     Some(m) => m,
                     None => continue,
                 };
-                let mode = match mcfg.mode.as_str() {
-                    "single" => MacroMode::Single,
-                    _ => MacroMode::Hold,
-                };
-                let steps = mcfg
-                    .sequence
-                    .iter()
-                    .map(|s| crate::mapping::MacroStep {
-                        action: resolve_step_target(&s.key)
-                            .unwrap_or(crate::mapping::StepTarget::Gamepad(Button::Cross)),
-                        press_ms: s.press_ms,
-                        release_ms: s.release_ms,
-                    })
-                    .collect();
+                let (mode, steps) = compile_macro(&c.output, mcfg)?;
                 configs.push(MacroRule {
                     trigger: Button::Cross,
                     name: c.output.clone(),
@@ -202,6 +201,6 @@ impl Config {
                 });
             }
         }
-        configs
+        Ok(configs)
     }
 }

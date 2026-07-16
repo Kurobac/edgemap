@@ -19,6 +19,26 @@ pub(crate) struct DaemonWake {
     pub(crate) shutdown: bool,
 }
 
+pub(crate) struct DaemonActivity {
+    pub(crate) next_profile_scan: Instant,
+    pub(crate) config_changed: bool,
+    pub(crate) runtime_changed: bool,
+    pub(crate) profile_due: bool,
+    pub(crate) shutdown_requested: bool,
+}
+
+impl DaemonActivity {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_profile_scan: Instant::now() + PROFILE_INTERVAL,
+            config_changed: false,
+            runtime_changed: true,
+            profile_due: true,
+            shutdown_requested: false,
+        }
+    }
+}
+
 pub(crate) struct DaemonMonitor {
     inotify: Inotify,
     pub(crate) config_watch: Option<WatchDescriptor>,
@@ -343,19 +363,15 @@ pub(crate) fn wait_for_daemon_activity(
     monitor: &mut DaemonMonitor,
     shutdown: &ShutdownSignal,
     control_client: Option<&control::ControlClient>,
-    next_profile_scan: &mut Instant,
-    config_changed: &mut bool,
-    runtime_changed: &mut bool,
-    profile_due: &mut bool,
-    shutdown_requested: &mut bool,
+    activity: &mut DaemonActivity,
 ) -> Result<(), String> {
-    let wake = monitor.wait(*next_profile_scan, shutdown, control_client)?;
-    *config_changed |= wake.config_changed;
-    *runtime_changed |= wake.runtime_changed;
-    *shutdown_requested |= wake.shutdown;
+    let wake = monitor.wait(activity.next_profile_scan, shutdown, control_client)?;
+    activity.config_changed |= wake.config_changed;
+    activity.runtime_changed |= wake.runtime_changed;
+    activity.shutdown_requested |= wake.shutdown;
     if wake.profile_due {
-        *profile_due = true;
-        *next_profile_scan = Instant::now() + PROFILE_INTERVAL;
+        activity.profile_due = true;
+        activity.next_profile_scan = Instant::now() + PROFILE_INTERVAL;
     }
     Ok(())
 }

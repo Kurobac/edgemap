@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
@@ -11,7 +12,7 @@ pub(crate) mod profile;
 
 #[cfg(test)]
 use monitor::{is_runtime_file, watch_parent};
-use monitor::{wait_for_daemon_activity, DaemonMonitor};
+use monitor::{wait_for_daemon_activity, DaemonActivity, DaemonMonitor};
 use profile::{find_matching_profile, ProfileConfig};
 #[cfg(test)]
 use profile::{profile_matches, ProcessSnapshot};
@@ -20,8 +21,6 @@ use dseuhid::{config, control, shutdown};
 use shutdown::{unblock_shutdown_signals_in_child, ShutdownSignal};
 
 const DEFAULT_CONFIG_FILE: &str = "default.toml";
-const PROFILE_INTERVAL: Duration = Duration::from_secs(3);
-
 fn needs_config_became_true(previous: Option<bool>, current: bool) -> bool {
     current && previous != Some(true)
 }
@@ -250,20 +249,19 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
     let mut control_client: Option<control::ControlClient> = None;
     let mut control_state: Option<control::ControlState> = None;
     let mut warned_not_running = false;
-    let mut config_changed = false;
-    let mut runtime_changed = true;
-    let mut profile_due = true;
-    let mut shutdown_requested = false;
-    let mut next_profile_scan = Instant::now() + PROFILE_INTERVAL;
+    let mut activity = DaemonActivity::new();
 
-    while !shutdown_requested {
-        if config_changed {
-            config_changed = false;
+    let run_result: Result<(), String> = loop {
+        if activity.shutdown_requested {
+            break Ok(());
+        }
+        if activity.config_changed {
+            activity.config_changed = false;
             match load_edgemap_config(&config_path) {
                 Ok(s) => {
                     state = s;
                     current_config.clear();
-                    profile_due = true;
+                    activity.profile_due = true;
                     log::info!("edgemap config reloaded: path={}", config_path.display());
                 }
                 Err(e) => {
@@ -272,8 +270,8 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
             }
         }
 
-        if runtime_changed {
-            runtime_changed = false;
+        if activity.runtime_changed {
+            activity.runtime_changed = false;
             let previous_state = control_state;
             let was_alive = control_client.is_some();
             let mut disconnect_reason = None;
@@ -329,7 +327,7 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
                 let previous_needs = previous_state.map(|old| old.needs_config);
                 if needs_config_became_true(previous_needs, state.needs_config) {
                     current_config.clear();
-                    profile_due = true;
+                    activity.profile_due = true;
                 }
             }
         }
@@ -339,35 +337,25 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
                 &mut monitor,
                 &shutdown,
                 control_client.as_ref(),
-                &mut next_profile_scan,
-                &mut config_changed,
-                &mut runtime_changed,
-                &mut profile_due,
-                &mut shutdown_requested,
+                &mut activity,
             ) {
-                log::error!("daemon wait failed: {e}");
-                break;
+                break Err(format!("daemon wait failed: {e}"));
             }
             continue;
         }
 
-        if !profile_due {
+        if !activity.profile_due {
             if let Err(e) = wait_for_daemon_activity(
                 &mut monitor,
                 &shutdown,
                 control_client.as_ref(),
-                &mut next_profile_scan,
-                &mut config_changed,
-                &mut runtime_changed,
-                &mut profile_due,
-                &mut shutdown_requested,
+                &mut activity,
             ) {
-                log::error!("daemon wait failed: {e}");
-                break;
+                break Err(format!("daemon wait failed: {e}"));
             }
             continue;
         }
-        profile_due = false;
+        activity.profile_due = false;
 
         let wanted = if state.valid_profiles.is_empty() {
             state.base_config.clone()
@@ -387,14 +375,9 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
                         &mut monitor,
                         &shutdown,
                         control_client.as_ref(),
-                        &mut next_profile_scan,
-                        &mut config_changed,
-                        &mut runtime_changed,
-                        &mut profile_due,
-                        &mut shutdown_requested,
+                        &mut activity,
                     ) {
-                        log::error!("daemon wait failed: {wait_error}");
-                        break;
+                        break Err(format!("daemon wait failed: {wait_error}"));
                     }
                     continue;
                 }
@@ -445,14 +428,9 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
                             &mut monitor,
                             &shutdown,
                             control_client.as_ref(),
-                            &mut next_profile_scan,
-                            &mut config_changed,
-                            &mut runtime_changed,
-                            &mut profile_due,
-                            &mut shutdown_requested,
+                            &mut activity,
                         ) {
-                            log::error!("daemon wait failed: {wait_error}");
-                            break;
+                            break Err(format!("daemon wait failed: {wait_error}"));
                         }
                         continue;
                     };
@@ -464,14 +442,9 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
                         &mut monitor,
                         &shutdown,
                         control_client.as_ref(),
-                        &mut next_profile_scan,
-                        &mut config_changed,
-                        &mut runtime_changed,
-                        &mut profile_due,
-                        &mut shutdown_requested,
+                        &mut activity,
                     ) {
-                        log::error!("daemon wait failed: {wait_error}");
-                        break;
+                        break Err(format!("daemon wait failed: {wait_error}"));
                     }
                     continue;
                 }
@@ -503,11 +476,11 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
                     current_config = target;
                 }
                 Err(DaemonRequestError::Shutdown) => {
-                    break;
+                    break Ok(());
                 }
                 Err(DaemonRequestError::Failed(e)) => {
                     log::warn!("dseuhid control request failed: {e}");
-                    runtime_changed = true;
+                    activity.runtime_changed = true;
                 }
             }
         }
@@ -515,19 +488,17 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
             &mut monitor,
             &shutdown,
             control_client.as_ref(),
-            &mut next_profile_scan,
-            &mut config_changed,
-            &mut runtime_changed,
-            &mut profile_due,
-            &mut shutdown_requested,
+            &mut activity,
         ) {
-            log::error!("daemon wait failed: {e}");
-            break;
+            break Err(format!("daemon wait failed: {e}"));
         }
-    }
+    };
 
+    if let Err(error) = &run_result {
+        log::error!("{error}");
+    }
     log::info!("edgemap daemon stopped");
-    std::process::exit(0);
+    std::process::exit(if run_result.is_ok() { 0 } else { 1 });
 }
 
 #[cfg(test)]

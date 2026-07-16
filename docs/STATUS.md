@@ -1,4 +1,4 @@
-# edgemap — Project Status (2026-07-15)
+# edgemap — Project Status (2026-07-17)
 
 ## Overview
 
@@ -52,7 +52,9 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - Replaced path-based runtime configuration loading with a bounded content transfer. `edgemap switch-config` reads and validates a regular file up to 64 KiB under the caller's permissions, then sends its source label and complete TOML content in one seqpacket; dseuhid never opens the client-provided path.
 - Added `ActiveConfig` so output-device-driven UHID recreation reuses the exact configuration content that was acknowledged, even if the source file changes afterward.
 - Removed the `reload` request, CLI command, zsh completion, and systemd `ExecReload`. Runtime configuration now has one transactional operation: `switch-config`.
-- Test suite: 243 Rust tests (136 dseuhid, 99 edgemap, 8 CLI integration) plus 21 GUI tests.
+- Added a shared package library and split the daemon, proxy, codec, device, config, control, and edgemap binary into responsibility-focused modules without changing the external protocols or configuration format.
+- Split the GUI source into `gui/edgemap_gui/`, added the stable `edgemap capabilities` TOML contract, and retained `edgemap-gui-v6.py` as a deterministic single-file zipapp for the existing installation layout.
+- Test suite: 171 Rust tests (82 library, 67 dseuhid, 13 edgemap, 9 CLI integration) plus 29 GUI tests.
 
 ## v1.2.1 Release Notes
 
@@ -195,7 +197,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - `TargetCodec` owns virtual target input encoding, target output decoding, USB identity, and target GET_REPORT seed/fallback behavior.
 - `PhysicalCodec` owns physical output encoding, SET_REPORT forwarding policy, and which physical feature reports are safe to cache.
 - DS5 USB target keeps the DS5 USB source report as backing where possible. DS4 target converts input/output through DS4-specific USB report code.
-- DS5/DS4 USB byte layout helpers in `report.rs` are wire-format routines, not a transport-neutral HID model.
+- DS5/DS4 USB byte layout helpers live in their protocol-specific `src/codec/` modules; transport-neutral controller state lives in `src/model.rs`.
 - DS5 BT source input uses a BT-specific codec and USB-compatible backing; DS5 BT physical output wraps USB target output into the 0x31 Bluetooth main-output envelope. BT physical GET_REPORT cache validates the 0xA3 feature CRC and keeps full-size 0x05/0x20 reports for the USB virtual target.
 
 ### Error Handling Policy
@@ -253,23 +255,25 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Multi-device: warn if more than one DualSense detected
 - Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
 
-### Rust Unit Tests (223 total: 127 dseuhid + 96 edgemap, all passing)
+### Rust Tests (171 total, all passing)
 
-| Binary | Tests | Coverage |
+| Target | Tests | Coverage |
 |--------|-------|----------|
-| `dseuhid` | 127 | codec/config/mapping/report behavior; bounded config loading; libudev filtering and initialized-node handling; seqpacket limits/protocol and daemon locks; signalfd shutdown; Proxy repeat behavior; UHID and keyboard error paths |
-| `edgemap` | 96 | shared bounded config loading and config/mapping/report/control behavior; XDG and profile matching; config inotify recreation; child reaping; signalfd shutdown |
+| library | 82 | capabilities, config, mapping, bounded loading, control protocol/limits, daemon locks, keycodes, and signalfd shutdown |
+| `dseuhid` | 67 | codec formats, device discovery, keyboard state, proxy pipeline/repeat, daemon/session policy, and UHID parsing |
+| `edgemap` | 13 | XDG paths, profile matching, config inotify recovery/failure, child reaping, and daemon state transitions |
+| CLI integration | 9 | help/error streams, exit behavior, create/validate output, and capabilities TOML |
 
-### GUI Tests (21 total, PyQt6 offscreen)
+### GUI Tests (29 total, PyQt6 offscreen)
 
-Coverage includes save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device serialization, DS4 selection warning behavior, keyboard picker state, action-button styling, and Rust validator compatibility.
+Coverage includes capability-contract parsing, deterministic zipapp generation, profile schema errors, save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device serialization, DS4 selection warning behavior, keyboard picker state, action-button styling, and Rust validator compatibility.
 
 ### Tools
 | Tool | Binary | Description |
 |------|--------|-------------|
 | `dseuhid` | main | UHID proxy daemon (`-c`/`--config-path`, `version`, `help` subcommands) |
-| `edgemap` | `src/bin/edgemap.rs` | User-side CLI: validate, create-config, switch-config (no root). Daemon mode (d/daemon): auto-create config, profile auto-switch, inotify config reload, seqpacket state subscription, notify-send |
-| `edgemap-gui-v6.py` | GUI | PyQt6 config editor: XDG-aware config paths, remap/turbo/combo/macro editing, macro reference management, safe TOML serialization |
+| `edgemap` | `src/bin/edgemap/` | User-side CLI: capabilities, validate, create-config, switch-config (no root). Daemon mode (d/daemon): auto-create config, profile auto-switch, inotify config reload, seqpacket state subscription, notify-send |
+| `edgemap-gui-v6.py` | `gui/edgemap_gui/` | Deterministically packaged PyQt6 editor: Rust-provided capabilities, XDG-aware paths, remap/turbo/combo/macro editing, macro reference management, and safe TOML serialization |
 | `completions/` | zsh | zsh completions for `dseuhid` and `edgemap` commands (validate/switch-config auto-complete configs from `~/.config/edgemap/`) |
 
 ## Bugfixes (chronological)

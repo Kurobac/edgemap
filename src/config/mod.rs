@@ -6,6 +6,7 @@ mod validate;
 
 pub use io::{ActiveConfig, MAX_CONFIG_FILE_SIZE};
 pub use schema::{ButtonConfig, ComboConfig, Config, MacroConfig, MacroStep};
+pub use targets::is_reserved_macro_name;
 
 pub use validate::validate;
 pub const ALL_BUTTON_NAMES: &[&str] = &[
@@ -461,6 +462,21 @@ mod tests {
     }
 
     #[test]
+    fn mapping_compile_rejects_invalid_macro_without_prior_validation() {
+        let unknown_key = parse("[left_paddle]\nremap = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"banana\"\npress_ms = 0\nrelease_ms = 100\n");
+        assert_eq!(
+            unknown_key.to_mapping_config().unwrap_err(),
+            "Macro 'm': unknown key 'banana'"
+        );
+
+        let invalid_mode = parse("[left_paddle]\nremap = \"m\"\n[macros.m]\nmode = \"repeat\"\n[[macros.m.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 100\n");
+        assert_eq!(
+            invalid_mode.to_mapping_config().unwrap_err(),
+            "Macro 'm': mode must be 'hold' or 'single'"
+        );
+    }
+
+    #[test]
     fn macro_name_conflict() {
         let e = validate(&parse("[left_paddle]\nremap = \"cross\"\n[macros.cross]\n[[macros.cross.sequence]]\nkey = \"circle\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
         assert!(e.contains("conflicts with a standard button name"));
@@ -497,6 +513,17 @@ mod tests {
     fn macro_name_target_conflict() {
         let e = validate(&parse("[left_paddle]\nremap = \"l2_full\"\n[macros.l2_full]\n[[macros.l2_full.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
         assert!(e.contains("conflicts with a built-in target"));
+    }
+
+    #[test]
+    fn macro_reserved_remap_names_conflict() {
+        for name in ["block", "combo", "macro"] {
+            let cfg = parse(&format!(
+                "[left_paddle]\nremap = \"cross\"\n[macros.{name}]\n[[macros.{name}.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 100\n"
+            ));
+            let error = validate(&cfg).unwrap_err();
+            assert_eq!(error, format!("Macro name '{name}' is reserved"));
+        }
     }
 
     #[test]

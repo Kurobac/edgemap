@@ -97,13 +97,13 @@ Patch behavior:
 | Feature | Status | File |
 |---------|--------|------|
 | DS4 HID descriptor | Implemented | `src/descriptor.rs` |
-| DS4 input report writer | Implemented | `src/report.rs` |
-| DS4 output report conversion | Implemented | `src/report.rs` |
-| Feature report cache (`0x02`, `0x12`, `0xA3`) | Implemented | `src/main.rs` |
-| DS4 virtual identity (`Wireless Controller`, PID `0x09CC`) | Implemented | `src/main.rs` |
-| `output_device = "dualshock4"` config | Beta | `src/config.rs` |
-| GUI Output Device selector | Beta | `edgemap-gui-v6.py` |
-| UHID recreation on output device change | Implemented | `src/proxy.rs` |
+| DS4 input report writer | Implemented | `src/codec/ds4_usb.rs` |
+| DS4 output report conversion | Implemented | `src/codec/ds4_usb.rs` |
+| Feature report cache (`0x02`, `0x12`, `0xA3`) | Implemented | `src/codec/feature.rs` |
+| DS4 virtual identity (`Wireless Controller`, PID `0x09CC`) | Implemented | `src/codec/mod.rs` |
+| `output_device = "dualshock4"` config | Beta | `src/config/` |
+| GUI Output Device selector | Beta | `gui/edgemap_gui/editor.py` |
+| UHID recreation on output device change | Implemented | `src/proxy/mod.rs`, `src/daemon.rs` |
 
 ## Compatibility notes
 

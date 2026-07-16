@@ -44,6 +44,12 @@ pub(crate) fn is_valid_target(name: &str) -> bool {
     )
 }
 
+pub fn is_reserved_macro_name(name: &str) -> bool {
+    Button::from_name(name).is_some()
+        || resolve_target(name).is_some()
+        || matches!(name, "block" | "combo" | "macro" | "passthrough")
+}
+
 pub(super) fn resolve_target(name: &str) -> Option<Target> {
     match name {
         "l2_full" => Some(Target::TriggerFull(Trigger::L2)),

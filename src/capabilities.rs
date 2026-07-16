@@ -108,6 +108,9 @@ pub fn to_toml() -> String {
     ]);
     reserved_macro_names.sort_unstable();
     reserved_macro_names.dedup();
+    debug_assert!(reserved_macro_names
+        .iter()
+        .all(|name| crate::config::is_reserved_macro_name(name)));
     write_string_array(&mut output, "reserved_macro_names", &reserved_macro_names);
 
     for name in KEYCODE_NAMES {
@@ -123,6 +126,8 @@ pub fn to_toml() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     #[test]
@@ -159,5 +164,36 @@ mod tests {
         }
         assert!(SOURCE_BUTTONS.contains(&"touchpad_left"));
         assert!(SOURCE_BUTTONS.contains(&"touchpad_right"));
+
+        let advertised_sources: HashSet<_> = SOURCE_BUTTONS.iter().copied().collect();
+        let valid_sources: HashSet<_> = crate::model::ALL_BUTTONS
+            .iter()
+            .map(|button| button.name())
+            .filter(|name| crate::config::targets::is_valid_src(name))
+            .collect();
+        assert_eq!(advertised_sources, valid_sources);
+
+        let advertised_gamepad_targets: HashSet<_> = GAMEPAD_TARGETS.iter().copied().collect();
+        let valid_gamepad_targets: HashSet<_> = crate::model::ALL_BUTTONS
+            .iter()
+            .map(|button| button.name())
+            .filter(|name| crate::config::targets::is_valid_target(name))
+            .collect();
+        assert_eq!(advertised_gamepad_targets, valid_gamepad_targets);
+    }
+
+    #[test]
+    fn advertised_macro_names_match_validator_reservations() {
+        let parsed: toml::Value = toml::from_str(&to_toml()).unwrap();
+        let reserved = parsed["reserved_macro_names"].as_array().unwrap();
+
+        for name in reserved {
+            assert!(crate::config::is_reserved_macro_name(
+                name.as_str().unwrap()
+            ));
+        }
+        for name in ["block", "combo", "macro", "passthrough"] {
+            assert!(reserved.iter().any(|value| value.as_str() == Some(name)));
+        }
     }
 }

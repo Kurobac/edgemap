@@ -33,6 +33,35 @@ pub enum Button {
 }
 
 pub const BUTTON_COUNT: usize = 27;
+pub const ALL_BUTTONS: [Button; BUTTON_COUNT] = [
+    Button::Square,
+    Button::Cross,
+    Button::Circle,
+    Button::Triangle,
+    Button::L1,
+    Button::R1,
+    Button::L2,
+    Button::R2,
+    Button::Create,
+    Button::Options,
+    Button::L3,
+    Button::R3,
+    Button::PS,
+    Button::Touchpad,
+    Button::TouchpadLeft,
+    Button::TouchpadRight,
+    Button::Mic,
+    Button::DpadUp,
+    Button::DpadDown,
+    Button::DpadLeft,
+    Button::DpadRight,
+    Button::FnLeft,
+    Button::FnRight,
+    Button::LeftPaddle,
+    Button::RightPaddle,
+    Button::L2Analog,
+    Button::R2Analog,
+];
 
 impl Button {
     pub fn from_name(name: &str) -> Option<Self> {

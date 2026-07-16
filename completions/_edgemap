@@ -12,6 +12,7 @@ _edgemap() {
   case $state in
     cmds)
       _values "edgemap command" \
+        "capabilities[Print GUI capability metadata as TOML]" \
         "validate[Validate config file]" \
         "v[Validate config file]" \
         "create-config[Print default config template]" \

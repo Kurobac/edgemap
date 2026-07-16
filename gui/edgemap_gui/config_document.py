@@ -48,15 +48,40 @@ def load_profile_config(path: str) -> ConfigData:
     except OSError as error:
         raise RuntimeError(f"cannot read {profile_path}: {error}") from error
 
+    base_config = raw.get("config", "default.toml")
+    if not isinstance(base_config, str):
+        raise RuntimeError(f"invalid {profile_path}: 'config' must be a string")
+
+    raw_profiles = raw.get("profiles", {})
+    if not isinstance(raw_profiles, dict):
+        raise RuntimeError(f"invalid {profile_path}: 'profiles' must be a table")
+
     profiles = {}
-    for name, value in raw.get("profiles", {}).items():
+    for name, value in raw_profiles.items():
+        if not isinstance(value, dict):
+            raise RuntimeError(
+                f"invalid {profile_path}: profile '{name}' must be a table"
+            )
+        fields = {}
+        for field_name, default in (
+            ("config", "default.toml"),
+            ("match_process", ""),
+            ("match_cmdline", ""),
+        ):
+            field_value = value.get(field_name, default)
+            if not isinstance(field_value, str):
+                raise RuntimeError(
+                    f"invalid {profile_path}: profile '{name}' field "
+                    f"'{field_name}' must be a string"
+                )
+            fields[field_name] = field_value
         profiles[name] = {
-            "config": value.get("config", "default.toml"),
-            "match_process": value.get("match_process", ""),
-            "match_cmdline": value.get("match_cmdline", ""),
+            "config": fields["config"],
+            "match_process": fields["match_process"],
+            "match_cmdline": fields["match_cmdline"],
         }
     return {
-        "config": raw.get("config", "default.toml"),
+        "config": base_config,
         "profiles": profiles,
     }
 

@@ -8,14 +8,16 @@ pub(super) fn parse_input(data: &[u8]) -> Option<GamepadState> {
         return None;
     }
 
-    let mut state = GamepadState::default();
-    state.left_stick_x = data[1];
-    state.left_stick_y = data[2];
-    state.right_stick_x = data[3];
-    state.right_stick_y = data[4];
-    state.l2_analog = data[5];
-    state.r2_analog = data[6];
-    state.seq_number = data[7];
+    let mut state = GamepadState {
+        left_stick_x: data[1],
+        left_stick_y: data[2],
+        right_stick_x: data[3],
+        right_stick_y: data[4],
+        l2_analog: data[5],
+        r2_analog: data[6],
+        seq_number: data[7],
+        ..GamepadState::default()
+    };
 
     let b0 = data[8];
     state.set_button(Button::Square, b0 & 0x10 != 0);

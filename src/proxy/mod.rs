@@ -444,10 +444,8 @@ impl Proxy {
                         let current = merge_keyboard_events(&pipeline.keyboard_events);
                         let mut failed_releases = Vec::new();
                         for &code in self.last_keyboard.keys() {
-                            if !current.contains_key(&code) {
-                                if !self.keyboard.release(code) {
-                                    failed_releases.push(code);
-                                }
+                            if !current.contains_key(&code) && !self.keyboard.release(code) {
+                                failed_releases.push(code);
                             }
                         }
                         for (&code, &pressed) in &current {

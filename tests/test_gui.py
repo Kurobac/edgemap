@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import tomllib
 import unittest
@@ -47,25 +48,51 @@ class HelperTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported capabilities version"):
             package_gui.Capabilities.from_toml("version = 2\n")
 
-    def test_committed_zipapp_matches_package_sources(self):
+    def test_installed_launcher_imports_private_package(self):
         with tempfile.TemporaryDirectory() as directory:
-            built = Path(directory) / "edgemap-gui"
-            subprocess.run(
-                [sys.executable, str(ROOT / "scripts" / "build_gui_zipapp.py"), str(built)],
-                check=True,
+            prefix = Path(directory)
+            launcher = prefix / "bin" / "edgemap-gui"
+            package = prefix / "lib" / "edgemap-gui" / "edgemap_gui"
+            launcher.parent.mkdir(parents=True)
+            package.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / "gui" / "edgemap-gui", launcher)
+            shutil.copytree(
+                ROOT / "gui" / "edgemap_gui",
+                package,
+                ignore=shutil.ignore_patterns("__pycache__"),
             )
-            self.assertEqual(built.read_bytes(), (ROOT / "edgemap-gui-v6.py").read_bytes())
+            self.assertTrue(launcher.stat().st_mode & 0o111)
+
             imported = subprocess.run(
                 [
                     sys.executable,
                     "-c",
-                    "import sys; sys.path.insert(0, sys.argv[1]); import edgemap_gui.app",
-                    str(built),
+                    "from importlib.machinery import SourceFileLoader; "
+                    "from importlib.util import module_from_spec, spec_from_loader; "
+                    "import sys; "
+                    "loader = SourceFileLoader('installed_edgemap_gui', sys.argv[1]); "
+                    "spec = spec_from_loader(loader.name, loader); "
+                    "module = module_from_spec(spec); "
+                    "loader.exec_module(module)",
+                    str(launcher),
                 ],
                 text=True,
                 capture_output=True,
             )
             self.assertEqual(imported.returncode, 0, imported.stderr)
+
+    def test_launcher_rejects_missing_private_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = Path(directory) / "bin" / "edgemap-gui"
+            launcher.parent.mkdir()
+            shutil.copy2(ROOT / "gui" / "edgemap-gui", launcher)
+            result = subprocess.run(
+                [sys.executable, str(launcher)],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("installation is incomplete", result.stderr)
 
     def test_config_document_tracks_saved_snapshot(self):
         document = package_gui.ConfigDocument({"version": 2})

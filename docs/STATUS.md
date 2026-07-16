@@ -53,8 +53,8 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - Added `ActiveConfig` so output-device-driven UHID recreation reuses the exact configuration content that was acknowledged, even if the source file changes afterward.
 - Removed the `reload` request, CLI command, zsh completion, and systemd `ExecReload`. Runtime configuration now has one transactional operation: `switch-config`.
 - Added a shared package library and split the daemon, proxy, codec, device, config, control, and edgemap binary into responsibility-focused modules without changing the external protocols or configuration format.
-- Split the GUI source into `gui/edgemap_gui/`, added the stable `edgemap capabilities` TOML contract, and retained `edgemap-gui-v6.py` as a deterministic single-file zipapp for the existing installation layout.
-- Test suite: 171 Rust tests (82 library, 67 dseuhid, 13 edgemap, 9 CLI integration) plus 29 GUI tests.
+- Split the GUI source into `gui/edgemap_gui/` and added the stable `edgemap capabilities` TOML contract. Packages install the source as a private Python module tree with a small `edgemap-gui` launcher; no generated zipapp is tracked.
+- Test suite: 171 Rust tests (82 library, 67 dseuhid, 13 edgemap, 9 CLI integration) plus 30 GUI tests.
 
 ## v1.2.1 Release Notes
 
@@ -264,16 +264,16 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 | `edgemap` | 13 | XDG paths, profile matching, config inotify recovery/failure, child reaping, and daemon state transitions |
 | CLI integration | 9 | help/error streams, exit behavior, create/validate output, and capabilities TOML |
 
-### GUI Tests (29 total, PyQt6 offscreen)
+### GUI Tests (30 total, PyQt6 offscreen)
 
-Coverage includes capability-contract parsing, deterministic zipapp generation, profile schema errors, save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device serialization, DS4 selection warning behavior, keyboard picker state, action-button styling, and Rust validator compatibility.
+Coverage includes capability-contract parsing, private-package launcher resolution, profile schema errors, save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device serialization, DS4 selection warning behavior, keyboard picker state, action-button styling, and Rust validator compatibility.
 
 ### Tools
 | Tool | Binary | Description |
 |------|--------|-------------|
 | `dseuhid` | main | UHID proxy daemon (`-c`/`--config-path`, `version`, `help` subcommands) |
 | `edgemap` | `src/bin/edgemap/` | User-side CLI: capabilities, validate, create-config, switch-config (no root). Daemon mode (d/daemon): auto-create config, profile auto-switch, inotify config reload, seqpacket state subscription, notify-send |
-| `edgemap-gui-v6.py` | `gui/edgemap_gui/` | Deterministically packaged PyQt6 editor: Rust-provided capabilities, XDG-aware paths, remap/turbo/combo/macro editing, macro reference management, and safe TOML serialization |
+| `edgemap-gui` | `gui/edgemap_gui/` | Privately installed PyQt6 package with a prefix-aware launcher: Rust-provided capabilities, XDG-aware paths, remap/turbo/combo/macro editing, macro reference management, and safe TOML serialization |
 | `completions/` | zsh | zsh completions for `dseuhid` and `edgemap` commands (validate/switch-config auto-complete configs from `~/.config/edgemap/`) |
 
 ## Bugfixes (chronological)

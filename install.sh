@@ -3,6 +3,13 @@ set -e
 
 install -m755 dseuhid /usr/local/bin/
 install -m755 edgemap /usr/local/bin/
+install -d /usr/local/lib/edgemap-gui
+gui_stage=$(mktemp -d /usr/local/lib/edgemap-gui/.edgemap_gui.XXXXXX)
+trap 'rm -rf "$gui_stage"' EXIT
+cp -a usr/local/lib/edgemap-gui/edgemap_gui/. "$gui_stage/"
+rm -rf /usr/local/lib/edgemap-gui/edgemap_gui
+mv "$gui_stage" /usr/local/lib/edgemap-gui/edgemap_gui
+trap - EXIT
 install -m755 edgemap-gui /usr/local/bin/
 install -Dm755 usr/lib/systemd/system/dseuhid.service /usr/lib/systemd/system/
 install -Dm644 usr/lib/systemd/user/edgemap.service /usr/lib/systemd/user/

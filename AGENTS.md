@@ -6,12 +6,12 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 243 tests total (136 dseuhid + 99 edgemap + 8 CLI integration)
+cargo test                # 171 tests total (82 library + 67 dseuhid + 13 edgemap + 9 CLI integration)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
 python3 edgemap-gui-v6.py        # config editor GUI (PyQt6)
-QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests -p 'test_gui.py' -v  # 21 GUI tests
+QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests -p 'test_gui.py' -v  # 29 GUI tests
 ```
 
 GitHub CI runs `cargo build`, `cargo test`, and the PyQt6 offscreen GUI test suite. No enforced lint or typecheck step exists.
@@ -30,20 +30,26 @@ makepkg -si              # build + install via PKGBUILD
 
 | File | Role |
 |------|------|
-| `src/main.rs` | Entry: subcommand dispatch → daemon lock/control socket setup → startup config load/validation → device detection → UHID create → proxy loop → reconnect |
-| `src/proxy.rs` | **Three-layer pipeline** (L1→L2→L3), epoll loop (hidraw + UHID + control socket), turbo/combo/macro runtimes, transactional config apply |
-| `src/control.rs` | `flock`-based single-instance guard plus versioned Unix `SOCK_SEQPACKET` server/client protocol, acknowledged commands, and `uhid_ready`/`needs_config` state snapshots |
-| `src/codec.rs` | Source/physical/target codec boundary: `SourceCodec`, `ControllerFrame`, `TargetCodec`, `PhysicalCodec`, feature report cache policy, output command wrappers |
+| `src/lib.rs` | Shared package library used by both binaries. Exposes capabilities, config, control, keycodes, mapping, model, and shutdown modules; it is not a promised third-party SDK. |
+| `src/main.rs` | Thin dseuhid entry: CLI dispatch, logging/root checks, and final handoff to `daemon::run()`. |
+| `src/daemon.rs` | Process-level daemon lifecycle: shutdown signal, daemon lock/control server, active config, controller reconnect loop, and UHID recreation decisions. |
+| `src/session.rs` | Builds one physical-controller session: hidraw, codecs, feature cache, UHID, keyboard, mapping, and Proxy. Returns typed session outcomes to the outer daemon loop. |
+| `src/proxy/` | epoll ownership and **three-layer pipeline** (L1→L2→L3). `pipeline.rs` performs fd-free transforms, `runtime.rs` owns turbo/combo/macro timing, `repeat.rs` owns BT cadence/sequence, and `uhid_events.rs` handles OUTPUT/GET/SET. |
+| `src/control/` | Versioned Unix `SOCK_SEQPACKET` protocol, complete packet transport, client/server, and `flock`-based named daemon locks. Public names are re-exported from `control/mod.rs`. |
+| `src/codec/` | Source/physical/target codec boundary. Protocol-specific wire formats live in `ds5_usb.rs`, `ds5_bt.rs`, and `ds4_usb.rs`; `feature.rs` owns feature-cache policy and `types.rs` owns transport frame/command types. |
 | `src/mapping.rs` | `MappingConfig` (remap rules, blocked_buttons, combo/macro configs), `Target` enum, `apply()` two-phase remap with snapshot isolation |
-| `src/config.rs` | `ActiveConfig` source/content snapshot plus bounded regular-file load (64 KiB) → TOML parse → `validate()` (37 rules) → `to_mapping_config()`. Combo, macro, turbo, remap all fully wired. `default_content()` for auto-created config. |
-| `src/report.rs` | DS5/DS4 USB wire-format helpers, `GamepadState`, `Button` enum. Not a transport-neutral HID model. |
-| `src/device.rs` | libudev-based initialized hidraw enumeration and hidraw/input hotplug monitoring for DSE Edge (0DF2) and regular DS (0CE6), USB or Bluetooth source. Waits for associated event/js nodes to finish udev initialization before hiding them, and skips UHID virtuals. Reads HID report descriptor from physical device via HIDIOCGRDESC; read failure aborts open. Node hiding via `chmod 000` + batch `setfacl --restore=-`. |
+| `src/model.rs` | Transport-neutral `Button`, `GamepadState`, and canonical button enumeration. Contains no USB/BT report offsets. |
+| `src/keycodes.rs` | Canonical keyboard names, Linux keycodes, and `resolve_keycode()` shared by config validation, capabilities, and uinput setup. |
+| `src/capabilities.rs` | Stable versioned TOML capability contract consumed by the GUI through `edgemap capabilities`. Publishes output devices, button/target sets, reserved macro names, and keyboard codes. |
+| `src/config/` | `ActiveConfig` bounded regular-file snapshot (64 KiB), Serde schema, semantic validation, deterministic default TOML, target resolution, and compilation to `MappingConfig`. `config/mod.rs` keeps the public facade. |
+| `src/device/` | libudev monitor/discovery, Sony device/transport identification, hidraw IO/ioctls, and node permission/ACL lifecycle. `HidrawDevice` composes the permission guard and skips UHID virtuals. |
 | `src/uhid.rs` | Raw UHID wrapper (create2, input2, get/set report reply), complete-write checks, UHID event size validation |
-| `src/keyboard.rs` | uinput keyboard device: `KeyboardDevice` (open/create, press/release, flush_held, Drop destroy), 107 keycode constants, `resolve_keycode()` name→code mapping |
+| `src/keyboard.rs` | uinput keyboard device lifecycle and press/release/flush behavior. Registered names and numeric codes come from shared `keycodes.rs`. |
 | `src/descriptor.rs` | Built-in target HID descriptors: `DS_USB_DESCRIPTOR`, `DS_EDGE_USB_DESCRIPTOR` (BT Edge auto target identity), and `DS4_USB_DESCRIPTOR` (used when `output_device = "dualshock4"`) |
 | `src/shutdown.rs` | signalfd-based SIGINT/SIGTERM handling shared by both daemons; poll/epoll integration, interruptible retry delays, and child-process signal-mask reset |
-| `src/bin/edgemap.rs` | User-side CLI (`validate`, `create-config`, `switch-config`), no root. `switch-config` reads and validates the file locally, then sends its source label and complete TOML content. Daemon mode (`d`/`daemon`): auto-create configs under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`), profile auto-switch by 3-second process snapshots, persistent control socket state subscription, inotify/signalfd monitoring, and `notify-send` desktop notifications. |
-| `edgemap-gui-v6.py` | PyQt6 config editor: two-column layout, button remap, turbo, combo/macro popup editors, macro manager, profile quick-switch, toolbar with KDE-native icons. |
+| `src/bin/edgemap/` | User CLI and daemon application. `cli.rs` preserves stdout/stderr/exit behavior, `control_session.rs` owns acknowledged requests/state drain, `paths.rs` owns XDG resolution, and `daemon/` owns monitoring, profiles, notifications, and the daemon state machine. |
+| `gui/edgemap_gui/` | Maintainable PyQt6 source package: capability parsing, config document/snapshot, deterministic serializers, editor lifecycle, profile/combo/macro/keyboard dialogs, and Rust CLI integration. |
+| `edgemap-gui-v6.py` | Deterministic executable zipapp generated from `gui/` by `scripts/build_gui_zipapp.py`; retained as the current single-file installation artifact. |
 
 ## Three-layer pipeline (L1 → L2 → L3)
 
@@ -80,7 +86,7 @@ Input order inside `handle_hidraw_input()`:
 - `TargetCodec` owns virtual input encoding, target output decoding, USB identity, and target GET_REPORT seed/fallback behavior.
 - `PhysicalCodec` owns physical output encoding, SET_REPORT forwarding policy, and which physical feature reports are safe to cache.
 - DS5 USB target keeps the DS5 USB source report as backing where possible. DS4 target converts input/output through DS4-specific USB report code.
-- DS5/DS4 USB byte layout helpers in `report.rs` must not be reused for Bluetooth layouts; add BT-specific codecs first.
+- DS5/DS4 USB byte layout helpers in `src/codec/ds5_usb.rs` and `src/codec/ds4_usb.rs` must not be reused for Bluetooth layouts; Bluetooth envelopes and CRC handling belong in `src/codec/ds5_bt.rs`.
 
 ## Error handling policy
 
@@ -114,7 +120,7 @@ Input order inside `handle_hidraw_input()`:
 - **Suspend/resume**: daemon fd survives, but udev resets hidraw node permissions. `re_restrict_self()` called at top of `handle_hidraw_input` checks mode & 0o777 and re-applies `chmod 000` on first post-resume input packet (#70, #71).
 - **ACL restore**: each hidden node is checked independently. If logind/udev reapplies a non-zero mode, `re_restrict_self()` snapshots the new mode/ACL before hiding it again; shutdown restores the latest snapshot (#91).
 - **Kernel compatibility**: tested Linux 7.0, should work 6.7+, may work 5.12+. Requires UHID + `hid-playstation` driver.
-- **Target/builtin lists**: Python `TARGETS` and `builtin` must stay in sync with Rust `is_valid_target()` / `resolve_target()` / macro-name validation. Cross-reference comments added at each list.
+- **GUI capability source**: `edgemap capabilities` is the only source for GUI button, target, reserved macro-name, output-device, and keyboard lists. The GUI refuses to start if the versioned TOML contract cannot be queried or parsed; it must not carry stale fallback lists. Rust tests compare advertised source/gamepad sets with validator rules in both directions.
 
 ## Key constraints
 
@@ -130,7 +136,7 @@ Input order inside `handle_hidraw_input()`:
 - Macro format: `[button] remap="macro_name"` + `[macros.macro_name]` with `sequence = [...]` and optional `mode = "hold"`/`"single"`. Combo output can be a macro name (`Target::Macro(String)`, `MacroSource::Combo`).
 - Macro names must not shadow built-in targets (e.g. `l2_full` conflicts with `TriggerFull(L2)`).
 - **Keyboard target format**: `key:<keyname>` (e.g. `key:space`, `key:a`, `key:enter`). 107 keycodes supported. Valid in remap targets, combo outputs, and macro step keys. Validation deferred to TOML save time.
-- `StepTarget` enum: `Gamepad(Button)` or `Keyboard(u16)` — used in macro steps. Resolved by `resolve_step_target()` in config.rs.
+- `StepTarget` enum: `Gamepad(Button)` or `Keyboard(u16)` — used in macro steps. Resolved by `resolve_step_target()` in `src/config/targets.rs`; compilation returns an error rather than substituting an invalid step.
 - Known HID limitation: d-pad hat switch cannot encode 3+ simultaneous directions.
 - edgemap profile format: `[profiles.<name>]` with `config = "<path>"` (relative to the XDG config directory, `~`, or absolute) + `match_process` / `match_cmdline` (case-insensitive, both optional; AND logic if both set). Profiles matched in TOML declaration order.
 

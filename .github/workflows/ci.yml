@@ -7,6 +7,7 @@ jobs:
       - uses: actions/checkout@main
       - run: sudo apt-get update && sudo apt-get install -y libudev-dev
       - run: cargo build
+      - run: bash tests/test_install.sh target/debug
       - run: cargo test
 
   gui:

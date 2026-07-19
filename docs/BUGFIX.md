@@ -680,7 +680,7 @@ This is specific to Sony's `hid-playstation` driver (not a general kernel limita
 
 ---
 
-## #125–#131: after v1.2.1
+## #125–#131: v1.3.0 (runtime and validation hardening)
 
 ### #125 — Invalid BT repeat environment values silently disabled repeat mode
 

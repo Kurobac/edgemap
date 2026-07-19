@@ -148,7 +148,7 @@ Input order inside `handle_hidraw_input()`:
 Tarball layout (GitHub Actions builds on tag):
 
 ```
-edgemap-v1.2.1-x86_64.tar.gz
+edgemap-v1.3.0-x86_64.tar.gz
 ├── install.sh                 # sudo ./install.sh
 ├── dseuhid                    → /usr/local/bin/
 ├── edgemap                    → /usr/local/bin/

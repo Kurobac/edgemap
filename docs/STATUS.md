@@ -1,4 +1,4 @@
-# edgemap — Project Status (2026-07-17)
+# edgemap — Project Status (2026-07-19)
 
 ## Overview
 
@@ -45,13 +45,15 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v1.0.2 | `4006227` | **DualShock 4 target Beta**: GUI entry and docs for `output_device = "dualshock4"`; native DS4 Proton compatibility notes point to the DS4 UHID MI_03 identity patch in `proton-eg-patch`; 158 Rust + 20 GUI tests |
 | v1.1.0 | `02aeccc` | **Bluetooth source support**: DS5/Edge BT input, BT main-output forwarding, BT GET_REPORT cache, DS5 gyro cadence pacer, codec/error-handling cleanup, safer hot reload; 195 Rust + 21 GUI tests |
 | v1.2.0 | `88824b7` | **Event-driven daemon coordination**: libudev hotplug, signalfd shutdown, acknowledged Unix seqpacket IPC, atomic daemon locks, transactional startup/reload handling; 218 Rust + 21 GUI tests |
-| v1.2.1 | — | **Control-plane hardening**: generic config errors, bounded regular-file loading, client/request limits, and systemd resource ceilings; 223 Rust + 21 GUI tests |
+| v1.2.1 | `b22c909` | **Control-plane hardening**: generic config errors, bounded regular-file loading, client/request limits, and systemd resource ceilings; 223 Rust + 21 GUI tests |
+| v1.3.0 | — | **Architecture and GUI overhaul**: content-based config switching, responsibility-focused Rust modules, capability-driven Python package, and unified release tooling; 171 Rust + 30 GUI tests |
 
-## Unreleased Changes
+## v1.3.0 Release Notes
 
 - Replaced path-based runtime configuration loading with a bounded content transfer. `edgemap switch-config` reads and validates a regular file up to 64 KiB under the caller's permissions, then sends its source label and complete TOML content in one seqpacket; dseuhid never opens the client-provided path.
 - Added `ActiveConfig` so output-device-driven UHID recreation reuses the exact configuration content that was acknowledged, even if the source file changes afterward.
 - Removed the `reload` request, CLI command, zsh completion, and systemd `ExecReload`. Runtime configuration now has one transactional operation: `switch-config`.
+- Hardened runtime failure handling and validation. Invalid BT repeat settings now fail at startup, CLI output streams are deterministic, broken UHID infrastructure returns a fatal status for systemd restart, controller-open retries are limited to disconnect races, and uinput setup rejects incomplete capabilities.
 - Added a shared package library and split the daemon, proxy, codec, device, config, control, and edgemap binary into responsibility-focused modules without changing the external protocols or configuration format.
 - Split the GUI source into `gui/edgemap_gui/` and added the stable `edgemap capabilities` TOML contract. Packages install the source as a private Python module tree with a small `edgemap-gui` launcher; no generated zipapp is tracked.
 - Added a shared release-tree staging script and a straightforward, cwd-independent installer/uninstaller with payload preflight, `DESTDIR` testing, direct GUI package replacement, and exact-file removal. CI exercises the same release layout used by tagged builds.

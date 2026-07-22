@@ -46,7 +46,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v1.1.0 | `02aeccc` | **Bluetooth source support**: DS5/Edge BT input, BT main-output forwarding, BT GET_REPORT cache, DS5 gyro cadence pacer, codec/error-handling cleanup, safer hot reload; 195 Rust + 21 GUI tests |
 | v1.2.0 | `88824b7` | **Event-driven daemon coordination**: libudev hotplug, signalfd shutdown, acknowledged Unix seqpacket IPC, atomic daemon locks, transactional startup/reload handling; 218 Rust + 21 GUI tests |
 | v1.2.1 | `b22c909` | **Control-plane hardening**: generic config errors, bounded regular-file loading, client/request limits, and systemd resource ceilings; 223 Rust + 21 GUI tests |
-| v1.3.0 | — | **Architecture and GUI overhaul**: content-based config switching, responsibility-focused Rust modules, capability-driven Python package, and unified release tooling; 171 Rust + 30 GUI tests |
+| v1.3.0 | `f17697e` | **Architecture and GUI overhaul**: content-based config switching, responsibility-focused Rust modules, capability-driven Python package, and unified release tooling; 171 Rust + 30 GUI tests |
 
 ## v1.3.0 Release Notes
 

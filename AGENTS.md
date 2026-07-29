@@ -12,7 +12,7 @@ cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
 PYTHONPATH=gui python3 -m edgemap_gui  # config editor GUI from source (PyQt6)
 QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests -p 'test_gui.py' -v  # 30 GUI tests
-bash tests/test_install.sh target/debug  # release tree + DESTDIR installer integration
+CI=true sudo --preserve-env=CI bash tests/test_install.sh target/debug  # disposable CI/test VM only; writes fixed system paths
 ```
 
 GitHub CI runs `cargo build`, `cargo test`, and the PyQt6 offscreen GUI test suite. No enforced lint or typecheck step exists.
@@ -52,7 +52,7 @@ makepkg -si              # build + install via PKGBUILD
 | `gui/edgemap_gui/` | Maintainable PyQt6 source package: capability parsing, config document/snapshot, deterministic serializers, editor lifecycle, profile/combo/macro/keyboard dialogs, and Rust CLI integration. |
 | `gui/edgemap-gui` | Small installation launcher. It resolves `/usr` or `/usr/local` from its own path and imports the private package from `<prefix>/lib/edgemap-gui`; no zipapp or generated GUI artifact is tracked. |
 | `scripts/stage_release.sh` | Sole release-tree builder shared by CI and the tag workflow. Validates inputs, installs only source `.py` files, rewrites service binary prefixes, and refuses to overwrite an existing output directory. |
-| `install.sh` | Straightforward cwd-independent release installer/uninstaller with payload preflight, root/`DESTDIR` separation, direct file operations, and explicit systemd guidance. |
+| `install.sh` | Straightforward cwd-independent release installer/uninstaller with payload preflight, mandatory root, fixed system paths, direct file operations, and explicit systemd guidance. `DESTDIR` is intentionally unsupported. |
 
 ## Three-layer pipeline (L1 → L2 → L3)
 

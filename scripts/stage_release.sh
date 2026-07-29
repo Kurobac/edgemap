@@ -2,9 +2,11 @@
 set -Eeuo pipefail
 
 readonly SCRIPT_NAME=${0##*/}
-readonly PROJECT_ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd -P)
+PROJECT_ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd -P)
+readonly PROJECT_ROOT
 
 OUTPUT_DIR=""
+OUTPUT_CREATED=false
 STAGING_COMPLETE=false
 
 die() {
@@ -22,11 +24,13 @@ EOF
 }
 
 cleanup() {
-    if [[ $STAGING_COMPLETE == false && -n $OUTPUT_DIR && -d $OUTPUT_DIR ]]; then
+    if [[ $STAGING_COMPLETE == false &&
+        $OUTPUT_CREATED == true &&
+        -n $OUTPUT_DIR &&
+        -d $OUTPUT_DIR ]]; then
         rm -rf -- "$OUTPUT_DIR"
     fi
 }
-trap cleanup EXIT
 
 require_file() {
     [[ -f $1 ]] || die "required release source is missing: $1"
@@ -42,15 +46,27 @@ resolve_output_path() {
     local parent
     local name
 
-    [[ $requested != */ ]] || requested=${requested%/}
+    while [[ $requested == */ && $requested != / ]]; do
+        requested=${requested%/}
+    done
     [[ -n $requested ]] || die "OUTPUT_DIR must not be empty or /"
-    [[ ! -e $requested ]] || die "OUTPUT_DIR already exists: $requested"
+    [[ $requested != / ]] || die "OUTPUT_DIR must not be empty or /"
 
     parent=$(dirname -- "$requested")
     name=$(basename -- "$requested")
+    [[ $name != . && $name != .. ]] ||
+        die "OUTPUT_DIR must name a new directory"
     mkdir -p -- "$parent"
-    parent=$(cd -- "$parent" && pwd -P)
+    parent=$(cd -P -- "$parent" && pwd -P)
     OUTPUT_DIR=$parent/$name
+
+    if mkdir -- "$OUTPUT_DIR" 2>/dev/null; then
+        OUTPUT_CREATED=true
+    elif [[ -e $OUTPUT_DIR || -L $OUTPUT_DIR ]]; then
+        die "OUTPUT_DIR already exists: $requested"
+    else
+        die "failed to create OUTPUT_DIR: $requested"
+    fi
 }
 
 validate_sources() {
@@ -163,4 +179,5 @@ main() {
     printf 'Release tree staged: %s\n' "$OUTPUT_DIR"
 }
 
+trap cleanup EXIT
 main "$@"

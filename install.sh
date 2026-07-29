@@ -1,30 +1,36 @@
 #!/usr/bin/env bash
-set -e
+set -Eeuo pipefail
 
 cd -- "$(dirname -- "$(readlink -f -- "$0")")"
 
-action=install
-if (($# > 1)) || (($# == 1)) && [[ $1 != uninstall ]]; then
+usage() {
     echo "Usage: ${0##*/} [uninstall]" >&2
+}
+
+case $# in
+0)
+    action=install
+    ;;
+1)
+    if [[ $1 != uninstall ]]; then
+        usage
+        exit 1
+    fi
+    action=uninstall
+    ;;
+*)
+    usage
+    exit 1
+    ;;
+esac
+
+if ((EUID != 0)); then
+    echo "error: installation and uninstallation require root" >&2
     exit 1
 fi
-if (($# == 1)); then
-    action=uninstall
-fi
 
-install_root=${DESTDIR:-}
-if [[ -n $install_root ]]; then
-    if [[ $install_root != /* ]]; then
-        echo "error: DESTDIR must be an absolute path" >&2
-        exit 1
-    fi
-    if [[ $install_root =~ ^/+$ ]]; then
-        echo "error: DESTDIR=/ is not a staging directory" >&2
-        exit 1
-    fi
-    install_root=${install_root%/}
-elif ((EUID != 0)); then
-    echo "error: changes to / require root (or set an absolute DESTDIR for staging)" >&2
+if [[ -n ${DESTDIR:-} ]]; then
+    echo "error: DESTDIR is not supported; install to the fixed system paths" >&2
     exit 1
 fi
 
@@ -32,21 +38,16 @@ if [[ $action == uninstall ]]; then
     echo "Uninstalling edgemap..."
 
     rm -f -- \
-        "$install_root/usr/local/bin/dseuhid" \
-        "$install_root/usr/local/bin/edgemap" \
-        "$install_root/usr/local/bin/edgemap-gui" \
-        "$install_root/usr/lib/systemd/system/dseuhid.service" \
-        "$install_root/usr/lib/systemd/user/edgemap.service" \
-        "$install_root/usr/share/applications/edgemap.desktop" \
-        "$install_root/usr/share/icons/hicolor/scalable/apps/edgemap.svg" \
-        "$install_root/usr/share/zsh/site-functions/_dseuhid" \
-        "$install_root/usr/share/zsh/site-functions/_edgemap"
-    rm -rf -- "$install_root/usr/local/lib/edgemap-gui"
-
-    if [[ -n $install_root ]]; then
-        echo "Staged uninstall complete: $install_root"
-        exit 0
-    fi
+        /usr/local/bin/dseuhid \
+        /usr/local/bin/edgemap \
+        /usr/local/bin/edgemap-gui \
+        /usr/lib/systemd/system/dseuhid.service \
+        /usr/lib/systemd/user/edgemap.service \
+        /usr/share/applications/edgemap.desktop \
+        /usr/share/icons/hicolor/scalable/apps/edgemap.svg \
+        /usr/share/zsh/site-functions/_dseuhid \
+        /usr/share/zsh/site-functions/_edgemap
+    rm -rf -- /usr/local/lib/edgemap-gui
 
     echo
     echo "Uninstallation complete. Services were not changed automatically."
@@ -80,31 +81,26 @@ done
 
 echo "Installing edgemap..."
 
-install -Dm755 dseuhid "$install_root/usr/local/bin/dseuhid"
-install -Dm755 edgemap "$install_root/usr/local/bin/edgemap"
+install -Dm755 dseuhid /usr/local/bin/dseuhid
+install -Dm755 edgemap /usr/local/bin/edgemap
 install -Dm644 usr/lib/systemd/system/dseuhid.service \
-    "$install_root/usr/lib/systemd/system/dseuhid.service"
+    /usr/lib/systemd/system/dseuhid.service
 install -Dm644 usr/lib/systemd/user/edgemap.service \
-    "$install_root/usr/lib/systemd/user/edgemap.service"
+    /usr/lib/systemd/user/edgemap.service
 install -Dm644 usr/share/applications/edgemap.desktop \
-    "$install_root/usr/share/applications/edgemap.desktop"
+    /usr/share/applications/edgemap.desktop
 install -Dm644 usr/share/icons/hicolor/scalable/apps/edgemap.svg \
-    "$install_root/usr/share/icons/hicolor/scalable/apps/edgemap.svg"
+    /usr/share/icons/hicolor/scalable/apps/edgemap.svg
 install -Dm644 usr/share/zsh/site-functions/_dseuhid \
-    "$install_root/usr/share/zsh/site-functions/_dseuhid"
+    /usr/share/zsh/site-functions/_dseuhid
 install -Dm644 usr/share/zsh/site-functions/_edgemap \
-    "$install_root/usr/share/zsh/site-functions/_edgemap"
+    /usr/share/zsh/site-functions/_edgemap
 
-gui_dir="$install_root/usr/local/lib/edgemap-gui/edgemap_gui"
+gui_dir=/usr/local/lib/edgemap-gui/edgemap_gui
 rm -rf -- "$gui_dir"
 install -d -m755 "$gui_dir"
 cp -a usr/local/lib/edgemap-gui/edgemap_gui/. "$gui_dir/"
-install -Dm755 edgemap-gui "$install_root/usr/local/bin/edgemap-gui"
-
-if [[ -n $install_root ]]; then
-    echo "Staged installation complete: $install_root"
-    exit 0
-fi
+install -Dm755 edgemap-gui /usr/local/bin/edgemap-gui
 
 if ! command -v python3 >/dev/null 2>&1 ||
     ! python3 -c 'import PyQt6' >/dev/null 2>&1; then

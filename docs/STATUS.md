@@ -56,7 +56,7 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 - Hardened runtime failure handling and validation. Invalid BT repeat settings now fail at startup, CLI output streams are deterministic, broken UHID infrastructure returns a fatal status for systemd restart, controller-open retries are limited to disconnect races, and uinput setup rejects incomplete capabilities.
 - Added a shared package library and split the daemon, proxy, codec, device, config, control, and edgemap binary into responsibility-focused modules without changing the external protocols or configuration format.
 - Split the GUI source into `gui/edgemap_gui/` and added the stable `edgemap capabilities` TOML contract. Packages install the source as a private Python module tree with a small `edgemap-gui` launcher; no generated zipapp is tracked.
-- Added a shared release-tree staging script and a straightforward, cwd-independent installer/uninstaller with payload preflight, `DESTDIR` testing, direct GUI package replacement, and exact-file removal. CI exercises the same release layout used by tagged builds.
+- Added a shared release-tree staging script and a straightforward, cwd-independent installer/uninstaller with payload preflight, mandatory root, fixed system paths, direct GUI package replacement, and exact-file removal. `DESTDIR` is intentionally unsupported; CI exercises the real fixed-path install/uninstall flow on its disposable runner.
 - Test suite: 171 Rust tests (82 library, 67 dseuhid, 13 edgemap, 9 CLI integration) plus 30 GUI tests.
 
 ## v1.2.1 Release Notes

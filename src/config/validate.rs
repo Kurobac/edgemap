@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::mapping::StepTarget;
 use crate::model::Button;
 
 use super::targets::{
-    is_reserved_macro_name, is_valid_src, is_valid_target, resolve_step_target, resolve_target,
+    into_mapping_target, is_reserved_macro_name, is_valid_src, parse_target, resolve_step_target,
+    ParsedTarget,
 };
 use super::Config;
 
@@ -40,17 +40,25 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
         }
         let btn_conf = &cfg.buttons[btn_name];
         let remap = btn_conf.remap.as_deref().unwrap_or("");
+        let parsed_remap = if remap.is_empty() {
+            Some(ParsedTarget::Passthrough)
+        } else {
+            parse_target(remap, &cfg.macros)
+        };
 
-        if btn_name == "touchpad" && remap == "split" {
+        if btn_name == "touchpad" && matches!(parsed_remap, Some(ParsedTarget::Split)) {
             has_split = true;
             continue;
         }
 
-        let is_combo =
-            btn_name != "touchpad_left" && btn_name != "touchpad_right" && remap == "combo";
+        let is_combo = btn_name != "touchpad_left"
+            && btn_name != "touchpad_right"
+            && matches!(parsed_remap, Some(ParsedTarget::Combo));
         let has_combos = !btn_conf.combos.is_empty();
 
-        if matches!(btn_name.as_str(), "touchpad_left" | "touchpad_right") && remap == "combo" {
+        if matches!(btn_name.as_str(), "touchpad_left" | "touchpad_right")
+            && matches!(parsed_remap, Some(ParsedTarget::Combo))
+        {
             return Err(format!(
                 "[{btn_name}] touchpad partitions cannot use combo mode"
             ));
@@ -68,38 +76,49 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
 
         let mut seen_keys = HashSet::new();
         let is_fn_modifier = btn_name == "left_fn" || btn_name == "right_fn";
-        for c in &btn_conf.combos {
-            let key_btn = match Button::from_name(&c.key) {
-                Some(b) => b,
-                None => return Err(format!("[{btn_name}] unknown combo key: {}", c.key)),
+        for combo in &btn_conf.combos {
+            let key_btn = match Button::from_name(&combo.key) {
+                Some(button) => button,
+                None => return Err(format!("[{btn_name}] unknown combo key: {}", combo.key)),
             };
             if key_btn.name() == btn_name.as_str() {
                 return Err(format!(
                     "[{btn_name}] combo key cannot be the same as the modifier button"
                 ));
             }
-            if key_btn == Button::Mic
-                || key_btn == Button::L2Analog
-                || key_btn == Button::R2Analog
-                || key_btn == Button::TouchpadLeft
-                || key_btn == Button::TouchpadRight
-            {
-                return Err(format!("[{btn_name}] invalid combo key: {}", c.key));
+            if matches!(
+                key_btn,
+                Button::Mic
+                    | Button::L2Analog
+                    | Button::R2Analog
+                    | Button::TouchpadLeft
+                    | Button::TouchpadRight
+            ) {
+                return Err(format!("[{btn_name}] invalid combo key: {}", combo.key));
             }
-            if c.output == "passthrough" {
+
+            let parsed_output = parse_target(&combo.output, &cfg.macros)
+                .ok_or_else(|| format!("[{btn_name}] unknown combo output: {}", combo.output))?;
+            if matches!(parsed_output, ParsedTarget::Passthrough) {
                 return Err(format!("[{btn_name}] combo output cannot be passthrough"));
             }
-            if !is_valid_target(&c.output) && !cfg.macros.contains_key(&c.output) {
-                return Err(format!("[{btn_name}] unknown combo output: {}", c.output));
+            if into_mapping_target(parsed_output).is_none() {
+                return Err(format!(
+                    "[{btn_name}] unknown combo output: {}",
+                    combo.output
+                ));
             }
-            if !seen_keys.insert(&c.key) {
-                return Err(format!("[{btn_name}] duplicate combo key '{}'", c.key));
+            if !seen_keys.insert(key_btn) {
+                return Err(format!("[{btn_name}] duplicate combo key '{}'", combo.key));
             }
-            let is_face = matches!(c.key.as_str(), "cross" | "circle" | "square" | "triangle");
+            let is_face = matches!(
+                key_btn,
+                Button::Cross | Button::Circle | Button::Square | Button::Triangle
+            );
             if is_fn_modifier && is_face {
                 return Err(format!(
                     "[{btn_name}] FN+face combos ({}+{}) conflict with firmware profile switching",
-                    btn_name, c.key
+                    btn_name, combo.key
                 ));
             }
         }
@@ -113,13 +132,21 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             }
         }
 
+        if btn_conf.turbo && btn_conf.turbo_interval_ms == 0 {
+            return Err(format!(
+                "[{btn_name}] turbo_interval_ms must be greater than 0"
+            ));
+        }
+
         if btn_conf.turbo {
-            let has_macro_output = match btn_conf.remap.as_deref() {
-                Some(r) if cfg.macros.contains_key(r) => true,
-                Some("combo") => btn_conf
-                    .combos
-                    .iter()
-                    .any(|c| cfg.macros.contains_key(&c.output)),
+            let has_macro_output = match &parsed_remap {
+                Some(ParsedTarget::MacroRef(_)) => true,
+                Some(ParsedTarget::Combo) => btn_conf.combos.iter().any(|combo| {
+                    matches!(
+                        parse_target(&combo.output, &cfg.macros),
+                        Some(ParsedTarget::MacroRef(_))
+                    )
+                }),
                 _ => false,
             };
             if has_macro_output {
@@ -141,16 +168,15 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             has_touch_right = true;
         }
 
-        if remap != "block"
-            && !remap.is_empty()
-            && !is_valid_target(remap)
-            && !cfg.macros.contains_key(remap)
-        {
-            return Err(format!("[{btn_name}] unknown target: {remap}"));
+        match parsed_remap {
+            Some(ParsedTarget::Passthrough | ParsedTarget::Block | ParsedTarget::Combo) => {}
+            Some(parsed) if into_mapping_target(parsed.clone()).is_some() => {}
+            _ => return Err(format!("[{btn_name}] unknown target: {remap}")),
         }
     }
 
-    for (name, m) in &cfg.macros {
+    let no_macros = HashMap::new();
+    for (name, macro_config) in &cfg.macros {
         if Button::from_name(name).is_some() {
             return Err(format!(
                 "Macro name '{name}' conflicts with a standard button name"
@@ -161,7 +187,10 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
                 "Macro name 'passthrough' conflicts with the passthrough remap target".into(),
             );
         }
-        if resolve_target(name).is_some() {
+        if matches!(
+            parse_target(name, &no_macros),
+            Some(ParsedTarget::TriggerFull(_) | ParsedTarget::Stick(_))
+        ) {
             return Err(format!(
                 "Macro name '{name}' conflicts with a built-in target"
             ));
@@ -169,26 +198,15 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
         if is_reserved_macro_name(name) {
             return Err(format!("Macro name '{name}' is reserved"));
         }
-        if m.mode != "hold" && m.mode != "single" {
+        if macro_config.mode != "hold" && macro_config.mode != "single" {
             return Err(format!("Macro '{name}': mode must be 'hold' or 'single'"));
         }
-        if m.sequence.is_empty() {
+        if macro_config.sequence.is_empty() {
             return Err(format!("Macro '{name}': sequence must not be empty"));
         }
-        for step in &m.sequence {
-            let step_target = resolve_step_target(&step.key);
-            if step_target.is_none() {
+        for step in &macro_config.sequence {
+            if resolve_step_target(&step.key).is_none() {
                 return Err(format!("Macro '{name}': unknown key '{}'", step.key));
-            }
-            if let Some(StepTarget::Gamepad(btn)) = step_target {
-                if btn == Button::Mic
-                    || btn == Button::L2Analog
-                    || btn == Button::R2Analog
-                    || btn == Button::TouchpadLeft
-                    || btn == Button::TouchpadRight
-                {
-                    return Err(format!("Macro '{name}': invalid key '{}'", step.key));
-                }
             }
             if step.release_ms <= step.press_ms {
                 return Err(format!(
@@ -206,21 +224,22 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
         if !has_touch_right {
             return Err("split touchpad requires [touchpad_right] to be configured".into());
         }
-        let left_rm = cfg
-            .buttons
-            .get("touchpad_left")
-            .and_then(|c| c.remap.as_deref())
-            .unwrap_or("block");
-        let right_rm = cfg
-            .buttons
-            .get("touchpad_right")
-            .and_then(|c| c.remap.as_deref())
-            .unwrap_or("block");
-        if left_rm == "block" {
-            return Err("touchpad_left: remap=\"block\" is not allowed in split mode".into());
-        }
-        if right_rm == "block" {
-            return Err("touchpad_right: remap=\"block\" is not allowed in split mode".into());
+        for child in ["touchpad_left", "touchpad_right"] {
+            let remap = cfg
+                .buttons
+                .get(child)
+                .and_then(|config| config.remap.as_deref())
+                .unwrap_or("block");
+            let parsed = parse_target(remap, &cfg.macros)
+                .ok_or_else(|| format!("Unknown target '{remap}' for {child}"))?;
+            if matches!(parsed, ParsedTarget::Block) {
+                return Err(format!(
+                    "{child}: remap=\"block\" is not allowed in split mode"
+                ));
+            }
+            if into_mapping_target(parsed).is_none() {
+                return Err(format!("Unknown target '{remap}' for {child}"));
+            }
         }
     } else if has_touch_left || has_touch_right {
         return Err("touchpad_left/right require [touchpad] remap = \"split\"".into());
@@ -229,5 +248,6 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
     if cfg.version != 2 {
         return Err(format!("version must be 2, got {}", cfg.version));
     }
-    Ok(())
+
+    cfg.to_mapping_config().map(|_| ())
 }

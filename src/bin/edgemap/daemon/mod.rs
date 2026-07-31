@@ -18,6 +18,7 @@ use profile::{find_matching_profile, ProfileConfig};
 use profile::{profile_matches, ProcessSnapshot};
 
 use dseuhid::{config, control, shutdown};
+use serde::Deserialize;
 use shutdown::{unblock_shutdown_signals_in_child, ShutdownSignal};
 
 const DEFAULT_CONFIG_FILE: &str = "default.toml";
@@ -60,16 +61,17 @@ struct DaemonState {
     dir: PathBuf,
 }
 
-fn extract_profile_order(raw: &str) -> Vec<String> {
-    raw.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            trimmed
-                .strip_prefix("[profiles.")
-                .and_then(|rest| rest.strip_suffix(']'))
-                .map(|s| s.to_string())
-        })
-        .collect()
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DaemonConfigFile {
+    #[serde(default = "default_config_file")]
+    config: String,
+    #[serde(default)]
+    profiles: toml::Table,
+}
+
+fn default_config_file() -> String {
+    DEFAULT_CONFIG_FILE.to_string()
 }
 
 fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
@@ -79,7 +81,7 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
             path.display()
         )
     })?;
-    let root: toml::Value = toml::from_str(&content).map_err(|e| {
+    let root: DaemonConfigFile = toml::from_str(&content).map_err(|e| {
         format!(
             "failed to parse edgemap config: path={}, error={e}",
             path.display()
@@ -87,37 +89,23 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
     })?;
     let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
-    let base_config_raw = root
-        .get("config")
-        .and_then(|v| v.as_str())
-        .unwrap_or(DEFAULT_CONFIG_FILE)
-        .to_string();
+    let base_config_raw = root.config;
     let base_config = resolve_config_path(&base_config_raw, &dir)?;
 
     // defer validation of base/default config to daemon loop (pre-injection)
 
-    let mut profiles: Vec<(String, ProfileConfig)> = Vec::new();
-    if let Some(t) = root.get("profiles").and_then(|v| v.as_table()) {
-        for (name, val) in t.iter() {
-            match val.clone().try_into::<ProfileConfig>() {
-                Ok(mut cfg) => {
-                    cfg.match_process = cfg.match_process.to_lowercase();
-                    cfg.match_cmdline = cfg.match_cmdline.to_lowercase();
-                    profiles.push((name.clone(), cfg));
-                }
-                Err(e) => log::warn!("profile skipped: name={name}, error={e}"),
-            }
-        }
+    let mut profiles: Vec<(String, ProfileConfig)> = Vec::with_capacity(root.profiles.len());
+    for (name, value) in root.profiles {
+        let mut profile = value.try_into::<ProfileConfig>().map_err(|error| {
+            format!(
+                "failed to parse profile: path={}, name={name}, error={error}",
+                path.display()
+            )
+        })?;
+        profile.match_process = profile.match_process.to_lowercase();
+        profile.match_cmdline = profile.match_cmdline.to_lowercase();
+        profiles.push((name, profile));
     }
-
-    // sort by declaration order in the TOML file
-    let decl_order = extract_profile_order(&content);
-    profiles.sort_by_key(|(name, _)| {
-        decl_order
-            .iter()
-            .position(|n| n == name)
-            .unwrap_or(usize::MAX)
-    });
 
     let mut valid_profiles: Vec<(String, String)> = Vec::new();
     for (name, pcfg) in &profiles {
@@ -137,6 +125,176 @@ fn load_edgemap_config(path: &Path) -> Result<DaemonState, String> {
         valid_profiles,
         dir,
     })
+}
+
+fn reload_edgemap_config(state: &mut DaemonState, path: &Path) -> Result<(), String> {
+    let replacement = load_edgemap_config(path)?;
+    *state = replacement;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigApplyFailure {
+    selected_path: String,
+    message: String,
+}
+
+#[derive(Default)]
+struct ConfigApplyTracker {
+    selected_path: Option<String>,
+    effective_path: Option<String>,
+    last_failure: Option<ConfigApplyFailure>,
+    force: bool,
+}
+
+struct PendingConfigApply {
+    selected_path: String,
+    target_path: String,
+    target_label: String,
+    active_config: config::ActiveConfig,
+    failure_after_ack: Option<ConfigApplyFailure>,
+}
+
+enum ConfigApplyPlan {
+    NoChange,
+    Retain { failure_changed: bool },
+    Request(PendingConfigApply),
+}
+
+impl ConfigApplyTracker {
+    fn force_unknown(&mut self) {
+        self.effective_path = None;
+        self.force = true;
+    }
+
+    fn set_failure(&mut self, failure: ConfigApplyFailure) -> bool {
+        let changed = self.last_failure.as_ref() != Some(&failure);
+        self.last_failure = Some(failure);
+        changed
+    }
+
+    fn prepare<F>(
+        &mut self,
+        selected_path: &str,
+        selected_label: &str,
+        base_path: &str,
+        mut load: F,
+    ) -> ConfigApplyPlan
+    where
+        F: FnMut(&str) -> Result<config::ActiveConfig, String>,
+    {
+        let failed_selection_is_current = self
+            .last_failure
+            .as_ref()
+            .is_some_and(|failure| failure.selected_path == selected_path);
+        if !self.force
+            && self.effective_path.as_deref() == Some(selected_path)
+            && !failed_selection_is_current
+        {
+            self.last_failure = None;
+            return ConfigApplyPlan::NoChange;
+        }
+
+        match load(selected_path) {
+            Ok(active_config) => {
+                if !self.force && self.effective_path.as_deref() == Some(selected_path) {
+                    self.last_failure = None;
+                    return ConfigApplyPlan::NoChange;
+                }
+                ConfigApplyPlan::Request(PendingConfigApply {
+                    selected_path: selected_path.to_string(),
+                    target_path: selected_path.to_string(),
+                    target_label: selected_label.to_string(),
+                    active_config,
+                    failure_after_ack: None,
+                })
+            }
+            Err(selected_error) => {
+                let mut failure_message = selected_error;
+                if selected_path == base_path {
+                    let failure_changed = self.set_failure(ConfigApplyFailure {
+                        selected_path: selected_path.to_string(),
+                        message: failure_message,
+                    });
+                    return ConfigApplyPlan::Retain { failure_changed };
+                }
+
+                if !self.force && self.effective_path.as_deref() == Some(base_path) {
+                    let failure_changed = self.set_failure(ConfigApplyFailure {
+                        selected_path: selected_path.to_string(),
+                        message: failure_message,
+                    });
+                    return ConfigApplyPlan::Retain { failure_changed };
+                }
+
+                match load(base_path) {
+                    Ok(active_config) => {
+                        let failure_after_ack = ConfigApplyFailure {
+                            selected_path: selected_path.to_string(),
+                            message: failure_message,
+                        };
+                        ConfigApplyPlan::Request(PendingConfigApply {
+                            selected_path: selected_path.to_string(),
+                            target_path: base_path.to_string(),
+                            target_label: "default config".to_string(),
+                            active_config,
+                            failure_after_ack: Some(failure_after_ack),
+                        })
+                    }
+                    Err(base_error) => {
+                        failure_message.push_str("; default config unavailable: ");
+                        failure_message.push_str(&base_error);
+                        let failure_changed = self.set_failure(ConfigApplyFailure {
+                            selected_path: selected_path.to_string(),
+                            message: failure_message,
+                        });
+                        ConfigApplyPlan::Retain { failure_changed }
+                    }
+                }
+            }
+        }
+    }
+
+    fn acknowledge(&mut self, pending: &PendingConfigApply) -> bool {
+        self.selected_path = Some(pending.selected_path.clone());
+        self.effective_path = Some(pending.target_path.clone());
+        self.force = false;
+        match &pending.failure_after_ack {
+            Some(failure) => self.set_failure(failure.clone()),
+            None => {
+                self.last_failure = None;
+                false
+            }
+        }
+    }
+
+    fn record_request_failure(&mut self, pending: &PendingConfigApply, message: &str) -> bool {
+        let message = match &pending.failure_after_ack {
+            Some(validation_failure) => format!(
+                "{}; failed to apply default config: {message}",
+                validation_failure.message
+            ),
+            None => message.to_string(),
+        };
+        self.set_failure(ConfigApplyFailure {
+            selected_path: pending.selected_path.clone(),
+            message,
+        })
+    }
+}
+
+fn load_valid_config(path: &str) -> Result<config::ActiveConfig, String> {
+    if !Path::new(path).exists() {
+        return Err(format!("config not found: path={path}"));
+    }
+    let active_config = config::ActiveConfig::read(path)
+        .map_err(|error| format!("failed to load config: path={path}, error={error}"))?;
+    let parsed = active_config
+        .parse()
+        .map_err(|error| format!("failed to parse config: path={path}, error={error}"))?;
+    config::validate(&parsed)
+        .map_err(|error| format!("config validation failed: path={path}, error={error}"))?;
+    Ok(active_config)
 }
 
 pub(crate) fn cmd_daemon(args: &[String]) -> ! {
@@ -245,7 +403,7 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
         std::process::exit(1);
     });
 
-    let mut current_config = String::new();
+    let mut apply_tracker = ConfigApplyTracker::default();
     let mut control_client: Option<control::ControlClient> = None;
     let mut control_state: Option<control::ControlState> = None;
     let mut warned_not_running = false;
@@ -257,10 +415,9 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
         }
         if activity.config_changed {
             activity.config_changed = false;
-            match load_edgemap_config(&config_path) {
-                Ok(s) => {
-                    state = s;
-                    current_config.clear();
+            match reload_edgemap_config(&mut state, &config_path) {
+                Ok(()) => {
+                    apply_tracker.force_unknown();
                     activity.profile_due = true;
                     log::info!("edgemap config reloaded: path={}", config_path.display());
                 }
@@ -317,6 +474,8 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
             } else if let Some(state) = control_state {
                 if !was_alive {
                     log::info!("dseuhid control connection established");
+                    apply_tracker.force_unknown();
+                    activity.profile_due = true;
                 }
                 let previous_ready = previous_state.is_some_and(|old| old.uhid_ready);
                 if state.uhid_ready && !previous_ready {
@@ -326,7 +485,7 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
                 }
                 let previous_needs = previous_state.map(|old| old.needs_config);
                 if needs_config_became_true(previous_needs, state.needs_config) {
-                    current_config.clear();
+                    apply_tracker.force_unknown();
                     activity.profile_due = true;
                 }
             }
@@ -384,103 +543,69 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
             }
         };
 
-        if wanted != current_config {
-            // validate before injecting — catches profiles configured before
-            // their config files are created, or invalid save states
-            let load_valid = |p: &str| -> Option<config::ActiveConfig> {
-                if !Path::new(p).exists() {
-                    log::warn!("config not found: path={p}");
-                    return None;
+        let wanted_label = state
+            .profiles
+            .iter()
+            .find(|(_, profile)| {
+                resolve_config_path(&profile.config, &state.dir).as_deref() == Ok(wanted.as_str())
+            })
+            .map(|(name, _)| format!("profile '{name}'"))
+            .unwrap_or_else(|| "default config".to_string());
+        let plan = apply_tracker.prepare(
+            &wanted,
+            &wanted_label,
+            &state.base_config,
+            load_valid_config,
+        );
+        match plan {
+            ConfigApplyPlan::NoChange => {}
+            ConfigApplyPlan::Retain { failure_changed } => {
+                if failure_changed {
+                    if let Some(failure) = &apply_tracker.last_failure {
+                        log::warn!(
+                            "config decision failed; previous config retained: {}",
+                            failure.message
+                        );
+                    }
                 }
-                match config::ActiveConfig::read(p) {
-                    Ok(active_config) => match active_config.parse() {
-                        Ok(cfg) => {
-                            if let Err(e) = config::validate(&cfg) {
-                                log::warn!("config validation failed: path={p}, error={e}");
-                                None
-                            } else {
-                                Some(active_config)
+            }
+            ConfigApplyPlan::Request(pending) => {
+                let request = control::ControlRequest::SwitchConfig(pending.active_config.clone());
+                let result = match (control_client.as_ref(), control_state.as_mut()) {
+                    (Some(client), Some(control_state)) => {
+                        send_daemon_control_request(client, &request, &shutdown, control_state)
+                    }
+                    _ => Err(DaemonRequestError::Failed(
+                        "dseuhid control connection is unavailable".to_string(),
+                    )),
+                };
+                match result {
+                    Ok(()) => {
+                        let failure_changed = apply_tracker.acknowledge(&pending);
+                        if failure_changed {
+                            if let Some(failure) = &apply_tracker.last_failure {
+                                log::warn!(
+                                    "profile config invalid; using default config: {}",
+                                    failure.message
+                                );
                             }
                         }
-                        Err(e) => {
-                            log::warn!("failed to parse config: path={p}, error={e}");
-                            None
-                        }
-                    },
-                    Err(e) => {
-                        log::warn!("failed to load config: path={p}, error={e}");
-                        None
+                        log::info!("config applied: source={}", pending.target_label);
+                        log::info!("config path: path={}", pending.target_path);
+                        send_notification(
+                            "edgemap",
+                            &format!("Switched to {}", pending.target_label),
+                        );
                     }
-                }
-            };
-
-            let mut target = wanted.clone();
-            let active_config = if let Some(active_config) = load_valid(&target) {
-                active_config
-            } else {
-                // profile config failed — try base_config as fallback
-                if target != state.base_config {
-                    log::warn!("profile config invalid; using default config");
-                    target = state.base_config.clone();
-                    let Some(active_config) = load_valid(&target) else {
-                        log::warn!("default config also invalid; previous config retained");
-                        if let Err(wait_error) = wait_for_daemon_activity(
-                            &mut monitor,
-                            &shutdown,
-                            control_client.as_ref(),
-                            &mut activity,
-                        ) {
-                            break Err(format!("daemon wait failed: {wait_error}"));
-                        }
-                        continue;
-                    };
-                    active_config
-                } else {
-                    // base_config itself is invalid — just warn, don't spam
-                    log::warn!("default config invalid; previous config retained");
-                    if let Err(wait_error) = wait_for_daemon_activity(
-                        &mut monitor,
-                        &shutdown,
-                        control_client.as_ref(),
-                        &mut activity,
-                    ) {
-                        break Err(format!("daemon wait failed: {wait_error}"));
+                    Err(DaemonRequestError::Shutdown) => {
+                        break Ok(());
                     }
-                    continue;
-                }
-            };
-
-            let request = control::ControlRequest::SwitchConfig(active_config);
-            let result = match (control_client.as_ref(), control_state.as_mut()) {
-                (Some(client), Some(control_state)) => {
-                    send_daemon_control_request(client, &request, &shutdown, control_state)
-                }
-                _ => Err(DaemonRequestError::Failed(
-                    "dseuhid control connection is unavailable".to_string(),
-                )),
-            };
-            match result {
-                Ok(()) => {
-                    let label = state
-                        .profiles
-                        .iter()
-                        .find(|(_, pc)| {
-                            resolve_config_path(&pc.config, &state.dir).as_deref()
-                                == Ok(target.as_str())
-                        })
-                        .map(|(name, _)| format!("profile '{name}'"))
-                        .unwrap_or_else(|| "default config".to_string());
-                    log::info!("config applied: source={label}");
-                    log::info!("config path: path={target}");
-                    send_notification("edgemap", &format!("Switched to {label}"));
-                    current_config = target;
-                }
-                Err(DaemonRequestError::Shutdown) => {
-                    break Ok(());
-                }
-                Err(DaemonRequestError::Failed(e)) => {
-                    log::warn!("dseuhid control request failed: {e}");
-                    activity.runtime_changed = true;
+                    Err(DaemonRequestError::Failed(error)) => {
+                        if apply_tracker.record_request_failure(&pending, &error) {
+                            log::warn!("dseuhid control request failed: {error}");
+                        }
+                        activity.runtime_changed = true;
+                    }
                 }
             }
         }
@@ -713,6 +838,318 @@ mod path_tests {
             Ok(_) => panic!("config parent removal should fail the monitor"),
         };
         assert!(error.contains("config parent directory watch lost"));
+    }
+
+    fn write_edgemap_config(root: &Path, content: &str) -> PathBuf {
+        std::fs::create_dir_all(root).unwrap();
+        let path = root.join("edgemap.toml");
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn edgemap_config_rejects_invalid_root_and_profile_fields() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("edgemap-schema-{}-{unique}", std::process::id()));
+
+        for (content, expected) in [
+            ("config = 7\n", "config"),
+            ("profiles = 7\n", "profiles"),
+            (
+                "config = \"default.toml\"\nunknown = true\n",
+                "unknown",
+            ),
+            (
+                "[profiles.game]\nconfig = \"game.toml\"\nmatch_process = 7\n",
+                "game",
+            ),
+            (
+                "[profiles.game]\nconfig = \"game.toml\"\nmatch_process = \"game\"\nunknown = true\n",
+                "unknown",
+            ),
+        ] {
+            let path = write_edgemap_config(&root, content);
+            let error = load_edgemap_config(&path).err().unwrap();
+            assert!(
+                error.contains(expected),
+                "error did not mention {expected:?}: {error}"
+            );
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn edgemap_config_preserves_toml_profile_declaration_order() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("edgemap-order-{}-{unique}", std::process::id()));
+        let path = write_edgemap_config(
+            &root,
+            concat!(
+                "config = \"default.toml\"\n",
+                "profiles.inline = { config = \"inline.toml\", match_process = \"inline\" } # inline\n",
+                "profiles.dotted.config = \"dotted.toml\"\n",
+                "profiles.dotted.match_process = \"dotted\"\n",
+                "[profiles.alpha]\n",
+                "config = \"alpha.toml\"\n",
+                "match_process = \"alpha\"\n",
+                "[profiles.\"game.with.dot\"] # quoted\n",
+                "config = \"quoted.toml\"\n",
+                "match_process = \"quoted\"\n",
+            ),
+        );
+
+        let state = load_edgemap_config(&path).unwrap();
+        let names: Vec<_> = state
+            .profiles
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(names, ["inline", "dotted", "alpha", "game.with.dot"]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_reload_keeps_the_previous_daemon_state() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("edgemap-reload-{}-{unique}", std::process::id()));
+        let path = write_edgemap_config(
+            &root,
+            "config = \"first.toml\"\n[profiles.game]\nconfig = \"game.toml\"\nmatch_process = \"game\"\n",
+        );
+        let mut state = load_edgemap_config(&path).unwrap();
+        let old_base = state.base_config.clone();
+        let old_profiles: Vec<_> = state
+            .profiles
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        std::fs::write(
+            &path,
+            "config = \"second.toml\"\n[profiles.broken]\nconfig = 7\n",
+        )
+        .unwrap();
+        assert!(reload_edgemap_config(&mut state, &path).is_err());
+        assert_eq!(state.base_config, old_base);
+        assert_eq!(
+            state
+                .profiles
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>(),
+            old_profiles
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn active_config_for_test(path: &str) -> config::ActiveConfig {
+        config::ActiveConfig::from_content(path.to_string(), config::default_content().to_string())
+            .unwrap()
+    }
+
+    #[test]
+    fn invalid_profile_is_rechecked_without_reapplying_the_effective_base() {
+        let base = "/configs/default.toml";
+        let profile = "/configs/game.toml";
+        let mut tracker = ConfigApplyTracker {
+            selected_path: Some(base.to_string()),
+            effective_path: Some(base.to_string()),
+            ..Default::default()
+        };
+
+        for expected_new_failure in [true, false] {
+            let mut loaded = Vec::new();
+            let plan = tracker.prepare(profile, "profile 'game'", base, |path| {
+                loaded.push(path.to_string());
+                Err(format!("invalid config: {path}"))
+            });
+            assert_eq!(loaded, [profile]);
+            assert!(matches!(
+                plan,
+                ConfigApplyPlan::Retain {
+                    failure_changed
+                } if failure_changed == expected_new_failure
+            ));
+            assert_eq!(tracker.selected_path.as_deref(), Some(base));
+            assert_eq!(tracker.effective_path.as_deref(), Some(base));
+        }
+
+        let mut loaded = Vec::new();
+        let plan = tracker.prepare(profile, "profile 'game'", base, |path| {
+            loaded.push(path.to_string());
+            Ok(active_config_for_test(path))
+        });
+        let ConfigApplyPlan::Request(pending) = plan else {
+            panic!("repaired profile should request an apply");
+        };
+        assert_eq!(loaded, [profile]);
+        assert_eq!(pending.target_path, profile);
+        tracker.acknowledge(&pending);
+        assert_eq!(tracker.selected_path.as_deref(), Some(profile));
+        assert_eq!(tracker.effective_path.as_deref(), Some(profile));
+        assert!(tracker.last_failure.is_none());
+    }
+
+    #[test]
+    fn failed_profile_falls_back_once_and_keeps_revalidating_only_the_candidate() {
+        let base = "/configs/default.toml";
+        let profile = "/configs/game.toml";
+        let mut tracker = ConfigApplyTracker::default();
+        tracker.force_unknown();
+        let mut loaded = Vec::new();
+        let plan = tracker.prepare(profile, "profile 'game'", base, |path| {
+            loaded.push(path.to_string());
+            if path == profile {
+                Err("profile is invalid".to_string())
+            } else {
+                Ok(active_config_for_test(path))
+            }
+        });
+        let ConfigApplyPlan::Request(pending) = plan else {
+            panic!("unknown live state should request the base fallback");
+        };
+        assert_eq!(loaded, [profile, base]);
+        assert_eq!(pending.target_path, base);
+        assert!(pending.failure_after_ack.is_some());
+        assert!(tracker.last_failure.is_none());
+        assert!(tracker.acknowledge(&pending));
+        assert_eq!(tracker.selected_path.as_deref(), Some(profile));
+        assert_eq!(tracker.effective_path.as_deref(), Some(base));
+        assert!(tracker.last_failure.is_some());
+
+        loaded.clear();
+        let plan = tracker.prepare(profile, "profile 'game'", base, |path| {
+            loaded.push(path.to_string());
+            Err("profile is invalid".to_string())
+        });
+        assert_eq!(loaded, [profile]);
+        assert!(matches!(
+            plan,
+            ConfigApplyPlan::Retain {
+                failure_changed: false
+            }
+        ));
+    }
+
+    #[test]
+    fn successful_same_path_is_not_reloaded_until_live_state_is_forced_unknown() {
+        let path = "/configs/game.toml";
+        let mut tracker = ConfigApplyTracker {
+            selected_path: Some("/configs/previous.toml".to_string()),
+            effective_path: Some(path.to_string()),
+            ..Default::default()
+        };
+
+        for _ in 0..2 {
+            let plan = tracker.prepare(path, "profile 'game'", "/configs/default.toml", |_| {
+                panic!("an unchanged effective path must not reread its file")
+            });
+            assert!(matches!(plan, ConfigApplyPlan::NoChange));
+            assert_eq!(
+                tracker.selected_path.as_deref(),
+                Some("/configs/previous.toml")
+            );
+        }
+
+        tracker.force_unknown();
+        let plan = tracker.prepare(path, "profile 'game'", "/configs/default.toml", |path| {
+            Ok(active_config_for_test(path))
+        });
+        let ConfigApplyPlan::Request(pending) = plan else {
+            panic!("needs_config/new daemon lifetime must force reinjection");
+        };
+        tracker.acknowledge(&pending);
+        assert_eq!(tracker.effective_path.as_deref(), Some(path));
+    }
+
+    #[test]
+    fn repaired_effective_path_does_not_advance_selected_without_an_ack() {
+        let path = "/configs/game.toml";
+        let mut tracker = ConfigApplyTracker {
+            selected_path: Some("/configs/previous.toml".to_string()),
+            effective_path: Some(path.to_string()),
+            last_failure: Some(ConfigApplyFailure {
+                selected_path: path.to_string(),
+                message: "previous validation failure".to_string(),
+            }),
+            ..Default::default()
+        };
+
+        let plan = tracker.prepare(path, "profile 'game'", "/configs/default.toml", |path| {
+            Ok(active_config_for_test(path))
+        });
+
+        assert!(matches!(plan, ConfigApplyPlan::NoChange));
+        assert_eq!(
+            tracker.selected_path.as_deref(),
+            Some("/configs/previous.toml")
+        );
+        assert_eq!(tracker.effective_path.as_deref(), Some(path));
+        assert!(tracker.last_failure.is_none());
+    }
+
+    #[test]
+    fn failed_control_request_does_not_advance_selected_or_effective_state() {
+        let mut tracker = ConfigApplyTracker {
+            selected_path: Some("/configs/old.toml".to_string()),
+            effective_path: Some("/configs/old.toml".to_string()),
+            ..Default::default()
+        };
+        let plan = tracker.prepare(
+            "/configs/new.toml",
+            "profile 'new'",
+            "/configs/default.toml",
+            |path| Ok(active_config_for_test(path)),
+        );
+        let ConfigApplyPlan::Request(pending) = plan else {
+            panic!("a changed valid selection should request an apply");
+        };
+
+        assert!(tracker.record_request_failure(&pending, "control request failed"));
+        assert_eq!(tracker.selected_path.as_deref(), Some("/configs/old.toml"));
+        assert_eq!(tracker.effective_path.as_deref(), Some("/configs/old.toml"));
+    }
+
+    #[test]
+    fn failed_fallback_request_does_not_alternate_failure_state() {
+        let base = "/configs/default.toml";
+        let profile = "/configs/game.toml";
+        let mut tracker = ConfigApplyTracker::default();
+        tracker.force_unknown();
+
+        for expected_changed in [true, false] {
+            let plan = tracker.prepare(profile, "profile 'game'", base, |path| {
+                if path == profile {
+                    Err("profile is invalid".to_string())
+                } else {
+                    Ok(active_config_for_test(path))
+                }
+            });
+            let ConfigApplyPlan::Request(pending) = plan else {
+                panic!("the fallback should remain pending until it is acknowledged");
+            };
+            assert_eq!(
+                tracker.record_request_failure(&pending, "control request failed"),
+                expected_changed
+            );
+            assert!(tracker.selected_path.is_none());
+            assert!(tracker.effective_path.is_none());
+        }
     }
 
     #[test]

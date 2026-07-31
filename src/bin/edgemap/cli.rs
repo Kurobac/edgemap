@@ -141,17 +141,28 @@ pub(crate) fn cmd_create_config(args: &[String]) -> ! {
     let content = config::default_content();
     if args.len() >= 3 {
         let path = &args[2];
-        if Path::new(path).exists() {
-            eprintln!("error: config already exists: {path}");
-            std::process::exit(1);
-        }
         if let Some(parent) = Path::new(path).parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 eprintln!("error: failed to create parent directory for '{path}': {e}");
                 std::process::exit(1);
             }
         }
-        if let Err(e) = std::fs::write(path, content) {
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                eprintln!("error: config already exists: {path}");
+                std::process::exit(1);
+            }
+            Err(error) => {
+                eprintln!("error: failed to write config '{path}': {error}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = file.write_all(content.as_bytes()) {
             eprintln!("error: failed to write config '{path}': {e}");
             std::process::exit(1);
         }

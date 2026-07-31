@@ -26,6 +26,47 @@ pub const MAX_PACKET_SIZE: usize = 72 * 1024;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_SOCKET_DIR: AtomicU64 = AtomicU64::new(0);
+
+    struct ShortSocketDir {
+        path: PathBuf,
+    }
+
+    impl ShortSocketDir {
+        fn create() -> Self {
+            loop {
+                let sequence = NEXT_SOCKET_DIR.fetch_add(1, Ordering::Relaxed);
+                let path =
+                    Path::new("/tmp").join(format!("dsh-{:x}-{sequence:x}", std::process::id()));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self { path },
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => {
+                        panic!("failed to create short control socket test directory: {error}")
+                    }
+                }
+            }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn socket_path(&self) -> PathBuf {
+            self.path.join(SOCKET_FILE_NAME)
+        }
+    }
+
+    impl Drop for ShortSocketDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.path).unwrap();
+        }
+    }
 
     fn active_config(source: &str, content: &str) -> ActiveConfig {
         ActiveConfig::from_content(source.to_string(), content.to_string()).unwrap()
@@ -156,18 +197,56 @@ mod tests {
     }
 
     #[test]
+    fn short_socket_dirs_are_unique_short_and_cleaned_on_drop() {
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    let dir = ShortSocketDir::create();
+                    let runtime_path = dir.path().to_path_buf();
+                    let socket_path = dir.socket_path();
+                    assert!(runtime_path.starts_with("/tmp"));
+                    assert!(socket_path.as_os_str().as_bytes().len() < 108);
+
+                    let server = ControlServer::bind(
+                        dir.path(),
+                        ControlState {
+                            uhid_ready: false,
+                            needs_config: true,
+                        },
+                    )
+                    .unwrap();
+                    assert!(socket_path.exists());
+                    drop(server);
+                    assert!(!socket_path.exists());
+                    drop(dir);
+                    assert!(!runtime_path.exists());
+                    runtime_path
+                })
+            })
+            .collect();
+
+        let paths: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        let unique: HashSet<_> = paths.iter().collect();
+        assert_eq!(unique.len(), paths.len());
+        assert!(paths.iter().all(|path| !path.exists()));
+    }
+
+    #[test]
     fn seqpacket_server_sends_hello_ack_error_and_state() {
-        let dir = temp_dir("socket");
+        let dir = ShortSocketDir::create();
         let initial = ControlState {
             uhid_ready: false,
             needs_config: true,
         };
-        let mut server = ControlServer::bind(&dir, initial).unwrap();
+        let mut server = ControlServer::bind(dir.path(), initial).unwrap();
         let outer_epoll = Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC).unwrap();
         outer_epoll
             .add(server.as_fd(), EpollEvent::new(EpollFlags::EPOLLIN, 1))
             .unwrap();
-        let client = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
+        let client = ControlClient::connect(&dir.socket_path()).unwrap();
         let mut outer_events = [EpollEvent::empty(); 1];
         assert_eq!(outer_epoll.wait(&mut outer_events, 1000u16).unwrap(), 1);
 
@@ -201,7 +280,7 @@ mod tests {
             })
         );
 
-        let second = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
+        let second = ControlClient::connect(&dir.socket_path()).unwrap();
         assert!(server.drain_requests().unwrap().is_empty());
         assert_eq!(
             second.receive().unwrap(),
@@ -239,19 +318,18 @@ mod tests {
         drop(client);
         drop(second);
         drop(server);
-        assert!(!dir.join(SOCKET_FILE_NAME).exists());
-        std::fs::remove_dir_all(dir).unwrap();
+        assert!(!dir.socket_path().exists());
     }
 
     #[test]
     fn disconnected_client_does_not_break_control_server() {
-        let dir = temp_dir("disconnected-client");
+        let dir = ShortSocketDir::create();
         let initial = ControlState {
             uhid_ready: true,
             needs_config: false,
         };
-        let mut server = ControlServer::bind(&dir, initial).unwrap();
-        let client = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
+        let mut server = ControlServer::bind(dir.path(), initial).unwrap();
+        let client = ControlClient::connect(&dir.socket_path()).unwrap();
         assert!(server.drain_requests().unwrap().is_empty());
         assert_eq!(
             client.receive().unwrap(),
@@ -268,27 +346,26 @@ mod tests {
         drop(client);
         server.reply_ok(pending.client, &pending.request);
 
-        let next = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
+        let next = ControlClient::connect(&dir.socket_path()).unwrap();
         assert!(server.drain_requests().unwrap().is_empty());
         assert_eq!(next.receive().unwrap(), Some(ServerPacket::Hello(initial)));
 
         drop(next);
         drop(server);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn control_server_limits_clients_without_affecting_existing_connections() {
-        let dir = temp_dir("client-limit");
+        let dir = ShortSocketDir::create();
         let initial = ControlState {
             uhid_ready: true,
             needs_config: false,
         };
-        let mut server = ControlServer::bind(&dir, initial).unwrap();
+        let mut server = ControlServer::bind(dir.path(), initial).unwrap();
         let mut clients = Vec::new();
 
         for _ in 0..MAX_CONTROL_CLIENTS {
-            let client = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
+            let client = ControlClient::connect(&dir.socket_path()).unwrap();
             assert!(server.drain_requests().unwrap().is_empty());
             assert_eq!(
                 client.receive().unwrap(),
@@ -298,7 +375,7 @@ mod tests {
         }
         assert_eq!(server.client_count(), MAX_CONTROL_CLIENTS);
 
-        let rejected = ControlClient::connect(&dir.join(SOCKET_FILE_NAME)).unwrap();
+        let rejected = ControlClient::connect(&dir.socket_path()).unwrap();
         assert!(server.drain_requests().unwrap().is_empty());
         assert_eq!(
             rejected.receive().unwrap(),
@@ -324,6 +401,5 @@ mod tests {
         drop(rejected);
         drop(clients);
         drop(server);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -223,6 +223,28 @@ mod tests {
     }
 
     #[test]
+    fn turbo_without_remap_remains_a_valid_self_turbo() {
+        let cfg = parse("[cross]\nturbo = true\n");
+        validate(&cfg).unwrap();
+
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert_eq!(mapping.turbo_configs.len(), 1);
+        assert_eq!(mapping.turbo_configs[0].src, Button::Cross);
+    }
+
+    #[test]
+    fn active_turbo_rejects_a_zero_interval() {
+        let cfg = parse("[cross]\nturbo = true\nturbo_interval_ms = 0\n");
+        assert_eq!(
+            validate(&cfg).unwrap_err(),
+            "[cross] turbo_interval_ms must be greater than 0"
+        );
+
+        let inactive = parse("[cross]\nturbo_interval_ms = 0\n");
+        validate(&inactive).unwrap();
+    }
+
+    #[test]
     fn uppercase_section_rejected() {
         assert!(validate(&parse("[Cross]\nremap = \"circle\"\n"))
             .unwrap_err()
@@ -544,6 +566,22 @@ mod tests {
             invalid_mode.to_mapping_config().unwrap_err(),
             "Macro 'm': mode must be 'hold' or 'single'"
         );
+
+        for invalid_step in [
+            "mic",
+            "l2_analog",
+            "r2_analog",
+            "touchpad_left",
+            "touchpad_right",
+        ] {
+            let config = parse(&format!(
+                "[left_paddle]\nremap = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"{invalid_step}\"\npress_ms = 0\nrelease_ms = 100\n"
+            ));
+            assert!(
+                config.to_mapping_config().is_err(),
+                "direct compile accepted macro step {invalid_step}"
+            );
+        }
     }
 
     #[test]
@@ -587,13 +625,29 @@ mod tests {
 
     #[test]
     fn macro_reserved_remap_names_conflict() {
-        for name in ["block", "combo", "macro"] {
+        for name in ["block", "combo", "macro", "split"] {
             let cfg = parse(&format!(
                 "[left_paddle]\nremap = \"cross\"\n[macros.{name}]\n[[macros.{name}.sequence]]\nkey = \"cross\"\npress_ms = 0\nrelease_ms = 100\n"
             ));
             let error = validate(&cfg).unwrap_err();
             assert_eq!(error, format!("Macro name '{name}' is reserved"));
         }
+    }
+
+    #[test]
+    fn macro_passthrough_name_conflict() {
+        let cfg = parse(
+            "[left_paddle]\n\
+             remap = \"cross\"\n\
+             [macros.passthrough]\n\
+             [[macros.passthrough.sequence]]\n\
+             key = \"cross\"\n\
+             press_ms = 0\n\
+             release_ms = 100\n",
+        );
+        assert!(validate(&cfg)
+            .unwrap_err()
+            .contains("conflicts with the passthrough remap target"));
     }
 
     #[test]
@@ -606,5 +660,137 @@ mod tests {
     fn keyboard_macro_step_rejected() {
         let e = validate(&parse("[left_paddle]\nremap = \"m\"\n[macros.m]\n[[macros.m.sequence]]\nkey = \"key:bad\"\npress_ms = 0\nrelease_ms = 100\n")).unwrap_err();
         assert!(e.contains("unknown key"));
+    }
+
+    #[test]
+    fn split_touchpad_children_reject_mode_targets_during_validation() {
+        for remap in ["block", "passthrough", "combo", "split"] {
+            let cfg = parse(&format!(
+                "[touchpad]\n\
+                 remap = \"split\"\n\
+                 [touchpad_left]\n\
+                 remap = \"{remap}\"\n\
+                 [touchpad_right]\n\
+                 remap = \"circle\"\n"
+            ));
+            assert!(
+                validate(&cfg).is_err(),
+                "split child mode target {remap} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn combo_output_rejects_mode_targets_during_validation() {
+        for output in ["block", "passthrough", "combo", "split"] {
+            let cfg = parse(&format!(
+                "[left_paddle]\n\
+                 remap = \"combo\"\n\
+                 [[left_paddle.combos]]\n\
+                 key = \"cross\"\n\
+                 output = \"{output}\"\n"
+            ));
+            assert!(
+                validate(&cfg).is_err(),
+                "combo mode target {output} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn key_namespace_is_reserved_for_keyboard_targets() {
+        for name in ["key:a", "key:not-a-real-key"] {
+            let cfg = parse(&format!(
+                "[left_paddle]\n\
+                 remap = \"cross\"\n\
+                 [macros.\"{name}\"]\n\
+                 [[macros.\"{name}\".sequence]]\n\
+                 key = \"circle\"\n\
+                 press_ms = 0\n\
+                 release_ms = 100\n"
+            ));
+            assert!(
+                validate(&cfg).is_err(),
+                "macro name {name} must not occupy the key: namespace"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_keyboard_target_never_falls_back_to_a_macro() {
+        let cfg = parse(
+            "[left_paddle]\n\
+             remap = \"key:not-a-real-key\"\n\
+             [macros.\"key:not-a-real-key\"]\n\
+             [[macros.\"key:not-a-real-key\".sequence]]\n\
+             key = \"circle\"\n\
+             press_ms = 0\n\
+             release_ms = 100\n",
+        );
+        assert!(validate(&cfg).is_err());
+        assert!(cfg.to_mapping_config().is_err());
+    }
+
+    #[test]
+    fn combo_keys_use_canonical_buttons_for_duplicates_and_fn_face_checks() {
+        let duplicate = parse(
+            "[left_paddle]\n\
+             remap = \"combo\"\n\
+             [[left_paddle.combos]]\n\
+             key = \"cross\"\n\
+             output = \"circle\"\n\
+             [[left_paddle.combos]]\n\
+             key = \"Cross\"\n\
+             output = \"square\"\n",
+        );
+        assert!(validate(&duplicate)
+            .unwrap_err()
+            .contains("duplicate combo key"));
+
+        let fn_face = parse(
+            "[left_fn]\n\
+             remap = \"combo\"\n\
+             [[left_fn.combos]]\n\
+             key = \"Cross\"\n\
+             output = \"circle\"\n",
+        );
+        assert!(validate(&fn_face).unwrap_err().contains("FN+face"));
+    }
+
+    #[test]
+    fn every_validated_config_compiles_to_a_mapping() {
+        let configs = [
+            parse("[cross]\nremap = \"circle\"\n"),
+            parse("[cross]\nremap = \"key:space\"\n"),
+            parse(
+                "[left_paddle]\n\
+                 remap = \"combo\"\n\
+                 [[left_paddle.combos]]\n\
+                 key = \"cross\"\n\
+                 output = \"circle\"\n",
+            ),
+            parse(
+                "[left_paddle]\n\
+                 remap = \"m\"\n\
+                 [macros.m]\n\
+                 [[macros.m.sequence]]\n\
+                 key = \"cross\"\n\
+                 press_ms = 0\n\
+                 release_ms = 100\n",
+            ),
+            parse(
+                "[touchpad]\n\
+                 remap = \"split\"\n\
+                 [touchpad_left]\n\
+                 remap = \"cross\"\n\
+                 [touchpad_right]\n\
+                 remap = \"key:space\"\n",
+            ),
+        ];
+
+        for cfg in configs {
+            validate(&cfg).unwrap();
+            cfg.to_mapping_config().unwrap();
+        }
     }
 }

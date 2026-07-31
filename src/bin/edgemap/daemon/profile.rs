@@ -5,6 +5,7 @@ use serde::Deserialize;
 use super::super::paths::resolve_config_path;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ProfileConfig {
     pub(crate) config: String,
     #[serde(default)]

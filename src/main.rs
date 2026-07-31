@@ -12,23 +12,50 @@ use std::env;
 use dseuhid::{config, control, keycodes, mapping, model, shutdown};
 use log::error;
 
-fn parse_config_path() -> Option<String> {
-    let args: Vec<String> = env::args().collect();
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    Run { config_path: Option<String> },
+    Version,
+    Help,
+}
+
+fn parse_cli(args: &[String]) -> Result<CliAction, String> {
+    if let Some(command) = args.get(1) {
+        let action = match command.as_str() {
+            "version" | "--version" | "-V" => Some(CliAction::Version),
+            "help" | "--help" | "-h" => Some(CliAction::Help),
+            _ => None,
+        };
+        if let Some(action) = action {
+            if args.len() > 2 {
+                return Err(format!("command '{command}' does not accept arguments"));
+            }
+            return Ok(action);
+        }
+    }
+
+    let mut config_path = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "-c" | "--config-path" => {
-                if i + 1 >= args.len() {
-                    eprintln!("error: option '--config-path' requires a path");
-                    std::process::exit(1);
+                if config_path.is_some() {
+                    return Err("option '--config-path' may only be specified once".into());
                 }
-                return Some(args[i + 1].clone());
+                if i + 1 >= args.len() {
+                    return Err("option '--config-path' requires a path".into());
+                }
+                config_path = Some(args[i + 1].clone());
+                i += 2;
             }
-            _ => {}
+            option if option.starts_with('-') => {
+                return Err(format!("unknown option '{option}'"));
+            }
+            command if i == 1 => return Err(format!("unknown command '{command}'")),
+            argument => return Err(format!("unexpected argument '{argument}'")),
         }
-        i += 1;
     }
-    None
+    Ok(CliAction::Run { config_path })
 }
 
 fn usage_text() -> String {
@@ -62,35 +89,25 @@ fn print_usage(to_stdout: bool) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() >= 2 {
-        let sub = args[1].as_str();
-        let known = matches!(
-            sub,
-            "version" | "--version" | "-V" | "help" | "--help" | "-h"
-        );
-        if known && args.len() > 2 {
-            eprintln!("error: command '{}' does not accept arguments", args[1]);
+    let action = match parse_cli(&args) {
+        Ok(action) => action,
+        Err(message) => {
+            eprintln!("error: {message}");
             eprintln!("hint: run 'dseuhid help' for usage");
             std::process::exit(1);
         }
-        match sub {
-            "version" | "--version" | "-V" => {
-                println!("dseuhid {}", env!("CARGO_PKG_VERSION"));
-                return;
-            }
-            "help" | "--help" | "-h" => {
-                print_usage(true);
-                return;
-            }
-            _ => {
-                if !sub.starts_with('-') {
-                    eprintln!("error: unknown command '{}'", args[1]);
-                    eprintln!("hint: run 'dseuhid help' for usage");
-                    std::process::exit(1);
-                }
-            }
+    };
+    let config_path = match action {
+        CliAction::Version => {
+            println!("dseuhid {}", env!("CARGO_PKG_VERSION"));
+            return;
         }
-    }
+        CliAction::Help => {
+            print_usage(true);
+            return;
+        }
+        CliAction::Run { config_path } => config_path,
+    };
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -104,7 +121,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    if daemon::run(parse_config_path()) == daemon::DaemonExit::Fatal {
+    if daemon::run(config_path) == daemon::DaemonExit::Fatal {
         std::process::exit(1);
     }
 }
@@ -119,5 +136,62 @@ mod main_tests {
         assert!(usage.contains("Usage: dseuhid [OPTIONS] [COMMAND]"));
         assert!(usage.contains("--config-path <PATH>"));
         assert!(!usage.contains("<path>"));
+    }
+
+    #[test]
+    fn cli_parser_accepts_one_config_path() {
+        let args = [
+            "dseuhid".to_string(),
+            "--config-path".to_string(),
+            "/tmp/config.toml".to_string(),
+        ];
+        assert_eq!(
+            parse_cli(&args),
+            Ok(CliAction::Run {
+                config_path: Some("/tmp/config.toml".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn cli_parser_covers_all_supported_aliases_and_invalid_shapes() {
+        let parse = |arguments: &[&str]| {
+            let args = std::iter::once("dseuhid".to_string())
+                .chain(arguments.iter().map(|argument| (*argument).to_string()))
+                .collect::<Vec<_>>();
+            parse_cli(&args)
+        };
+
+        assert_eq!(parse(&[]), Ok(CliAction::Run { config_path: None }));
+        for option in ["-c", "--config-path"] {
+            assert_eq!(
+                parse(&[option, "/tmp/config.toml"]),
+                Ok(CliAction::Run {
+                    config_path: Some("/tmp/config.toml".to_string()),
+                })
+            );
+        }
+        for command in ["help", "--help", "-h"] {
+            assert_eq!(parse(&[command]), Ok(CliAction::Help));
+        }
+        for command in ["version", "--version", "-V"] {
+            assert_eq!(parse(&[command]), Ok(CliAction::Version));
+        }
+
+        for arguments in [
+            vec!["--unknown"],
+            vec!["unknown"],
+            vec!["help", "extra"],
+            vec!["version", "extra"],
+            vec!["-c"],
+            vec!["--config-path"],
+            vec!["-c", "one.toml", "--config-path", "two.toml"],
+            vec!["-c", "one.toml", "extra"],
+        ] {
+            assert!(
+                parse(&arguments).is_err(),
+                "invalid arguments were accepted: {arguments:?}"
+            );
+        }
     }
 }

@@ -3,7 +3,7 @@ use crate::mapping::{
 };
 use crate::model::Button;
 
-use super::targets::{resolve_step_target, resolve_target_or_macro};
+use super::targets::{into_mapping_target, parse_target, resolve_step_target, ParsedTarget};
 use super::{Config, MacroConfig};
 
 fn compile_macro(
@@ -58,12 +58,19 @@ impl Config {
                 continue;
             }
 
-            if btn_conf.turbo && btn_conf.remap.as_deref() == Some("combo") {
+            let parsed = match btn_conf.remap.as_deref() {
+                None | Some("") => ParsedTarget::Passthrough,
+                Some(remap) => parse_target(remap, &self.macros)
+                    .ok_or_else(|| format!("Unknown target '{remap}' for button '{btn_name}'"))?,
+            };
+
+            if matches!(parsed, ParsedTarget::Combo) {
                 for c in &btn_conf.combos {
                     let key = Button::from_name(&c.key)
                         .ok_or_else(|| format!("Unknown combo key '{}' in [{btn_name}]", c.key))?;
-                    let output =
-                        resolve_target_or_macro(&c.output, &self.macros).ok_or_else(|| {
+                    let output = parse_target(&c.output, &self.macros)
+                        .and_then(into_mapping_target)
+                        .ok_or_else(|| {
                             format!("Unknown combo output '{}' in [{btn_name}]", c.output)
                         })?;
                     combo_configs.push(ComboRule {
@@ -75,31 +82,16 @@ impl Config {
                 continue;
             }
 
-            if btn_conf.remap.as_deref() == Some("combo") {
-                for c in &btn_conf.combos {
-                    let key = Button::from_name(&c.key)
-                        .ok_or_else(|| format!("Unknown combo key '{}' in [{btn_name}]", c.key))?;
-                    let output =
-                        resolve_target_or_macro(&c.output, &self.macros).ok_or_else(|| {
-                            format!("Unknown combo output '{}' in [{btn_name}]", c.output)
-                        })?;
-                    combo_configs.push(ComboRule {
-                        modifier: src,
-                        key,
-                        output,
-                    });
-                }
-                continue;
-            }
-
-            let dst = match btn_conf.remap.as_deref() {
-                Some("passthrough") | None => continue,
-                Some("block") => {
+            let dst = match parsed {
+                ParsedTarget::Passthrough => continue,
+                ParsedTarget::Block => {
                     blocked_buttons.push(src);
                     continue;
                 }
-                Some(target) => resolve_target_or_macro(target, &self.macros)
-                    .ok_or_else(|| format!("Unknown target '{target}' for button '{btn_name}'"))?,
+                parsed => into_mapping_target(parsed).ok_or_else(|| {
+                    let remap = btn_conf.remap.as_deref().unwrap_or("");
+                    format!("Unknown target '{remap}' for button '{btn_name}'")
+                })?,
             };
             rules.push(RemapRule::new(src, dst));
         }
@@ -116,16 +108,21 @@ impl Config {
                 .and_then(|c| c.remap.as_deref())
                 .ok_or("split touchpad requires [touchpad_right] to be configured")?;
 
-            if left_dst == "block" {
+            let left_parsed = parse_target(left_dst, &self.macros)
+                .ok_or_else(|| format!("Unknown target '{left_dst}' for touchpad_left"))?;
+            let right_parsed = parse_target(right_dst, &self.macros)
+                .ok_or_else(|| format!("Unknown target '{right_dst}' for touchpad_right"))?;
+
+            if matches!(left_parsed, ParsedTarget::Block) {
                 return Err("touchpad_left: remap=\"block\" is not allowed in split mode".into());
             }
-            if right_dst == "block" {
+            if matches!(right_parsed, ParsedTarget::Block) {
                 return Err("touchpad_right: remap=\"block\" is not allowed in split mode".into());
             }
 
-            let left = resolve_target_or_macro(left_dst, &self.macros)
+            let left = into_mapping_target(left_parsed)
                 .ok_or_else(|| format!("Unknown target '{left_dst}' for touchpad_left"))?;
-            let right = resolve_target_or_macro(right_dst, &self.macros)
+            let right = into_mapping_target(right_parsed)
                 .ok_or_else(|| format!("Unknown target '{right_dst}' for touchpad_right"))?;
 
             rules.push(RemapRule::new(Button::TouchpadLeft, left));
@@ -169,20 +166,22 @@ impl Config {
                 Some(b) => b,
                 None => continue,
             };
-            let remap = btn_conf.remap.as_deref().unwrap_or("");
-            let macro_name = if matches!(remap, "block" | "combo") || remap.is_empty() {
-                continue;
-            } else {
-                remap
+            let macro_name = match btn_conf
+                .remap
+                .as_deref()
+                .and_then(|remap| parse_target(remap, &self.macros))
+            {
+                Some(ParsedTarget::MacroRef(name)) => name,
+                _ => continue,
             };
-            let mcfg = match self.macros.get(macro_name) {
+            let mcfg = match self.macros.get(&macro_name) {
                 Some(m) => m,
                 None => continue,
             };
-            let (mode, steps) = compile_macro(macro_name, mcfg)?;
+            let (mode, steps) = compile_macro(&macro_name, mcfg)?;
             configs.push(MacroRule {
                 trigger,
-                name: macro_name.to_string(),
+                name: macro_name,
                 mode,
                 steps,
                 source: MacroSource::Physical,
@@ -194,14 +193,18 @@ impl Config {
                 continue;
             }
             for c in &btn_conf.combos {
-                let mcfg = match self.macros.get(&c.output) {
+                let macro_name = match parse_target(&c.output, &self.macros) {
+                    Some(ParsedTarget::MacroRef(name)) => name,
+                    _ => continue,
+                };
+                let mcfg = match self.macros.get(&macro_name) {
                     Some(m) => m,
                     None => continue,
                 };
-                let (mode, steps) = compile_macro(&c.output, mcfg)?;
+                let (mode, steps) = compile_macro(&macro_name, mcfg)?;
                 configs.push(MacroRule {
                     trigger: Button::Cross,
-                    name: c.output.clone(),
+                    name: macro_name,
                     mode,
                     steps,
                     source: MacroSource::Combo,

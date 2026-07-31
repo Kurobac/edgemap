@@ -53,18 +53,61 @@ pub(super) fn resolve_config_path_with_home(
     if raw.starts_with('/') {
         return Ok(raw.to_string());
     }
-    if let Some(rest) = raw.strip_prefix('~') {
+    if raw == "~" {
         let home = home.ok_or_else(|| "HOME is not set or is empty".to_string())?;
-        return Ok(home.to_string() + rest);
+        return Ok(home.to_string());
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        let home = home.ok_or_else(|| "HOME is not set or is empty".to_string())?;
+        let separator = if home.ends_with('/') { "" } else { "/" };
+        return Ok(format!("{home}{separator}{rest}"));
+    }
+    if raw.starts_with('~') {
+        return Err(format!("unsupported home directory syntax: {raw}"));
     }
     Ok(base_dir.join(raw).to_string_lossy().into())
 }
 
 pub(super) fn resolve_config_path(raw: &str, base_dir: &Path) -> Result<String, String> {
-    let home = if raw.starts_with('~') {
+    let home = if raw == "~" || raw.starts_with("~/") {
         Some(required_home()?)
     } else {
         None
     };
     resolve_config_path_with_home(raw, base_dir, home.as_deref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_path_expands_only_home_or_home_relative_forms() {
+        let base = Path::new("/profiles");
+        assert_eq!(
+            resolve_config_path_with_home("~", base, Some("/home/test")).unwrap(),
+            "/home/test"
+        );
+        assert_eq!(
+            resolve_config_path_with_home("~/game.toml", base, Some("/home/test")).unwrap(),
+            "/home/test/game.toml"
+        );
+        assert_eq!(
+            resolve_config_path_with_home("~//game.toml", base, Some("/home/test")).unwrap(),
+            "/home/test//game.toml"
+        );
+        assert_eq!(
+            resolve_config_path_with_home("game.toml", base, None).unwrap(),
+            "/profiles/game.toml"
+        );
+    }
+
+    #[test]
+    fn config_path_rejects_named_user_tilde_syntax() {
+        for raw in ["~other", "~other/game.toml"] {
+            let error =
+                resolve_config_path_with_home(raw, Path::new("/profiles"), None).unwrap_err();
+            assert!(error.contains("unsupported"));
+        }
+    }
 }

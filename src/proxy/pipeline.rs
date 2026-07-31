@@ -22,7 +22,6 @@ pub(super) fn transform(
     now: Instant,
 ) -> PipelineOutput {
     let mut state = frame.state.clone();
-    let physical_snapshot = state.clone();
 
     if mapping.split_touchpad {
         state.set_button(Button::Touchpad, false);
@@ -31,6 +30,7 @@ pub(super) fn transform(
         }
     }
 
+    let physical_snapshot = state.clone();
     let mut keyboard_events = Vec::new();
 
     // L1: turbo
@@ -196,6 +196,7 @@ mod tests {
     use super::*;
     use crate::codec::SourceCodec;
     use crate::mapping::{ComboRule, MacroRule, MacroStep, RemapRule, StepTarget, TurboConfig};
+    use std::time::Duration;
 
     fn frame_with(buttons: &[Button]) -> ControllerFrame {
         let mut raw = [0u8; 64];
@@ -206,6 +207,120 @@ mod tests {
             frame.state.set_button(*button, true);
         }
         frame
+    }
+
+    fn touchpad_frame(pressed: bool, x: u16) -> ControllerFrame {
+        assert!(x <= 0x0fff);
+        let mut raw = [0u8; 64];
+        raw[0] = 0x01;
+        raw[8] = 8;
+        raw[10] = if pressed { 0x02 } else { 0 };
+        raw[33] = 0x00;
+        raw[34] = x as u8;
+        raw[35] = ((x >> 8) as u8) & 0x0f;
+        raw[37] = 0x80;
+        SourceCodec::Ds5Usb.decode_input(&raw).unwrap()
+    }
+
+    fn assert_split_child_turbo(x: u16, side: Button) {
+        let mapping = MappingConfig {
+            split_touchpad: true,
+            rules: vec![RemapRule::new(side, Target::Button(Button::Circle))],
+            turbo_configs: vec![TurboConfig {
+                src: side,
+                interval_ms: 20,
+                delay_ms: 0,
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let pressed = touchpad_frame(true, x);
+        let released = touchpad_frame(false, x);
+        let start = Instant::now();
+
+        let first = transform(&pressed, &mapping, &mut runtimes, start);
+        assert!(!first.physical_snapshot.button(Button::Touchpad));
+        assert!(first.physical_snapshot.button(side));
+        assert!(runtimes.turbo[0].active);
+        assert!(first.state.button(Button::Circle));
+
+        transform(
+            &pressed,
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(1),
+        );
+        let off = transform(
+            &pressed,
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(21),
+        );
+        assert!(!runtimes.turbo[0].phase);
+        assert!(!off.state.button(Button::Circle));
+
+        let release = transform(
+            &released,
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(22),
+        );
+        assert!(!runtimes.turbo[0].active);
+        assert!(!runtimes.turbo[0].turbo_active);
+        assert!(!release.physical_snapshot.button(side));
+        assert!(!release.state.button(Button::Circle));
+    }
+
+    #[test]
+    fn left_split_child_turbo_uses_derived_physical_snapshot() {
+        assert_split_child_turbo(959, Button::TouchpadLeft);
+    }
+
+    #[test]
+    fn right_split_child_turbo_uses_derived_physical_snapshot() {
+        assert_split_child_turbo(960, Button::TouchpadRight);
+    }
+
+    #[test]
+    fn turbo_modifier_off_phase_allows_chord_key_passthrough() {
+        let mapping = MappingConfig {
+            turbo_configs: vec![TurboConfig {
+                src: Button::L1,
+                interval_ms: 10,
+                delay_ms: 0,
+            }],
+            combo_configs: vec![ComboRule {
+                modifier: Button::L1,
+                key: Button::Cross,
+                output: Target::Button(Button::Circle),
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let frame = frame_with(&[Button::L1, Button::Cross]);
+        let start = Instant::now();
+
+        let on = transform(&frame, &mapping, &mut runtimes, start);
+        assert!(!on.state.button(Button::L1));
+        assert!(!on.state.button(Button::Cross));
+        assert!(on.state.button(Button::Circle));
+
+        transform(
+            &frame,
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(1),
+        );
+        let off = transform(
+            &frame,
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(11),
+        );
+        assert!(!off.state.button(Button::L1));
+        assert!(off.state.button(Button::Cross));
+        assert!(!off.state.button(Button::Circle));
+        assert!(!runtimes.combo[0].active);
     }
 
     #[test]

@@ -40,11 +40,23 @@ impl Config {
         let mut rules = Vec::new();
         let mut blocked_buttons = Vec::new();
         let mut combo_configs = Vec::new();
-        let mut split_touchpad = false;
+        let split_touchpad = self.buttons.iter().any(|(btn_name, btn_conf)| {
+            Button::from_name(btn_name) == Some(Button::Touchpad)
+                && btn_conf.remap.as_deref() == Some("split")
+        });
 
         for (btn_name, btn_conf) in &self.buttons {
             let src = Button::from_name(btn_name)
                 .ok_or_else(|| format!("Unknown source button: {btn_name}"))?;
+
+            if split_touchpad
+                && matches!(
+                    src,
+                    Button::Touchpad | Button::TouchpadLeft | Button::TouchpadRight
+                )
+            {
+                continue;
+            }
 
             if btn_conf.turbo && btn_conf.remap.as_deref() == Some("combo") {
                 for c in &btn_conf.combos {
@@ -60,11 +72,6 @@ impl Config {
                         output,
                     });
                 }
-                continue;
-            }
-
-            if src == Button::Touchpad && btn_conf.remap.as_deref() == Some("split") {
-                split_touchpad = true;
                 continue;
             }
 

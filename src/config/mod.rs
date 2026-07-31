@@ -251,6 +251,76 @@ mod tests {
     }
 
     #[test]
+    fn split_touchpad_children_compile_once() {
+        let cfg = parse(
+            "[touchpad]\n\
+             remap = \"split\"\n\
+             [touchpad_left]\n\
+             remap = \"cross\"\n\
+             [touchpad_right]\n\
+             remap = \"key:space\"\n",
+        );
+        assert!(validate(&cfg).is_ok());
+
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert!(mapping.split_touchpad);
+        assert_eq!(mapping.rules.len(), 2);
+
+        let left_rules = mapping
+            .rules
+            .iter()
+            .filter(|rule| rule.src == Button::TouchpadLeft)
+            .collect::<Vec<_>>();
+        assert_eq!(left_rules.len(), 1);
+        assert!(matches!(&left_rules[0].dst, Target::Button(Button::Cross)));
+
+        let right_rules = mapping
+            .rules
+            .iter()
+            .filter(|rule| rule.src == Button::TouchpadRight)
+            .collect::<Vec<_>>();
+        assert_eq!(right_rules.len(), 1);
+        assert!(matches!(&right_rules[0].dst, Target::Keyboard(_)));
+    }
+
+    #[test]
+    fn split_touchpad_child_special_targets_keep_compile_errors() {
+        for (remap, expected) in [
+            (
+                "block",
+                "touchpad_left: remap=\"block\" is not allowed in split mode",
+            ),
+            (
+                "passthrough",
+                "Unknown target 'passthrough' for touchpad_left",
+            ),
+            ("combo", "Unknown target 'combo' for touchpad_left"),
+        ] {
+            let cfg = parse(&format!(
+                "[touchpad]\n\
+                 remap = \"split\"\n\
+                 [touchpad_left]\n\
+                 remap = \"{remap}\"\n\
+                 [touchpad_right]\n\
+                 remap = \"circle\"\n"
+            ));
+            assert_eq!(cfg.to_mapping_config().unwrap_err(), expected);
+        }
+    }
+
+    #[test]
+    fn ordinary_touchpad_remap_still_compiles() {
+        let cfg = parse("[touchpad]\nremap = \"cross\"\n");
+        let mapping = cfg.to_mapping_config().unwrap();
+        assert_eq!(mapping.rules.len(), 1);
+        assert_eq!(mapping.rules[0].src, Button::Touchpad);
+        assert!(matches!(
+            &mapping.rules[0].dst,
+            Target::Button(Button::Cross)
+        ));
+    }
+
+    #[test]
     fn default_config_parses() {
         let cfg: Config = toml::from_str(default_content()).unwrap();
         assert_eq!(cfg.version, 2);

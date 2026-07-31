@@ -1,18 +1,18 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::time::Instant;
 
 use log::debug;
 
 use crate::codec::ControllerFrame;
-use crate::mapping::{MacroMode, MacroSource, MappingConfig, Target};
+use crate::mapping::{MacroMode, MacroSource, MappingConfig, OutputIntent, Target};
 use crate::model::{Button, GamepadState};
 
-use super::runtime::{apply_target_to_state, MappingRuntimes};
+use super::runtime::MappingRuntimes;
 
 pub(super) struct PipelineOutput {
     pub(super) state: GamepadState,
     pub(super) physical_snapshot: GamepadState,
-    pub(super) keyboard_events: Vec<(u16, bool)>,
+    pub(super) keyboard: HashSet<u16>,
 }
 
 pub(super) fn transform(
@@ -20,6 +20,25 @@ pub(super) fn transform(
     mapping: &MappingConfig,
     runtimes: &mut MappingRuntimes,
     now: Instant,
+) -> PipelineOutput {
+    transform_inner(frame, mapping, runtimes, now, true)
+}
+
+pub(super) fn transform_timer(
+    frame: &ControllerFrame,
+    mapping: &MappingConfig,
+    runtimes: &mut MappingRuntimes,
+    now: Instant,
+) -> PipelineOutput {
+    transform_inner(frame, mapping, runtimes, now, false)
+}
+
+fn transform_inner(
+    frame: &ControllerFrame,
+    mapping: &MappingConfig,
+    runtimes: &mut MappingRuntimes,
+    now: Instant,
+    observe_source: bool,
 ) -> PipelineOutput {
     let mut state = frame.state.clone();
 
@@ -31,54 +50,32 @@ pub(super) fn transform(
     }
 
     let physical_snapshot = state.clone();
-    let mut keyboard_events = Vec::new();
+    let mut intent = OutputIntent::default();
 
     // L1: turbo
     for turbo in &mut runtimes.turbo {
         let pressed = physical_snapshot.button(turbo.src);
-        if turbo.active || pressed {
+        let was_active = turbo.active;
+        if turbo.active || (observe_source && pressed) {
             suppress_button(&mut state, turbo.src);
         }
-        if pressed && !turbo.active {
-            turbo.active = true;
-            turbo.turbo_active = false;
-            turbo.phase = true;
-            turbo.press_time = now;
-            state.set_button(turbo.src, true);
-            debug!("turbo pressed: source={:?}, mode=one-shot", turbo.src);
-        } else if !pressed && turbo.active {
-            turbo.active = false;
-            turbo.turbo_active = false;
-            state.set_button(turbo.src, false);
-            debug!("turbo released: source={:?}", turbo.src);
-        } else if turbo.active && !turbo.turbo_active && turbo.delay_ms > 0 {
-            if now.saturating_duration_since(turbo.press_time).as_millis() >= turbo.delay_ms as u128
-            {
-                turbo.turbo_active = true;
-                turbo.last_toggle = now;
-                debug!(
-                    "turbo delay elapsed; toggling started: source={:?}, interval_ms={}",
-                    turbo.src, turbo.interval_ms
-                );
+        if observe_source {
+            if pressed && !turbo.active {
+                turbo.active = true;
+                turbo.turbo_active = false;
+                turbo.phase = true;
+                turbo.press_time = now;
+                state.set_button(turbo.src, true);
+                debug!("turbo pressed: source={:?}, mode=one-shot", turbo.src);
+            } else if !pressed && turbo.active {
+                turbo.active = false;
+                turbo.turbo_active = false;
+                state.set_button(turbo.src, false);
+                debug!("turbo released: source={:?}", turbo.src);
             }
-        } else if turbo.active && !turbo.turbo_active {
-            turbo.turbo_active = true;
-            turbo.last_toggle = now;
-            debug!(
-                "turbo toggling started: source={:?}, interval_ms={}",
-                turbo.src, turbo.interval_ms
-            );
-        } else if turbo.active
-            && turbo.turbo_active
-            && now.saturating_duration_since(turbo.last_toggle).as_millis()
-                >= turbo.interval_ms as u128
-        {
-            turbo.phase = !turbo.phase;
-            turbo.last_toggle = now;
-            debug!(
-                "turbo phase changed: source={:?}, active={}",
-                turbo.src, turbo.phase
-            );
+        }
+        if turbo.active && (!observe_source || was_active) {
+            turbo.advance(now);
         }
         if turbo.active {
             state.set_button(turbo.src, turbo.phase);
@@ -97,11 +94,9 @@ pub(super) fn transform(
                 suppress_button(&mut state, combo.key);
             }
             let trigger = modifier_held && key_held;
-            if trigger {
-                combo.active = true;
+            combo.active = trigger;
+            if combo.active {
                 combo_triggers.push(combo.output.clone());
-            } else if combo.active {
-                combo.active = false;
             }
         }
     }
@@ -114,34 +109,37 @@ pub(super) fn transform(
     let l1 = state.clone();
 
     // L2: physical macro detection
-    for runtime in &mut runtimes.macros {
-        if runtime.source != MacroSource::Physical {
-            continue;
-        }
-        let pressed = l1.button(runtime.trigger);
-        if pressed && !runtime.active {
-            runtime.activate(now);
-        }
-        if !pressed && runtime.active && matches!(runtime.mode, MacroMode::Hold) {
-            runtime.deactivate(&mut state, &mut keyboard_events);
+    if observe_source {
+        for runtime in &mut runtimes.macros {
+            if runtime.source != MacroSource::Physical {
+                continue;
+            }
+            let pressed = l1.button(runtime.trigger);
+            if pressed && !runtime.active {
+                runtime.activate(now);
+            }
+            if !pressed && runtime.active && matches!(runtime.mode, MacroMode::Hold) {
+                runtime.deactivate();
+            }
         }
     }
 
     // L2: remap
-    mapping.apply(&l1, &mut state, &mut keyboard_events);
+    mapping.collect(&l1, &mut state, &mut intent);
 
     // L2: combo injection
     for target in &combo_triggers {
         match target {
             Target::Macro(name) => {
-                for runtime in &mut runtimes.macros {
-                    if runtime.name == *name && runtime.source == MacroSource::Combo {
-                        runtime.activate(now);
+                if observe_source {
+                    for runtime in &mut runtimes.macros {
+                        if runtime.name == *name && runtime.source == MacroSource::Combo {
+                            runtime.activate(now);
+                        }
                     }
                 }
             }
-            Target::Keyboard(code) => keyboard_events.push((*code, true)),
-            _ => apply_target_to_state(&mut state, target, true),
+            _ => intent.press_target(&mut state, target),
         }
     }
 
@@ -156,21 +154,24 @@ pub(super) fn transform(
             combo.active && matches!(&combo.output, Target::Macro(name) if name == &runtime.name)
         });
         if !any_combo_active {
-            runtime.deactivate(&mut state, &mut keyboard_events);
+            runtime.deactivate();
         }
     }
 
     // L2: macro injection
     for runtime in &mut runtimes.macros {
         if runtime.active {
-            runtime.tick(&mut state, now, &mut keyboard_events);
+            runtime.advance(now);
+            runtime.contribute(&mut intent);
         }
     }
+
+    intent.apply_to_state(&mut state);
 
     PipelineOutput {
         state,
         physical_snapshot,
-        keyboard_events,
+        keyboard: intent.into_keyboard(),
     }
 }
 
@@ -183,18 +184,11 @@ fn suppress_button(state: &mut GamepadState, button: Button) {
     }
 }
 
-pub(super) fn merge_keyboard_events(events: &[(u16, bool)]) -> HashMap<u16, bool> {
-    let mut current = HashMap::new();
-    for (code, pressed) in events {
-        current.insert(*code, *pressed);
-    }
-    current
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::codec::SourceCodec;
+    use crate::keyboard::KeyboardDevice;
     use crate::mapping::{ComboRule, MacroRule, MacroStep, RemapRule, StepTarget, TurboConfig};
     use std::time::Duration;
 
@@ -305,17 +299,12 @@ mod tests {
         assert!(!on.state.button(Button::Cross));
         assert!(on.state.button(Button::Circle));
 
-        transform(
+        transform_timer(&frame, &mapping, &mut runtimes, start);
+        let off = transform_timer(
             &frame,
             &mapping,
             &mut runtimes,
-            start + Duration::from_millis(1),
-        );
-        let off = transform(
-            &frame,
-            &mapping,
-            &mut runtimes,
-            start + Duration::from_millis(11),
+            start + Duration::from_millis(10),
         );
         assert!(!off.state.button(Button::L1));
         assert!(off.state.button(Button::Cross));
@@ -419,9 +408,544 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_merge_is_last_write_wins() {
-        let merged = merge_keyboard_events(&[(30, true), (31, true), (30, false)]);
-        assert_eq!(merged.get(&30), Some(&false));
-        assert_eq!(merged.get(&31), Some(&true));
+    fn physical_button_survives_shared_macro_release() {
+        let mapping = MappingConfig {
+            macro_configs: vec![MacroRule {
+                trigger: Button::Cross,
+                name: "shared".to_string(),
+                mode: MacroMode::Single,
+                steps: vec![MacroStep {
+                    action: StepTarget::Gamepad(Button::Circle),
+                    press_ms: 0,
+                    release_ms: 10,
+                }],
+                source: MacroSource::Physical,
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let start = Instant::now();
+
+        let active = transform(
+            &frame_with(&[Button::Cross, Button::Circle]),
+            &mapping,
+            &mut runtimes,
+            start,
+        );
+        assert!(active.state.button(Button::Circle));
+
+        let completed = transform(
+            &frame_with(&[Button::Circle]),
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(11),
+        );
+        assert!(completed.state.button(Button::Circle));
+        assert!(!runtimes.macros[0].active);
+    }
+
+    #[test]
+    fn physical_button_survives_shared_remap_release() {
+        let mapping = MappingConfig {
+            rules: vec![RemapRule::new(
+                Button::Cross,
+                Target::Button(Button::Circle),
+            )],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let start = Instant::now();
+
+        let shared = transform(
+            &frame_with(&[Button::Cross, Button::Circle]),
+            &mapping,
+            &mut runtimes,
+            start,
+        );
+        assert!(shared.state.button(Button::Circle));
+
+        let physical_only = transform(
+            &frame_with(&[Button::Circle]),
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(1),
+        );
+        assert!(physical_only.state.button(Button::Circle));
+
+        let released = transform(
+            &frame_with(&[]),
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(2),
+        );
+        assert!(!released.state.button(Button::Circle));
+    }
+
+    #[test]
+    fn remap_output_survives_shared_macro_release() {
+        let mapping = MappingConfig {
+            rules: vec![RemapRule::new(
+                Button::Square,
+                Target::Button(Button::Circle),
+            )],
+            macro_configs: vec![MacroRule {
+                trigger: Button::Cross,
+                name: "shared-remap".to_string(),
+                mode: MacroMode::Single,
+                steps: vec![MacroStep {
+                    action: StepTarget::Gamepad(Button::Circle),
+                    press_ms: 0,
+                    release_ms: 10,
+                }],
+                source: MacroSource::Physical,
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let start = Instant::now();
+
+        transform(
+            &frame_with(&[Button::Cross, Button::Square]),
+            &mapping,
+            &mut runtimes,
+            start,
+        );
+        let completed = transform(
+            &frame_with(&[Button::Square]),
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(11),
+        );
+
+        assert!(!runtimes.macros[0].active);
+        assert!(completed.state.button(Button::Circle));
+    }
+
+    #[test]
+    fn two_macros_share_button_until_last_owner_finishes() {
+        let make_macro = |trigger: Button, name: &str, release_ms: u64| MacroRule {
+            trigger,
+            name: name.to_string(),
+            mode: MacroMode::Single,
+            steps: vec![MacroStep {
+                action: StepTarget::Gamepad(Button::Circle),
+                press_ms: 0,
+                release_ms,
+            }],
+            source: MacroSource::Physical,
+        };
+        let mapping = MappingConfig {
+            macro_configs: vec![
+                make_macro(Button::Cross, "short", 10),
+                make_macro(Button::Square, "long", 100),
+            ],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let start = Instant::now();
+
+        transform(
+            &frame_with(&[Button::Cross, Button::Square]),
+            &mapping,
+            &mut runtimes,
+            start,
+        );
+        let output = transform(
+            &frame_with(&[]),
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(20),
+        );
+
+        assert!(!runtimes.macros[0].active);
+        assert!(runtimes.macros[1].active);
+        assert!(output.state.button(Button::Circle));
+    }
+
+    #[test]
+    fn combo_output_survives_shared_macro_release() {
+        let mapping = MappingConfig {
+            combo_configs: vec![ComboRule {
+                modifier: Button::L1,
+                key: Button::Cross,
+                output: Target::Button(Button::Circle),
+            }],
+            macro_configs: vec![MacroRule {
+                trigger: Button::Square,
+                name: "shared".to_string(),
+                mode: MacroMode::Single,
+                steps: vec![MacroStep {
+                    action: StepTarget::Gamepad(Button::Circle),
+                    press_ms: 0,
+                    release_ms: 10,
+                }],
+                source: MacroSource::Physical,
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let start = Instant::now();
+
+        transform(
+            &frame_with(&[Button::L1, Button::Cross, Button::Square]),
+            &mapping,
+            &mut runtimes,
+            start,
+        );
+        let output = transform(
+            &frame_with(&[Button::L1, Button::Cross]),
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(20),
+        );
+
+        assert!(!runtimes.macros[0].active);
+        assert!(output.state.button(Button::Circle));
+    }
+
+    #[test]
+    fn remap_and_macro_share_keyboard_key_as_one_desired_owner_set() {
+        let key = 57;
+        let mapping = MappingConfig {
+            rules: vec![RemapRule::new(Button::Cross, Target::Keyboard(key))],
+            macro_configs: vec![MacroRule {
+                trigger: Button::Square,
+                name: "shared-key".to_string(),
+                mode: MacroMode::Single,
+                steps: vec![MacroStep {
+                    action: StepTarget::Keyboard(key),
+                    press_ms: 0,
+                    release_ms: 10,
+                }],
+                source: MacroSource::Physical,
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let start = Instant::now();
+
+        let active = transform(
+            &frame_with(&[Button::Cross, Button::Square]),
+            &mapping,
+            &mut runtimes,
+            start,
+        );
+        assert_eq!(active.keyboard, HashSet::from([key]));
+
+        let macro_completed = transform(
+            &frame_with(&[Button::Cross]),
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(20),
+        );
+        assert_eq!(macro_completed.keyboard, HashSet::from([key]));
+
+        let released = transform(
+            &frame_with(&[]),
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(21),
+        );
+        assert!(released.keyboard.is_empty());
+    }
+
+    #[test]
+    fn remap_combo_and_macro_share_one_keyboard_press_and_release() {
+        let key = 57;
+        let mapping = MappingConfig {
+            rules: vec![RemapRule::new(Button::Cross, Target::Keyboard(key))],
+            combo_configs: vec![ComboRule {
+                modifier: Button::L1,
+                key: Button::Circle,
+                output: Target::Keyboard(key),
+            }],
+            macro_configs: vec![MacroRule {
+                trigger: Button::Square,
+                name: "shared-key".to_string(),
+                mode: MacroMode::Single,
+                steps: vec![MacroStep {
+                    action: StepTarget::Keyboard(key),
+                    press_ms: 0,
+                    release_ms: 10,
+                }],
+                source: MacroSource::Physical,
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let mut keyboard = KeyboardDevice::dummy();
+        let start = Instant::now();
+
+        let all_owners = transform(
+            &frame_with(&[Button::Cross, Button::L1, Button::Circle, Button::Square]),
+            &mapping,
+            &mut runtimes,
+            start,
+        );
+        assert_eq!(all_owners.keyboard, HashSet::from([key]));
+        keyboard.sync(&all_owners.keyboard);
+
+        let remap_and_combo = transform(
+            &frame_with(&[Button::Cross, Button::L1, Button::Circle]),
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(20),
+        );
+        assert_eq!(remap_and_combo.keyboard, HashSet::from([key]));
+        keyboard.sync(&remap_and_combo.keyboard);
+
+        let combo_only = transform(
+            &frame_with(&[Button::L1, Button::Circle]),
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(21),
+        );
+        assert_eq!(combo_only.keyboard, HashSet::from([key]));
+        keyboard.sync(&combo_only.keyboard);
+
+        let released = transform(
+            &frame_with(&[]),
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(22),
+        );
+        assert!(released.keyboard.is_empty());
+        keyboard.sync(&released.keyboard);
+
+        assert_eq!(
+            keyboard.recorded_key_events(),
+            vec![(key, true), (key, false)]
+        );
+    }
+
+    #[test]
+    fn late_turbo_tick_computes_current_phase_without_catch_up_reports() {
+        let mapping = MappingConfig {
+            turbo_configs: vec![TurboConfig {
+                src: Button::Cross,
+                interval_ms: 10,
+                delay_ms: 0,
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let frame = frame_with(&[Button::Cross]);
+        let start = Instant::now();
+
+        transform(&frame, &mapping, &mut runtimes, start);
+        assert_eq!(runtimes.next_deadline(), Some(start));
+
+        transform_timer(&frame, &mapping, &mut runtimes, start);
+        assert_eq!(
+            runtimes.next_deadline(),
+            Some(start + Duration::from_millis(10))
+        );
+
+        let late = start + Duration::from_millis(25);
+        let output = transform_timer(&frame, &mapping, &mut runtimes, late);
+        assert!(output.state.button(Button::Cross));
+        assert_eq!(
+            runtimes.next_deadline(),
+            Some(start + Duration::from_millis(30))
+        );
+
+        let next = transform_timer(
+            &frame,
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(35),
+        );
+        assert!(!next.state.button(Button::Cross));
+        assert_eq!(
+            runtimes.next_deadline(),
+            Some(start + Duration::from_millis(40))
+        );
+    }
+
+    #[test]
+    fn late_turbo_delay_uses_the_original_toggle_cadence() {
+        let mapping = MappingConfig {
+            turbo_configs: vec![TurboConfig {
+                src: Button::Cross,
+                interval_ms: 10,
+                delay_ms: 20,
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let frame = frame_with(&[Button::Cross]);
+        let start = Instant::now();
+
+        transform(&frame, &mapping, &mut runtimes, start);
+        let late = start + Duration::from_millis(45);
+        let output = transform_timer(&frame, &mapping, &mut runtimes, late);
+
+        assert!(output.state.button(Button::Cross));
+        assert_eq!(
+            runtimes.next_deadline(),
+            Some(start + Duration::from_millis(50))
+        );
+    }
+
+    #[test]
+    fn a_late_timer_may_skip_a_short_macro_without_retriggering_it() {
+        let mapping = MappingConfig {
+            macro_configs: vec![MacroRule {
+                trigger: Button::Cross,
+                name: "short".to_string(),
+                mode: MacroMode::Single,
+                steps: vec![MacroStep {
+                    action: StepTarget::Gamepad(Button::Circle),
+                    press_ms: 5,
+                    release_ms: 6,
+                }],
+                source: MacroSource::Physical,
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let held = frame_with(&[Button::Cross]);
+        let start = Instant::now();
+
+        let initial = transform(&held, &mapping, &mut runtimes, start);
+        assert!(!initial.state.button(Button::Circle));
+        assert_eq!(
+            runtimes.next_deadline(),
+            Some(start + Duration::from_millis(5))
+        );
+
+        let late = transform_timer(
+            &held,
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(10),
+        );
+        assert!(!late.state.button(Button::Circle));
+        assert!(!runtimes.macros[0].active);
+        assert_eq!(runtimes.next_deadline(), None);
+
+        transform_timer(
+            &held,
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(11),
+        );
+        assert!(!runtimes.macros[0].active);
+
+        transform(
+            &held,
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(12),
+        );
+        assert!(runtimes.macros[0].active);
+    }
+
+    #[test]
+    fn a_short_macro_is_visible_when_timer_hits_both_deadlines() {
+        let mapping = MappingConfig {
+            macro_configs: vec![MacroRule {
+                trigger: Button::Cross,
+                name: "visible".to_string(),
+                mode: MacroMode::Single,
+                steps: vec![MacroStep {
+                    action: StepTarget::Gamepad(Button::Circle),
+                    press_ms: 5,
+                    release_ms: 6,
+                }],
+                source: MacroSource::Physical,
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let frame = frame_with(&[Button::Cross]);
+        let start = Instant::now();
+
+        transform(&frame, &mapping, &mut runtimes, start);
+        let pressed = transform_timer(
+            &frame,
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(5),
+        );
+        assert!(pressed.state.button(Button::Circle));
+        assert_eq!(
+            runtimes.next_deadline(),
+            Some(start + Duration::from_millis(6))
+        );
+
+        let released = transform_timer(
+            &frame,
+            &mapping,
+            &mut runtimes,
+            start + Duration::from_millis(6),
+        );
+        assert!(!released.state.button(Button::Circle));
+        assert!(!runtimes.macros[0].active);
+    }
+
+    #[test]
+    fn late_hold_macro_uses_current_cycle_phase_with_a_future_deadline() {
+        let mapping = MappingConfig {
+            macro_configs: vec![MacroRule {
+                trigger: Button::Cross,
+                name: "loop".to_string(),
+                mode: MacroMode::Hold,
+                steps: vec![MacroStep {
+                    action: StepTarget::Gamepad(Button::Circle),
+                    press_ms: 0,
+                    release_ms: 5,
+                }],
+                source: MacroSource::Physical,
+            }],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        let frame = frame_with(&[Button::Cross]);
+        let start = Instant::now();
+
+        transform(&frame, &mapping, &mut runtimes, start);
+        let late = start + Duration::from_millis(20);
+        let output = transform_timer(&frame, &mapping, &mut runtimes, late);
+
+        assert!(output.state.button(Button::Circle));
+        assert_eq!(
+            runtimes.next_deadline(),
+            Some(late + Duration::from_millis(5))
+        );
+    }
+
+    #[test]
+    fn timer_does_not_start_physical_or_combo_macros() {
+        let make_macro = |name: &str, trigger: Button, source: MacroSource| MacroRule {
+            trigger,
+            name: name.to_string(),
+            mode: MacroMode::Single,
+            steps: vec![MacroStep {
+                action: StepTarget::Gamepad(Button::Circle),
+                press_ms: 0,
+                release_ms: 10,
+            }],
+            source,
+        };
+        let mapping = MappingConfig {
+            combo_configs: vec![ComboRule {
+                modifier: Button::L1,
+                key: Button::Cross,
+                output: Target::Macro("combo".to_string()),
+            }],
+            macro_configs: vec![
+                make_macro("physical", Button::Square, MacroSource::Physical),
+                make_macro("combo", Button::Cross, MacroSource::Combo),
+            ],
+            ..Default::default()
+        };
+        let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+        runtimes.combo[0].active = true;
+        let frame = frame_with(&[Button::L1, Button::Cross, Button::Square]);
+
+        transform_timer(&frame, &mapping, &mut runtimes, Instant::now());
+
+        assert!(runtimes.macros.iter().all(|runtime| !runtime.active));
     }
 }

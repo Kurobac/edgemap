@@ -1,39 +1,12 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use log::debug;
 
 use crate::mapping::{
-    ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, StepTarget, StickDir, Target,
-    Trigger, TurboConfig,
+    ComboRule, MacroMode, MacroRule, MacroSource, MappingConfig, OutputIntent, StepTarget, Target,
+    TurboConfig,
 };
-use crate::model::{Button, GamepadState};
-
-pub(super) fn apply_target_to_state(state: &mut GamepadState, target: &Target, on: bool) {
-    match target {
-        Target::Button(btn) => state.set_button(*btn, on),
-        Target::TriggerFull(t) => match t {
-            Trigger::L2 => {
-                state.set_button(Button::L2, on);
-                state.l2_analog = if on { 255 } else { 0 };
-            }
-            Trigger::R2 => {
-                state.set_button(Button::R2, on);
-                state.r2_analog = if on { 255 } else { 0 };
-            }
-        },
-        Target::Stick(dir) => match dir {
-            StickDir::LsUp => state.left_stick_y = if on { 0 } else { 128 },
-            StickDir::LsDown => state.left_stick_y = if on { 255 } else { 128 },
-            StickDir::LsLeft => state.left_stick_x = if on { 0 } else { 128 },
-            StickDir::LsRight => state.left_stick_x = if on { 255 } else { 128 },
-            StickDir::RsUp => state.right_stick_y = if on { 0 } else { 128 },
-            StickDir::RsDown => state.right_stick_y = if on { 255 } else { 128 },
-            StickDir::RsLeft => state.right_stick_x = if on { 0 } else { 128 },
-            StickDir::RsRight => state.right_stick_x = if on { 255 } else { 128 },
-        },
-        Target::Macro(_) | Target::Keyboard(_) => {}
-    }
-}
+use crate::model::Button;
 
 pub(super) struct TurboRuntime {
     pub(super) src: Button,
@@ -59,6 +32,72 @@ impl TurboRuntime {
             last_toggle: Instant::now(),
         }
     }
+
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        if !self.active {
+            return None;
+        }
+        if self.turbo_active {
+            self.last_toggle
+                .checked_add(Duration::from_millis(self.interval_ms))
+        } else {
+            self.press_time
+                .checked_add(Duration::from_millis(self.delay_ms))
+        }
+    }
+
+    pub(super) fn advance(&mut self, now: Instant) {
+        if !self.active {
+            return;
+        }
+        if !self.turbo_active {
+            let Some(start) = self
+                .press_time
+                .checked_add(Duration::from_millis(self.delay_ms))
+            else {
+                return;
+            };
+            if now < start {
+                return;
+            }
+            self.turbo_active = true;
+            self.last_toggle = start;
+            debug!(
+                "turbo toggling started: source={:?}, interval_ms={}",
+                self.src, self.interval_ms
+            );
+        }
+
+        let interval = Duration::from_millis(self.interval_ms);
+        assert!(
+            !interval.is_zero(),
+            "validated turbo interval must be non-zero"
+        );
+        let elapsed = now.saturating_duration_since(self.last_toggle);
+        let intervals = elapsed.as_nanos() / interval.as_nanos();
+        if intervals == 0 {
+            return;
+        }
+        if intervals % 2 == 1 {
+            self.phase = !self.phase;
+        }
+        let remainder_ns = elapsed.as_nanos() % interval.as_nanos();
+        let remainder =
+            duration_from_nanos(remainder_ns).expect("an interval remainder must fit in Duration");
+        self.last_toggle = now
+            .checked_sub(remainder)
+            .expect("a monotonic elapsed remainder must be subtractable");
+        debug!(
+            "turbo phase synchronized: source={:?}, intervals={intervals}, active={}",
+            self.src, self.phase
+        );
+    }
+}
+
+fn duration_from_nanos(value: u128) -> Option<Duration> {
+    let seconds = u64::try_from(value / 1_000_000_000).ok()?;
+    let nanos = (value % 1_000_000_000) as u32;
+    Some(Duration::new(seconds, nanos))
 }
 
 pub(super) struct ComboRuntime {
@@ -95,6 +134,7 @@ pub(super) struct MacroRuntime {
     pub(super) mode: MacroMode,
     pub(super) source: MacroSource,
     step_start: Instant,
+    next_transition: Option<Instant>,
 }
 
 impl MacroRuntime {
@@ -117,6 +157,7 @@ impl MacroRuntime {
             mode: rule.mode.clone(),
             source: rule.source.clone(),
             step_start: Instant::now(),
+            next_transition: None,
         }
     }
 
@@ -130,84 +171,135 @@ impl MacroRuntime {
             step.pressed = false;
             step.done = false;
         }
+        self.next_transition = self
+            .steps
+            .iter()
+            .filter_map(|step| now.checked_add(Duration::from_millis(step.press_ms)))
+            .min();
     }
 
-    pub(super) fn deactivate(
-        &mut self,
-        state: &mut GamepadState,
-        keyboard_events: &mut Vec<(u16, bool)>,
-    ) {
+    pub(super) fn deactivate(&mut self) {
         for step in &mut self.steps {
-            if step.pressed {
-                match &step.action {
-                    StepTarget::Gamepad(btn) => state.set_button(*btn, false),
-                    StepTarget::Keyboard(code) => keyboard_events.push((*code, false)),
-                }
-            }
             step.pressed = false;
             step.done = false;
         }
         self.active = false;
+        self.next_transition = None;
     }
 
-    pub(super) fn tick(
-        &mut self,
-        state: &mut GamepadState,
-        now: Instant,
-        keyboard_events: &mut Vec<(u16, bool)>,
-    ) {
-        let elapsed = now.duration_since(self.step_start).as_millis() as u64;
-        let mut all_done = true;
+    pub(super) fn advance(&mut self, now: Instant) {
+        if !self.active {
+            return;
+        }
+        if matches!(&self.mode, MacroMode::Single) {
+            self.advance_single(now);
+        } else {
+            self.advance_hold(now);
+        }
+    }
+
+    fn advance_single(&mut self, now: Instant) {
+        let elapsed = now.saturating_duration_since(self.step_start).as_millis();
         for step in &mut self.steps {
-            if step.done {
-                continue;
-            }
-            if elapsed >= step.press_ms && !step.pressed {
-                step.pressed = true;
-                match &step.action {
-                    StepTarget::Gamepad(btn) => state.set_button(*btn, true),
-                    StepTarget::Keyboard(code) => keyboard_events.push((*code, true)),
-                }
+            let was_pressed = step.pressed;
+            step.done = elapsed >= step.release_ms as u128;
+            step.pressed = elapsed >= step.press_ms as u128 && !step.done;
+            if step.pressed && !was_pressed {
                 debug!(
                     "macro step pressed: name={}, elapsed_ms={elapsed}, target={:?}",
                     self.name, step.action
                 );
             }
-            if elapsed >= step.release_ms && step.pressed {
-                step.pressed = false;
-                step.done = true;
-                match &step.action {
-                    StepTarget::Gamepad(btn) => state.set_button(*btn, false),
-                    StepTarget::Keyboard(code) => keyboard_events.push((*code, false)),
-                }
+            if !step.pressed && was_pressed {
                 debug!(
                     "macro step released: name={}, elapsed_ms={elapsed}, target={:?}",
                     self.name, step.action
                 );
-            } else if !step.done {
-                all_done = false;
-            }
-            if step.pressed {
-                match &step.action {
-                    StepTarget::Gamepad(btn) => state.set_button(*btn, true),
-                    StepTarget::Keyboard(code) => keyboard_events.push((*code, true)),
-                }
             }
         }
-        if all_done {
-            match self.mode {
-                MacroMode::Hold => {
-                    debug!("macro loop restarted: name={}", self.name);
-                    self.step_start = now;
-                    for step in &mut self.steps {
-                        step.pressed = false;
-                        step.done = false;
-                    }
-                }
-                MacroMode::Single => {
-                    debug!("macro completed: name={}", self.name);
-                    self.deactivate(state, keyboard_events);
-                }
+        if self.steps.iter().all(|step| step.done) {
+            debug!("macro completed: name={}", self.name);
+            self.deactivate();
+            return;
+        }
+        self.next_transition = self
+            .steps
+            .iter()
+            .filter(|step| !step.done)
+            .filter_map(|step| {
+                let offset = if step.pressed {
+                    step.release_ms
+                } else {
+                    step.press_ms
+                };
+                self.step_start.checked_add(Duration::from_millis(offset))
+            })
+            .filter(|deadline| *deadline > now)
+            .min();
+    }
+
+    fn advance_hold(&mut self, now: Instant) {
+        let cycle_ms = self
+            .steps
+            .iter()
+            .map(|step| step.release_ms)
+            .max()
+            .expect("validated hold macro must contain a step");
+        let elapsed_ms = now.saturating_duration_since(self.step_start).as_millis();
+        let cycle_ms_u128 = cycle_ms as u128;
+        let cycle_index = elapsed_ms / cycle_ms_u128;
+        let position_ms = (elapsed_ms % cycle_ms_u128) as u64;
+        let cycle_offset_ms = u64::try_from(cycle_index * cycle_ms_u128).ok();
+        let cycle_start = cycle_offset_ms
+            .and_then(|offset| self.step_start.checked_add(Duration::from_millis(offset)));
+
+        for step in &mut self.steps {
+            let was_pressed = step.pressed;
+            step.pressed = step.press_ms <= position_ms && position_ms < step.release_ms;
+            step.done = false;
+            if step.pressed && !was_pressed {
+                debug!(
+                    "macro step pressed: name={}, cycle_ms={position_ms}, target={:?}",
+                    self.name, step.action
+                );
+            } else if !step.pressed && was_pressed {
+                debug!(
+                    "macro step released: name={}, cycle_ms={position_ms}, target={:?}",
+                    self.name, step.action
+                );
+            }
+        }
+
+        self.next_transition = cycle_start.and_then(|cycle_start| {
+            self.steps
+                .iter()
+                .filter_map(|step| {
+                    let offset = if position_ms < step.press_ms {
+                        step.press_ms
+                    } else if position_ms < step.release_ms {
+                        step.release_ms
+                    } else {
+                        cycle_ms.checked_add(step.press_ms)?
+                    };
+                    cycle_start.checked_add(Duration::from_millis(offset))
+                })
+                .filter(|deadline| *deadline > now)
+                .min()
+        });
+    }
+
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        if self.active {
+            self.next_transition
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn contribute(&self, intent: &mut OutputIntent) {
+        for step in &self.steps {
+            if step.pressed {
+                intent.press_step(&step.action);
             }
         }
     }
@@ -266,5 +358,13 @@ impl MappingRuntimes {
                 .map(MacroRuntime::from_macro_rule)
                 .collect(),
         }
+    }
+
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        self.turbo
+            .iter()
+            .filter_map(TurboRuntime::next_deadline)
+            .chain(self.macros.iter().filter_map(MacroRuntime::next_deadline))
+            .min()
     }
 }

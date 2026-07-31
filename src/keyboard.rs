@@ -3,6 +3,9 @@ use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 
+#[cfg(test)]
+use std::cell::RefCell;
+
 use log::{info, warn};
 
 use crate::keycodes::ALL_KEYCODES;
@@ -41,6 +44,8 @@ impl Drop for KeyboardDevice {
 pub struct KeyboardDevice {
     fd: Option<OwnedFd>,
     held_keys: HashSet<u16>,
+    #[cfg(test)]
+    recorded_key_events: RefCell<Vec<(u16, bool)>>,
 }
 
 impl KeyboardDevice {
@@ -82,6 +87,8 @@ impl KeyboardDevice {
         Ok(Self {
             fd: Some(fd),
             held_keys: HashSet::new(),
+            #[cfg(test)]
+            recorded_key_events: RefCell::new(Vec::new()),
         })
     }
 
@@ -89,6 +96,8 @@ impl KeyboardDevice {
         Self {
             fd: None,
             held_keys: HashSet::new(),
+            #[cfg(test)]
+            recorded_key_events: RefCell::new(Vec::new()),
         }
     }
 
@@ -114,6 +123,25 @@ impl KeyboardDevice {
         } else {
             false
         }
+    }
+
+    pub(crate) fn sync(&mut self, desired: &HashSet<u16>) {
+        let mut releases: Vec<u16> = self.held_keys.difference(desired).copied().collect();
+        releases.sort_unstable();
+        for code in releases {
+            let _ = self.release(code);
+        }
+
+        let mut presses: Vec<u16> = desired.difference(&self.held_keys).copied().collect();
+        presses.sort_unstable();
+        for code in presses {
+            let _ = self.press(code);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recorded_key_events(&self) -> Vec<(u16, bool)> {
+        self.recorded_key_events.borrow().clone()
     }
 
     pub fn flush_held(&mut self) {
@@ -144,6 +172,10 @@ impl KeyboardDevice {
             write_input_event(fd.as_raw_fd(), &syn)
                 .inspect_err(|e| log::error!("failed to write uinput SYN event: {e}"))?;
         }
+        #[cfg(test)]
+        self.recorded_key_events
+            .borrow_mut()
+            .push((code, value != 0));
         Ok(())
     }
 
@@ -248,6 +280,7 @@ mod tests {
         let mut keyboard = KeyboardDevice {
             fd: Some(OwnedFd::from(file)),
             held_keys: HashSet::new(),
+            recorded_key_events: RefCell::new(Vec::new()),
         };
 
         let key_a = crate::keycodes::resolve_keycode("a").unwrap();
@@ -262,6 +295,7 @@ mod tests {
         let mut keyboard = KeyboardDevice {
             fd: Some(OwnedFd::from(file)),
             held_keys: HashSet::new(),
+            recorded_key_events: RefCell::new(Vec::new()),
         };
 
         let key_a = crate::keycodes::resolve_keycode("a").unwrap();
@@ -271,5 +305,41 @@ mod tests {
         keyboard.held_keys.insert(key_a);
         assert!(!keyboard.release(key_a));
         assert!(keyboard.held_keys.contains(&key_a));
+    }
+
+    #[test]
+    fn desired_key_sync_retries_failed_press_and_release() {
+        let key_a = crate::keycodes::resolve_keycode("a").unwrap();
+        let desired = HashSet::from([key_a]);
+        let read_only = std::fs::File::open("/dev/null").unwrap();
+        let mut keyboard = KeyboardDevice {
+            fd: Some(OwnedFd::from(read_only)),
+            held_keys: HashSet::new(),
+            recorded_key_events: RefCell::new(Vec::new()),
+        };
+
+        keyboard.sync(&desired);
+        assert!(!keyboard.held_keys.contains(&key_a));
+
+        let writable = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        keyboard.fd = Some(OwnedFd::from(writable));
+        keyboard.sync(&desired);
+        assert!(keyboard.held_keys.contains(&key_a));
+
+        let read_only = std::fs::File::open("/dev/null").unwrap();
+        keyboard.fd = Some(OwnedFd::from(read_only));
+        keyboard.sync(&HashSet::new());
+        assert!(keyboard.held_keys.contains(&key_a));
+
+        let writable = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        keyboard.fd = Some(OwnedFd::from(writable));
+        keyboard.sync(&HashSet::new());
+        assert!(!keyboard.held_keys.contains(&key_a));
     }
 }

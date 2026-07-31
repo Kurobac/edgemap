@@ -134,6 +134,15 @@ impl HidrawDevice {
         Ok(device)
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_test_fd(fd: OwnedFd) -> Self {
+        Self {
+            fd,
+            report_desc: Vec::new(),
+            permissions: NodePermissions::new(None),
+        }
+    }
+
     pub fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
     }

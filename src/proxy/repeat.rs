@@ -1,18 +1,16 @@
 use std::env;
-use std::io;
 use std::time::{Duration, Instant};
 
 use log::debug;
 
 use crate::codec::{CodecPipeline, SourceCodec, TargetCodec};
-use crate::uhid::UhidDevice;
 
 pub(super) struct RepeatInput {
     interval: Duration,
     timestamp_delta: u32,
     mode: RepeatMode,
     target: RepeatTarget,
-    next_tick: Instant,
+    next_tick: Option<Instant>,
     last_report: Option<Vec<u8>>,
 }
 
@@ -75,40 +73,99 @@ impl RepeatInput {
             timestamp_delta,
             mode,
             target,
-            next_tick: Instant::now(),
+            next_tick: None,
             last_report: None,
         })
     }
 
-    pub(super) fn timeout_ms(&self) -> u16 {
-        let now = Instant::now();
-        if self.next_tick <= now {
-            return 0;
-        }
-        let remaining = self.next_tick.duration_since(now);
-        let ms = remaining.as_millis();
-        if ms == 0 {
-            1
-        } else {
-            ms.min(u16::MAX as u128) as u16
+    #[cfg(test)]
+    pub(super) fn with_test_interval(interval: Duration) -> Self {
+        assert!(!interval.is_zero());
+        Self {
+            interval,
+            timestamp_delta: 1,
+            mode: RepeatMode::SeqOnly,
+            target: RepeatTarget::Ds5Usb,
+            next_tick: None,
+            last_report: None,
         }
     }
 
-    pub(super) fn store(&mut self, report: &[u8]) {
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        self.next_tick
+    }
+
+    pub(super) fn store_source(&mut self, report: &[u8], now: Instant) {
+        if self.last_report.is_none() || self.next_tick.is_none() {
+            self.next_tick = Some(now);
+        }
         self.last_report = Some(report.to_vec());
     }
 
-    pub(super) fn send_due(&mut self, uhid: &UhidDevice, seq: &mut u8) -> io::Result<()> {
-        while self.next_tick <= Instant::now() {
-            let Some(report) = self.last_report.as_mut() else {
-                self.next_tick += self.interval;
-                continue;
-            };
-            advance_repeat_report(report, seq, self.timestamp_delta, self.mode, self.target);
-            uhid.send_input(report)?;
-            self.next_tick += self.interval;
+    pub(super) fn store_runtime(&mut self, report: &[u8]) {
+        let mut updated = report.to_vec();
+        let previous = self
+            .last_report
+            .as_deref()
+            .expect("runtime repeat refresh requires a source report");
+        preserve_repeat_fields(previous, &mut updated, self.mode, self.target);
+        self.last_report = Some(updated);
+    }
+
+    pub(super) fn prepare_report(&mut self, now: Instant, seq: &mut u8) -> Option<&[u8]> {
+        let deadline = self.next_tick?;
+        if now < deadline {
+            return None;
         }
-        Ok(())
+        self.next_tick = first_future_repeat_deadline(deadline, now, self.interval);
+        let report = self.last_report.as_mut()?;
+        advance_repeat_report(report, seq, self.timestamp_delta, self.mode, self.target);
+        Some(report)
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.next_tick = None;
+        self.last_report = None;
+    }
+}
+
+fn first_future_repeat_deadline(
+    deadline: Instant,
+    now: Instant,
+    interval: Duration,
+) -> Option<Instant> {
+    debug_assert!(!interval.is_zero());
+    let overdue = now.saturating_duration_since(deadline);
+    let interval_ns = interval.as_nanos();
+    let remainder_ns = overdue.as_nanos() % interval_ns;
+    let until_next_ns = if remainder_ns == 0 {
+        interval_ns
+    } else {
+        interval_ns - remainder_ns
+    };
+    let until_next_ns = u64::try_from(until_next_ns).ok()?;
+    now.checked_add(Duration::from_nanos(until_next_ns))
+}
+
+fn preserve_repeat_fields(
+    previous: &[u8],
+    updated: &mut [u8],
+    mode: RepeatMode,
+    target: RepeatTarget,
+) {
+    match target {
+        RepeatTarget::Ds5Usb if previous.len() >= 32 && updated.len() >= 32 => {
+            updated[7] = previous[7];
+            if matches!(mode, RepeatMode::SeqAndTimestamp) {
+                updated[28..32].copy_from_slice(&previous[28..32]);
+            }
+        }
+        RepeatTarget::Ds4Usb if previous.len() >= 35 && updated.len() >= 35 => {
+            updated[7] = (updated[7] & 0x03) | (previous[7] & 0xfc);
+            updated[10..12].copy_from_slice(&previous[10..12]);
+            updated[34] = previous[34];
+        }
+        _ => {}
     }
 }
 
@@ -202,4 +259,115 @@ fn advance_ds4_usb_repeat_report(report: &mut [u8], seq: &mut u8) {
     report[7] = (report[7] & 0x03) | (*seq << 2);
     report[10..12].copy_from_slice(&(*seq as u16).to_le_bytes());
     report[34] = *seq;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repeat_with_interval(interval: Duration) -> RepeatInput {
+        RepeatInput::with_test_interval(interval)
+    }
+
+    #[test]
+    fn late_repeat_emits_once_and_rebases_to_a_future_deadline() {
+        let start = Instant::now();
+        for interval in [Duration::from_millis(1), Duration::from_millis(4)] {
+            let mut repeat = repeat_with_interval(interval);
+            let mut seq = 0;
+            repeat.store_source(&[0u8; 64], start);
+            assert_eq!(repeat.next_deadline(), Some(start));
+
+            let late = start + Duration::from_secs(2);
+            let report = repeat.prepare_report(late, &mut seq).unwrap();
+            assert_eq!(report[7], 1);
+            assert_eq!(seq, 1);
+            assert_eq!(repeat.next_deadline(), Some(late + interval));
+            assert!(repeat.prepare_report(late, &mut seq).is_none());
+            assert_eq!(seq, 1);
+        }
+    }
+
+    #[test]
+    fn irregular_source_updates_do_not_create_repeat_catch_up() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(4);
+        let mut repeat = repeat_with_interval(interval);
+        let mut seq = 10;
+
+        repeat.store_source(&[0u8; 64], start);
+        repeat.prepare_report(start, &mut seq).unwrap();
+        repeat.store_source(&[0u8; 64], start + Duration::from_millis(1));
+        repeat.store_source(&[0u8; 64], start + Duration::from_millis(3));
+
+        let late = start + Duration::from_millis(101);
+        repeat.prepare_report(late, &mut seq).unwrap();
+        assert_eq!(seq, 12);
+        assert_eq!(
+            repeat.next_deadline(),
+            Some(start + Duration::from_millis(104))
+        );
+    }
+
+    #[test]
+    fn runtime_refresh_waits_for_the_existing_repeat_deadline() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(4);
+        let mut repeat = repeat_with_interval(interval);
+        let mut seq = 0;
+
+        repeat.store_source(&[0u8; 64], start);
+        repeat.prepare_report(start, &mut seq).unwrap();
+        let early = start + Duration::from_millis(1);
+        repeat.store_runtime(&[0u8; 64]);
+        assert!(repeat.prepare_report(early, &mut seq).is_none());
+        assert_eq!(repeat.next_deadline(), Some(start + interval));
+
+        repeat.clear();
+        assert_eq!(repeat.next_deadline(), None);
+        assert!(repeat.prepare_report(early, &mut seq).is_none());
+    }
+
+    #[test]
+    fn runtime_refresh_preserves_ds5_repeat_sequence_and_timestamp() {
+        let start = Instant::now();
+        let mut repeat = repeat_with_interval(Duration::from_millis(1));
+        repeat.mode = RepeatMode::SeqAndTimestamp;
+        let mut source = [0u8; 64];
+        source[28..32].copy_from_slice(&100u32.to_le_bytes());
+        let mut seq = 0;
+
+        repeat.store_source(&source, start);
+        repeat.prepare_report(start, &mut seq).unwrap();
+        let mut runtime = [0u8; 64];
+        runtime[7] = 99;
+        runtime[28..32].copy_from_slice(&100u32.to_le_bytes());
+        repeat.store_runtime(&runtime);
+
+        let stored = repeat.last_report.as_deref().unwrap();
+        assert_eq!(stored[7], 1);
+        assert_eq!(u32::from_le_bytes(stored[28..32].try_into().unwrap()), 101);
+    }
+
+    #[test]
+    fn runtime_refresh_preserves_ds4_repeat_sequence_fields() {
+        let start = Instant::now();
+        let mut repeat = repeat_with_interval(Duration::from_millis(4));
+        repeat.target = RepeatTarget::Ds4Usb;
+        let mut source = [0u8; 64];
+        source[7] = 0x02;
+        let mut seq = 7;
+
+        repeat.store_source(&source, start);
+        repeat.prepare_report(start, &mut seq).unwrap();
+        let mut runtime = [0u8; 64];
+        runtime[7] = 0x01;
+        repeat.store_runtime(&runtime);
+
+        let stored = repeat.last_report.as_deref().unwrap();
+        assert_eq!(stored[7] & 0x03, 0x01);
+        assert_eq!(stored[7] >> 2, 8);
+        assert_eq!(&stored[10..12], &8u16.to_le_bytes());
+        assert_eq!(stored[34], 8);
+    }
 }

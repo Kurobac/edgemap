@@ -195,6 +195,11 @@ impl UhidDevice {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_test_fd(fd: OwnedFd) -> Self {
+        Self { fd, created: false }
+    }
+
     pub fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
     }

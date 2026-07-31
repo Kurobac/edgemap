@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::model::{Button, GamepadState};
 
 #[derive(Debug, Clone)]
@@ -87,6 +89,94 @@ pub struct MacroRule {
     pub source: MacroSource,
 }
 
+#[derive(Debug, Default)]
+pub struct OutputIntent {
+    buttons: HashSet<Button>,
+    keyboard: HashSet<u16>,
+    l2_analog: Option<u8>,
+    r2_analog: Option<u8>,
+    l2_cleared: bool,
+    r2_cleared: bool,
+}
+
+impl OutputIntent {
+    fn contribute_analog(&mut self, trigger: Trigger, value: u8) {
+        let target = match trigger {
+            Trigger::L2 => &mut self.l2_analog,
+            Trigger::R2 => &mut self.r2_analog,
+        };
+        *target = Some(target.map_or(value, |current| current.max(value)));
+    }
+
+    fn clear_source(&mut self, state: &mut GamepadState, source: Button) {
+        state.set_button(source, false);
+        match source {
+            Button::L2 => self.l2_cleared = true,
+            Button::R2 => self.r2_cleared = true,
+            _ => {}
+        }
+    }
+
+    pub fn press_target(&mut self, state: &mut GamepadState, target: &Target) {
+        match target {
+            Target::Button(button) => {
+                self.buttons.insert(*button);
+            }
+            Target::TriggerFull(trigger) => {
+                let button = match trigger {
+                    Trigger::L2 => Button::L2,
+                    Trigger::R2 => Button::R2,
+                };
+                self.buttons.insert(button);
+                self.contribute_analog(trigger.clone(), 255);
+            }
+            Target::Stick(direction) => apply_stick_target(state, direction),
+            Target::Keyboard(code) => {
+                self.keyboard.insert(*code);
+            }
+            Target::Macro(_) => {}
+        }
+    }
+
+    pub fn press_step(&mut self, target: &StepTarget) {
+        match target {
+            StepTarget::Gamepad(button) => {
+                self.buttons.insert(*button);
+            }
+            StepTarget::Keyboard(code) => {
+                self.keyboard.insert(*code);
+            }
+        }
+    }
+
+    pub fn apply_to_state(&self, state: &mut GamepadState) {
+        let l2_base = if self.l2_cleared { 0 } else { state.l2_analog };
+        let r2_base = if self.r2_cleared { 0 } else { state.r2_analog };
+        state.l2_analog = self.l2_analog.map_or(l2_base, |value| l2_base.max(value));
+        state.r2_analog = self.r2_analog.map_or(r2_base, |value| r2_base.max(value));
+        for button in &self.buttons {
+            state.set_button(*button, true);
+        }
+    }
+
+    pub fn into_keyboard(self) -> HashSet<u16> {
+        self.keyboard
+    }
+}
+
+fn apply_stick_target(state: &mut GamepadState, direction: &StickDir) {
+    match direction {
+        StickDir::LsUp => state.left_stick_y = 0,
+        StickDir::LsDown => state.left_stick_y = 255,
+        StickDir::LsLeft => state.left_stick_x = 0,
+        StickDir::LsRight => state.left_stick_x = 255,
+        StickDir::RsUp => state.right_stick_y = 0,
+        StickDir::RsDown => state.right_stick_y = 255,
+        StickDir::RsLeft => state.right_stick_x = 0,
+        StickDir::RsRight => state.right_stick_x = 255,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MappingConfig {
     pub rules: Vec<RemapRule>,
@@ -115,95 +205,36 @@ impl MappingConfig {
         state: &mut GamepadState,
         keyboard_out: &mut Vec<(u16, bool)>,
     ) {
+        let mut intent = OutputIntent::default();
+        self.collect(l1, state, &mut intent);
+        intent.apply_to_state(state);
+        keyboard_out.extend(intent.keyboard.into_iter().map(|code| (code, true)));
+    }
+
+    pub fn collect(&self, l1: &GamepadState, state: &mut GamepadState, intent: &mut OutputIntent) {
         let snapshot = l1.clone();
-        let mut button_targets: Vec<Button> = Vec::new();
-        let mut l2_target: Option<u8> = None;
-        let mut r2_target: Option<u8> = None;
 
         for rule in &self.rules {
             if !snapshot.button(rule.src) {
                 continue;
             }
-            // Phase 1: clear source button (always)
-            state.set_button(rule.src, false);
-            match rule.src {
-                Button::L2 => {
-                    let analog = snapshot.l2_analog;
-                    match &rule.dst {
-                        Target::Button(Button::L2) => {
-                            l2_target = Some(analog);
-                        }
-                        Target::Button(Button::R2) | Target::TriggerFull(Trigger::R2) => {
-                            r2_target = Some(analog);
-                            l2_target = Some(0);
-                        }
-                        Target::TriggerFull(Trigger::L2) => {
-                            l2_target = Some(0);
-                        }
-                        _ => {
-                            l2_target = Some(0);
-                        }
-                    }
+            intent.clear_source(state, rule.src);
+            match (rule.src, &rule.dst) {
+                (Button::L2, Target::Button(Button::L2)) => {
+                    intent.contribute_analog(Trigger::L2, snapshot.l2_analog);
                 }
-                Button::R2 => {
-                    let analog = snapshot.r2_analog;
-                    match &rule.dst {
-                        Target::Button(Button::R2) => {
-                            r2_target = Some(analog);
-                        }
-                        Target::Button(Button::L2) | Target::TriggerFull(Trigger::L2) => {
-                            l2_target = Some(analog);
-                            r2_target = Some(0);
-                        }
-                        Target::TriggerFull(Trigger::R2) => {
-                            r2_target = Some(0);
-                        }
-                        _ => {
-                            r2_target = Some(0);
-                        }
-                    }
+                (Button::L2, Target::Button(Button::R2)) => {
+                    intent.contribute_analog(Trigger::R2, snapshot.l2_analog);
+                }
+                (Button::R2, Target::Button(Button::L2)) => {
+                    intent.contribute_analog(Trigger::L2, snapshot.r2_analog);
+                }
+                (Button::R2, Target::Button(Button::R2)) => {
+                    intent.contribute_analog(Trigger::R2, snapshot.r2_analog);
                 }
                 _ => {}
             }
-
-            match &rule.dst {
-                Target::Button(btn) => {
-                    button_targets.push(*btn);
-                }
-                Target::TriggerFull(trigger) => match trigger {
-                    Trigger::L2 => {
-                        button_targets.push(Button::L2);
-                        l2_target = Some(255);
-                    }
-                    Trigger::R2 => {
-                        button_targets.push(Button::R2);
-                        r2_target = Some(255);
-                    }
-                },
-                Target::Stick(dir) => match dir {
-                    StickDir::LsUp => state.left_stick_y = 0,
-                    StickDir::LsDown => state.left_stick_y = 255,
-                    StickDir::LsLeft => state.left_stick_x = 0,
-                    StickDir::LsRight => state.left_stick_x = 255,
-                    StickDir::RsUp => state.right_stick_y = 0,
-                    StickDir::RsDown => state.right_stick_y = 255,
-                    StickDir::RsLeft => state.right_stick_x = 0,
-                    StickDir::RsRight => state.right_stick_x = 255,
-                },
-                Target::Macro(_) => {}
-                Target::Keyboard(code) => keyboard_out.push((*code, true)),
-            }
-        }
-
-        // Phase 2: apply all collected targets atomically
-        if let Some(v) = l2_target {
-            state.l2_analog = v;
-        }
-        if let Some(v) = r2_target {
-            state.r2_analog = v;
-        }
-        for btn in &button_targets {
-            state.set_button(*btn, true);
+            intent.press_target(state, &rule.dst);
         }
     }
 }
@@ -325,6 +356,61 @@ mod tests {
         assert!(s.button(Button::R2));
         assert_eq!(s.l2_analog, 0); // source cleared
         assert_eq!(s.r2_analog, 100); // transferred
+    }
+
+    #[test]
+    fn trigger_cross_map_swaps_analog_independent_of_rule_order() {
+        for reverse in [false, true] {
+            let mut rules = vec![
+                RemapRule::new(Button::L2, Target::Button(Button::R2)),
+                RemapRule::new(Button::R2, Target::Button(Button::L2)),
+            ];
+            if reverse {
+                rules.reverse();
+            }
+            let cfg = MappingConfig::from_rules_split(rules, false);
+            let mut s = state();
+            s.set_button(Button::L2, true);
+            s.set_button(Button::R2, true);
+            s.l2_analog = 37;
+            s.r2_analog = 211;
+
+            cfg.apply(&s.clone(), &mut s, &mut Vec::new());
+
+            assert!(s.button(Button::L2));
+            assert!(s.button(Button::R2));
+            assert_eq!(s.l2_analog, 211);
+            assert_eq!(s.r2_analog, 37);
+        }
+    }
+
+    #[test]
+    fn trigger_reducer_keeps_maximum_contribution() {
+        let cfg = MappingConfig::from_rules_split(
+            vec![RemapRule::new(Button::L2, Target::Button(Button::R2))],
+            false,
+        );
+        let mut s = state();
+        s.set_button(Button::L2, true);
+        s.set_button(Button::R2, true);
+        s.l2_analog = 80;
+        s.r2_analog = 210;
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
+        assert_eq!(s.r2_analog, 210);
+
+        let cfg = MappingConfig::from_rules_split(
+            vec![
+                RemapRule::new(Button::L2, Target::Button(Button::R2)),
+                RemapRule::new(Button::Cross, Target::TriggerFull(Trigger::R2)),
+            ],
+            false,
+        );
+        let mut s = state();
+        s.set_button(Button::L2, true);
+        s.set_button(Button::Cross, true);
+        s.l2_analog = 80;
+        cfg.apply(&s.clone(), &mut s, &mut Vec::new());
+        assert_eq!(s.r2_analog, 255);
     }
 
     #[test]

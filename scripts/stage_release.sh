@@ -78,6 +78,7 @@ validate_sources() {
     require_executable "$binary_dir/edgemap"
     require_executable "$PROJECT_ROOT/gui/edgemap-gui"
     require_executable "$PROJECT_ROOT/install.sh"
+    require_file "$PROJECT_ROOT/LICENSE"
 
     for required in \
         dseuhid.service \
@@ -116,6 +117,7 @@ stage_release() {
     install -Dm755 "$binary_dir/edgemap" "$OUTPUT_DIR/edgemap"
     install -Dm755 "$PROJECT_ROOT/gui/edgemap-gui" "$OUTPUT_DIR/edgemap-gui"
     install -Dm755 "$PROJECT_ROOT/install.sh" "$OUTPUT_DIR/install.sh"
+    install -Dm644 "$PROJECT_ROOT/LICENSE" "$OUTPUT_DIR/LICENSE"
 
     stage_python_package
 
@@ -144,6 +146,7 @@ verify_release() {
             die "staged executable verification failed: $required"
     done
     for required in \
+        LICENSE \
         usr/local/lib/edgemap-gui/edgemap_gui/__init__.py \
         usr/lib/systemd/system/dseuhid.service \
         usr/lib/systemd/user/edgemap.service \
@@ -154,6 +157,9 @@ verify_release() {
         [[ -f $OUTPUT_DIR/$required ]] ||
             die "staged file verification failed: $required"
     done
+
+    cmp -s "$PROJECT_ROOT/LICENSE" "$OUTPUT_DIR/LICENSE" ||
+        die "staged LICENSE content verification failed"
 
     found=$(find "$OUTPUT_DIR/usr/local/lib/edgemap-gui" \
         -type d -name '__pycache__' -print -quit)

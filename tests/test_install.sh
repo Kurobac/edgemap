@@ -111,6 +111,7 @@ verify_release_payload() {
     assert_executable "$PAYLOAD/edgemap"
     assert_executable "$PAYLOAD/edgemap-gui"
     assert_executable "$PAYLOAD/install.sh"
+    assert_same "$PROJECT_ROOT/LICENSE" "$PAYLOAD/LICENSE"
     assert_mode 644 "$PAYLOAD/usr/lib/systemd/system/dseuhid.service"
     assert_mode 644 "$PAYLOAD/usr/lib/systemd/user/edgemap.service"
     assert_file "$PAYLOAD/usr/share/applications/edgemap.desktop"
@@ -178,6 +179,22 @@ verify_release_safety() {
     assert_missing "$TEST_ROOT/owned-failure"
     [[ $(<"$TEST_ROOT/adjacent-sentinel") == keep ]] ||
         fail "release cleanup modified an adjacent sentinel"
+}
+
+verify_missing_source_preflight() {
+    local incomplete_binary_dir=$TEST_ROOT/incomplete-binaries
+    local output=$TEST_ROOT/missing-source-error
+    local release_dir=$TEST_ROOT/missing-source-release
+
+    mkdir "$incomplete_binary_dir"
+    cp "$BINARY_DIR/dseuhid" "$incomplete_binary_dir/dseuhid"
+    if "$PROJECT_ROOT/scripts/stage_release.sh" "$release_dir" \
+        "$incomplete_binary_dir" >"$output" 2>&1; then
+        fail "release staging accepted an incomplete source payload"
+    fi
+    grep -q 'required release source is missing' "$output" ||
+        fail "release staging did not explain the missing source payload"
+    assert_missing "$release_dir"
 }
 
 verify_installer_guards() {
@@ -269,6 +286,7 @@ verify_uninstallation() {
 stage_payload
 verify_release_payload
 verify_release_safety
+verify_missing_source_preflight
 
 assert_system_targets_absent
 SYSTEM_CLEANUP_ARMED=true

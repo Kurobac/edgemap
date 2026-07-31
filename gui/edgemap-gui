@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 
 import sys
+
+if sys.version_info[:2] < (3, 11):
+    raise SystemExit(
+        "edgemap-gui requires Python 3.11 or newer "
+        f"(running Python {sys.version_info[0]}.{sys.version_info[1]})"
+    )
+
 from pathlib import Path
 
 

@@ -11,6 +11,17 @@ from typing import Any
 ConfigData = dict[str, Any]
 
 
+def _fsync_directory(directory: Path) -> None:
+    descriptor = os.open(
+        directory,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def atomic_write_text(path: str, content: str) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -28,6 +39,7 @@ def atomic_write_text(path: str, content: str) -> None:
             os.chmod(temporary_path, previous_mode)
         os.replace(temporary_path, target)
         temporary_path = None
+        _fsync_directory(target.parent)
     finally:
         if temporary_path is not None:
             try:

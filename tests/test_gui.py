@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "gui"))
 import edgemap_gui as package_gui
 from edgemap_gui import editor as gui
 from edgemap_gui import app as app_module
+from edgemap_gui import config_document as config_document_module
 from edgemap_gui.dialogs import keyboard as keyboard_dialog
 from edgemap_gui.dialogs import macro as macro_dialog
 
@@ -93,6 +94,102 @@ class HelperTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("installation is incomplete", result.stderr)
+
+    def test_launcher_rejects_old_python_before_package_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = Path(directory) / "bin" / "edgemap-gui"
+            launcher.parent.mkdir()
+            shutil.copy2(ROOT / "gui" / "edgemap-gui", launcher)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import runpy, sys; "
+                    "sys.version_info = (3, 10, 0, 'final', 0); "
+                    "runpy.run_path(sys.argv[1], run_name='launcher_test')",
+                    str(launcher),
+                ],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("requires Python 3.11 or newer", result.stderr)
+            self.assertNotIn("installation is incomplete", result.stderr)
+
+    def test_atomic_write_orders_file_fsync_replace_and_directory_fsync(self):
+        events = []
+        real_fsync = os.fsync
+        real_replace = os.replace
+
+        def record_file_fsync(file_descriptor):
+            events.append("file-fsync")
+            return real_fsync(file_descriptor)
+
+        def record_replace(source, target):
+            events.append("replace")
+            return real_replace(source, target)
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            config_document_module.os, "fsync", side_effect=record_file_fsync
+        ), patch.object(
+            config_document_module.os, "replace", side_effect=record_replace
+        ), patch.object(
+            config_document_module,
+            "_fsync_directory",
+            side_effect=lambda path: events.append(("directory-fsync", Path(path))),
+            create=True,
+        ):
+            target = Path(directory) / "config.toml"
+            package_gui.atomic_write_text(str(target), "version = 2\n")
+
+        self.assertEqual(
+            events,
+            ["file-fsync", "replace", ("directory-fsync", target.parent)],
+        )
+
+    def test_directory_fsync_closes_descriptor(self):
+        directory = Path("/tmp/example")
+        with patch.object(
+            config_document_module.os, "open", return_value=91
+        ) as open_directory, patch.object(
+            config_document_module.os, "fsync"
+        ) as fsync, patch.object(
+            config_document_module.os, "close"
+        ) as close:
+            config_document_module._fsync_directory(directory)
+
+        open_directory.assert_called_once_with(
+            directory,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+        )
+        fsync.assert_called_once_with(91)
+        close.assert_called_once_with(91)
+
+    def test_atomic_write_cleans_temporary_file_when_replace_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "config.toml"
+            with patch.object(
+                config_document_module.os,
+                "replace",
+                side_effect=OSError("replace failed"),
+            ), self.assertRaisesRegex(OSError, "replace failed"):
+                package_gui.atomic_write_text(str(target), "version = 2\n")
+
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_atomic_write_leaves_no_temporary_file_when_directory_fsync_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "config.toml"
+            with patch.object(
+                config_document_module,
+                "_fsync_directory",
+                side_effect=OSError("directory fsync failed"),
+                create=True,
+            ), self.assertRaisesRegex(OSError, "directory fsync failed"):
+                package_gui.atomic_write_text(str(target), "version = 2\n")
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "version = 2\n")
+            self.assertEqual(list(Path(directory).iterdir()), [target])
 
     def test_config_document_tracks_saved_snapshot(self):
         document = package_gui.ConfigDocument({"version": 2})

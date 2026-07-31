@@ -485,6 +485,19 @@ mod tests {
     }
 
     #[test]
+    fn ds5_bt_frame_preserves_active_high_headphone_detect_bit() {
+        let mut usb = ds5_usb_raw();
+        usb[54] = 0x01;
+
+        let frame = ds5_bt::decode_input(&ds5_bt_raw_from_usb(&usb)).unwrap();
+        assert!(frame.state.headphone_connected);
+
+        usb[54] = 0x00;
+        let frame = ds5_bt::decode_input(&ds5_bt_raw_from_usb(&usb)).unwrap();
+        assert!(!frame.state.headphone_connected);
+    }
+
+    #[test]
     fn ds5_bt_frame_rejects_bad_crc_or_report_shape() {
         let usb = ds5_usb_raw();
         let mut bt = ds5_bt_raw_from_usb(&usb);

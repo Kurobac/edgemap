@@ -71,7 +71,7 @@ pub(super) fn parse_input(data: &[u8]) -> Option<GamepadState> {
     state.battery_pct = (status0 & 0x0f).min(10) * 10;
     let charging = (status0 >> 4) & 0x0f;
     state.battery_charging = charging == 0x01 || charging == 0x02;
-    state.headphone_connected = data[54] & 0x01 == 0;
+    state.headphone_connected = data[54] & 0x01 != 0;
     Some(state)
 }
 
@@ -316,6 +316,17 @@ mod tests {
         assert!(!parsed.button(Button::Square));
         assert_eq!(parsed.left_stick_x, 0x80);
         assert_eq!(parsed.right_stick_y, 0x40);
+    }
+
+    #[test]
+    fn headphone_detect_bit_is_active_high() {
+        let mut raw = raw_input();
+
+        raw[54] = 0x01;
+        assert!(parse_input(&raw).unwrap().headphone_connected);
+
+        raw[54] = 0x00;
+        assert!(!parse_input(&raw).unwrap().headphone_connected);
     }
 
     #[test]

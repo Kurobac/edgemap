@@ -136,7 +136,7 @@ impl fmt::Display for Button {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct GamepadState {
     pub buttons: [bool; BUTTON_COUNT],
     pub left_stick_x: u8,
@@ -151,6 +151,24 @@ pub struct GamepadState {
     pub headphone_connected: bool,
 }
 
+impl Default for GamepadState {
+    fn default() -> Self {
+        Self {
+            buttons: [false; BUTTON_COUNT],
+            left_stick_x: 128,
+            left_stick_y: 128,
+            right_stick_x: 128,
+            right_stick_y: 128,
+            l2_analog: 0,
+            r2_analog: 0,
+            seq_number: 0,
+            battery_pct: 0,
+            battery_charging: false,
+            headphone_connected: false,
+        }
+    }
+}
+
 impl GamepadState {
     pub fn button(&self, btn: Button) -> bool {
         self.buttons[btn as usize]
@@ -158,5 +176,23 @@ impl GamepadState {
 
     pub fn set_button(&mut self, btn: Button, pressed: bool) {
         self.buttons[btn as usize] = pressed;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_state_uses_neutral_sticks_and_released_triggers() {
+        let state = GamepadState::default();
+
+        assert_eq!(state.left_stick_x, 128);
+        assert_eq!(state.left_stick_y, 128);
+        assert_eq!(state.right_stick_x, 128);
+        assert_eq!(state.right_stick_y, 128);
+        assert_eq!(state.l2_analog, 0);
+        assert_eq!(state.r2_analog, 0);
+        assert!(state.buttons.iter().all(|pressed| !pressed));
     }
 }

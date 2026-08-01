@@ -39,6 +39,7 @@ GitHub Actions builds this tarball layout on a tag:
 ```text
 edgemap-v1.3.0-x86_64.tar.gz
 ├── install.sh                 # sudo ./install.sh
+├── LICENSE                    # canonical GPLv3 license
 ├── dseuhid                    → /usr/local/bin/
 ├── edgemap                    → /usr/local/bin/
 ├── edgemap-gui                → /usr/local/bin/ (launcher)
@@ -54,3 +55,5 @@ edgemap-v1.3.0-x86_64.tar.gz
 ```
 
 CI rewrites service files to use `/usr/local/bin/` paths at packaging time. The AUR `PKGBUILD` uses the repository defaults under `/usr/bin/`.
+
+The release job verifies that the pushed tag matches the package version, runs formatting, locked Rust tests, Clippy with warnings denied, the Python 3.11 GUI suite, and the fixed-path installer test against the same release binaries passed to `scripts/stage_release.sh`. The staging script validates its payload, includes the repository `LICENSE` verbatim, and refuses to overwrite an existing output directory.

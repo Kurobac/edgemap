@@ -1,8 +1,8 @@
-# edgemap — Project Status (2026-07-19)
+# edgemap — Project Status (2026-08-01)
 
 ## Overview
 
-UHID proxy for DualSense and DualSense Edge controllers (PID 0x0CE6 / 0x0DF2) over USB or Bluetooth source hidraw. Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Reads physical DualSense input via `/dev/hidraw`, decodes it through a source codec, applies button remapping frame-by-frame, and emits a virtual USB HID target through `/dev/uhid`. Native Sony behavior is preserved through explicit codec paths rather than unconditional raw passthrough.
+UHID proxy for DualSense and DualSense Edge controllers (PID 0x0CE6 / 0x0DF2) over USB or Bluetooth source hidraw. Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Reads physical DualSense input via `/dev/hidraw`, decodes it through a source codec, applies mappings from source frames and monotonic timing deadlines, and emits a virtual USB HID target through `/dev/uhid`. Native Sony behavior is preserved through explicit codec paths rather than unconditional raw passthrough.
 
 Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/uhid` and `/dev/hidraw` access (daemon only). Kernel compatibility: tested 7.0, should work 6.7+, may work 5.12+.
 
@@ -47,6 +47,17 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v1.2.0 | `88824b7` | **Event-driven daemon coordination**: libudev hotplug, signalfd shutdown, acknowledged Unix seqpacket IPC, atomic daemon locks, transactional startup/reload handling; 218 Rust + 21 GUI tests |
 | v1.2.1 | `b22c909` | **Control-plane hardening**: generic config errors, bounded regular-file loading, client/request limits, and systemd resource ceilings; 223 Rust + 21 GUI tests |
 | v1.3.0 | `f17697e` | **Architecture and GUI overhaul**: content-based config switching, responsibility-focused Rust modules, capability-driven Python package, and unified release tooling; 171 Rust + 30 GUI tests |
+| Unreleased | `73545b9` | **Correctness and release hardening**: split touch handling, strict config/daemon state, ownership-aware deadline scheduling, corrected defaults and durable GUI saves, and verified release payloads; 240 Rust + 35 GUI tests |
+
+## Post-v1.3.0 Development Notes (Unreleased)
+
+- Split touchpad children are derived from the decoded DS5 report before the physical snapshot, so left/right turbo, combo, gamepad, and keyboard mappings observe presses and releases exactly once. Compilation detects split mode first and excludes the parent/children from the generic mapping pass.
+- Configuration validation and compilation share typed target parsing. CLI/config creation reject ambiguous input, profile selection preserves TOML declaration order, and the edgemap daemon separately tracks selected, effective, and failed configurations so an unacknowledged or invalid candidate cannot become live state. Runtime watches resynchronize from filesystem/socket state after races or inotify overflow.
+- Remap, combo, and macro producers now contribute to one `OutputIntent`: digital buttons and keyboard keys use ownership unions, while trigger analog values use the maximum contribution. Releasing one producer no longer clears an output still owned by another.
+- Turbo, macro transitions, and Bluetooth repeat share one monotonic one-shot timerfd. Late wakeups advance directly to current phase without catch-up reports, and each timer turn emits at most one due target report.
+- `GamepadState::default()` uses neutral sticks, the DualSense headphone flag is decoded as active-high for USB and Bluetooth, GUI atomic saves fsync the parent directory after replacement, and the packaged launcher requires Python 3.11 or newer.
+- CI pins third-party actions and enforces formatting, locked Rust build/tests, Clippy with warnings denied, release-tag validation, the fixed-path installer test, and the Python 3.11 GUI suite. Tagged builds test the same release binaries that are staged, and every payload includes the canonical GPLv3 `LICENSE`.
+- Current automated suite: 240 Rust tests (101 library, 96 `dseuhid`, 26 `edgemap`, 17 CLI integration) plus 35 GUI tests.
 
 ## v1.3.0 Release Notes
 
@@ -148,16 +159,16 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 ### Runtime Config Application
 - `edgemap switch-config` reads and validates a regular file up to 64 KiB under the user account, then sends its source label and complete TOML content in one acknowledged seqpacket
 - dseuhid parses, validates, builds, and commits the received content without opening the source path
-- `Arc<RwLock<MappingConfig>>` — read lock per frame, write lock on a successful config apply
+- `Arc<RwLock<MappingConfig>>` — read lock per source/timer transform, write lock on a successful config apply
 - Failed applies keep the previous live content, mapping, runtimes, and output-device setting
-- Debug snapshots are cleared and turbo/combo/macro runtimes are rebuilt after a successful apply
+- Debug snapshots, cached controller/repeat state, and held keyboard output are cleared; turbo/combo/macro runtimes are rebuilt after a successful apply
 - Output-device changes recreate UHID from the retained `ActiveConfig` content
 
 ### Turbo System
 - **Turbo (hold-to-repeat)**: hold source → optional delay → toggle source at interval_ms for L2 processing
-- State machine in `proxy.rs`, reads the physical snapshot and runs in L1
+- State machine in `src/proxy/runtime.rs`, orchestrated by the fd-free transforms in `src/proxy/pipeline.rs`; it reads the physical snapshot and runs in L1
 - Source suppression: physical digital + analog state is cleared before the toggled source is generated
-- Config: `turbo = true`, `turbo_interval_ms` (default 50ms), `turbo_delay_ms` (default 0ms)
+- Config: `turbo = true`, `turbo_interval_ms` (default 100ms), `turbo_delay_ms` (default 0ms)
 - Self-turbo: `[cross] turbo=true` (no remap field) → target = cross itself
 - All standard/Edge buttons supported as turbo source
 
@@ -180,19 +191,22 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | `[cross] remap="block" turbo=true` | Turbo toggle consumed by block L1 filter (no visible output; toggle drives combo key) |
 
 ### Pipeline Architecture
-Three-layer per-frame processing model:
+Three-layer source/timer processing model:
 ```
 Source codec: hidraw bytes → ControllerFrame
-Layer 1 (physical filter): touchpad split → TURBO → combo detection → BLOCK → freeze(L1)
-Layer 2 (virtual generate): macro detection → REMAP → combo injection → macro injection → keyboard flush
+Layer 1 (physical filter): touchpad split → physical snapshot → TURBO → combo detection → BLOCK → freeze(L1)
+Layer 2 (virtual generate): macro detection → REMAP/combo/macro intent collection → ownership reduction → keyboard desired-state sync
 Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 ```
+- **Touchpad split** derives the left/right child before the physical snapshot, so child turbo runtimes observe the real press lifecycle
 - **Turbo** runs in L1 before freeze: reads physical snapshot, writes to state
 - **Combo detection** runs in L1 before block and suppresses modifier + key
 - **Block** (`remap="block"`) now in L1: clears digital + analog (L2/R2)
-- **Remap** (`MappingConfig::apply`) reads frozen L1, writes virtual output
-- Combo injection runs after remap so source clearing cannot erase combo output
-- Keyboard flush combines remap, combo, and macro keyboard events
+- **Remap** (`MappingConfig::collect`) reads frozen L1 and contributes to a shared `OutputIntent`
+- Combo and macro injection run after remap; digital/keyboard owners are unioned and trigger analog contributions are reduced by maximum
+- `KeyboardDevice::sync` diffs the complete desired key set against successfully held keys, preserving shared owners and retrying failed transitions
+- Source transforms cache the latest frame. Timer transforms advance active runtimes without observing new source edges, preventing deadline ticks from retriggering macros
+- Turbo, macro, and Bluetooth repeat deadlines arm one `CLOCK_MONOTONIC` one-shot timerfd; late wakeups skip catch-up reports and each timer turn emits at most one due target report
 
 ### Codec Architecture
 - `SourceCodec` owns physical input report decoding and input report size.
@@ -215,7 +229,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - **Modifier key combinations**: hold DSE button + press standard key → mapped output
 - Format: `[modifier] remap="combo"` + `[[modifier.combos]]` entries
 - L1: detection reads post-turbo snapshot (isolation prevents cross-rule pollution), suppression clears modifier+key from state
-- L2: injection writes combo outputs in parallel with remap (both read L1, no cross-talk)
+- L2: injection contributes combo outputs in parallel with remap (both read L1, no cross-talk)
 - Turbo+combo allowed: turbo toggle visible to combo detection, output follows turbo phase
 - Config validation: remap/combo mutual exclusion, key/output validation, duplicate key reject, self-key reject, FN+face reject, touchpad partition reject
 - Combo output can point to macro name (`Target::Macro`) for direct macro activation
@@ -226,7 +240,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Format: `[button] remap="macro_name"` + `[macros.macro_name]` with `sequence = [...]` and optional `mode`
 - Two modes: `hold` (hold-to-loop, release-to-stop) and `single` (one-shot, keeps running after release)
 - L2: macro detection reads L1 (Physical source) or combo injection (Combo source via `Target::Macro`)
-- L2: macro injection writes step buttons every frame (per-frame maintain, same principle as turbo bug #23 fix)
+- L2: active macro steps contribute their current gamepad/keyboard ownership to the shared `OutputIntent`; timer deadlines advance steps even when no physical report arrives
 - Config validation: empty sequence reject, release_ms > press_ms, macro name vs button name conflict, same-key turbo+macro mutual exclusion
 - Runtime config apply: macro runtimes rebuilt after an acknowledged `switch-config`
 
@@ -236,10 +250,10 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - 107 keycodes supported: letters, numbers, F-keys, navigation, modifiers, symbols, numpad, media
 - **uinput device** (`edgemap Keyboard`): auto-created on daemon start, falls back to dummy if unavailable
 - **Pipeline integration**:
-  - L2 Remap: source button → keyboard event pushed per frame
-  - L2 Combo: combo output → keyboard event
-  - L2 Macro: macro step with keyboard key → keyboard event via `StepTarget::Keyboard`
-  - L2 Keyboard flush: unified per-frame press/release across all sources, runs after all L2 stages
+  - L2 Remap: source button contributes a desired keyboard owner
+  - L2 Combo: combo output contributes the same owner type
+  - L2 Macro: `StepTarget::Keyboard` contributes while its timed step is pressed
+  - L2 Keyboard sync: unions all owners, then presses/releases only the difference from successfully held keys
 - Turbo + keyboard: turbo toggles source button through L2 remap → keyboard event (no dst needed)
 - Split touchpad → keyboard: `[touchpad_left] remap = "key:left"` supported
 - GUI: `Keyboard...` entry in remap/combo/macro drop-downs → KeyboardPicker with search filter and 9 categories
@@ -258,18 +272,18 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Multi-device: warn if more than one DualSense detected
 - Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
 
-### Rust Tests (171 total, all passing)
+### Rust Tests (240 total, all passing)
 
 | Target | Tests | Coverage |
 |--------|-------|----------|
-| library | 82 | capabilities, config, mapping, bounded loading, control protocol/limits, daemon locks, keycodes, and signalfd shutdown |
-| `dseuhid` | 67 | codec formats, device discovery, keyboard state, proxy pipeline/repeat, daemon/session policy, and UHID parsing |
-| `edgemap` | 13 | XDG paths, profile matching, config inotify recovery/failure, child reaping, and daemon state transitions |
-| CLI integration | 9 | help/error streams, exit behavior, create/validate output, and capabilities TOML |
+| library | 101 | capabilities, typed config validation/compilation, ownership-aware mapping, bounded loading, control protocol/limits, daemon locks, keycodes, and signalfd shutdown |
+| `dseuhid` | 96 | codec/default-state formats, device discovery, desired keyboard state, source/timer pipeline transforms, deadline/repeat scheduling, daemon/session policy, and UHID parsing |
+| `edgemap` | 26 | XDG paths, declaration-order profile matching, selected/effective apply state, inotify/runtime resynchronization, child reaping, and daemon state transitions |
+| CLI integration | 17 | help/error streams, ambiguous input rejection, exit behavior, create/validate output, and capabilities TOML |
 
-### GUI Tests (30 total, PyQt6 offscreen)
+### GUI Tests (35 total, PyQt6 offscreen)
 
-Coverage includes capability-contract parsing, private-package launcher resolution, profile schema errors, save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device serialization, DS4 selection warning behavior, keyboard picker state, action-button styling, and Rust validator compatibility.
+Coverage includes capability-contract parsing, private-package launcher resolution and Python-version rejection, atomic file/directory fsync ordering, profile schema errors, save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device serialization, DS4 selection warning behavior, keyboard picker state, action-button styling, and Rust validator compatibility.
 
 ### Tools
 | Tool | Binary | Description |

@@ -8,15 +8,15 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 171 tests total (82 library + 67 dseuhid + 13 edgemap + 9 CLI integration)
+cargo test                # 240 tests total (101 library + 96 dseuhid + 26 edgemap + 17 CLI integration)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
 PYTHONPATH=gui python3 -m edgemap_gui  # config editor GUI from source (PyQt6)
-QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests -p 'test_gui.py' -v  # 30 GUI tests
+QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests -p 'test_gui.py' -v  # 35 GUI tests
 ```
 
-GitHub CI runs `cargo build`, `cargo test`, and the PyQt6 offscreen GUI test suite. No enforced lint or typecheck step exists.
+GitHub CI pins third-party actions and runs `cargo fmt --check`, locked debug builds/tests, the fixed-path installer integration test on a disposable runner, `cargo clippy --locked --all-targets -- -D warnings`, release-tag validation, and the PyQt6 offscreen GUI suite under Python 3.11. Tagged releases repeat the Rust checks, installer test the release binaries that will be staged, verify the tag matches `Cargo.toml`, and publish only after the GUI job succeeds.
 
 Systemd units: `dseuhid.service` (system), `edgemap.service` (user).
 
@@ -34,23 +34,23 @@ Installation, packaging, and system-level verification are documented separately
 | `src/main.rs` | Thin dseuhid entry: CLI dispatch, logging/startup checks, and final handoff to `daemon::run()`. |
 | `src/daemon.rs` | Process-level daemon lifecycle: shutdown signal, daemon lock/control server, active config, controller reconnect loop, and UHID recreation decisions. |
 | `src/session.rs` | Builds one physical-controller session: hidraw, codecs, feature cache, UHID, keyboard, mapping, and Proxy. Returns typed session outcomes to the outer daemon loop. |
-| `src/proxy/` | epoll ownership and **three-layer pipeline** (L1→L2→L3). `pipeline.rs` performs fd-free transforms, `runtime.rs` owns turbo/combo/macro timing, `repeat.rs` owns BT cadence/sequence, and `uhid_events.rs` handles OUTPUT/GET/SET. |
+| `src/proxy/` | epoll ownership and **three-layer pipeline** (L1→L2→L3). `pipeline.rs` performs fd-free source/timer transforms and output-intent reduction, `runtime.rs` owns turbo/combo/macro timing, `repeat.rs` owns BT cadence/sequence, and `uhid_events.rs` handles OUTPUT/GET/SET. One monotonic one-shot timerfd is armed to the earliest runtime or repeat deadline. |
 | `src/control/` | Versioned Unix `SOCK_SEQPACKET` protocol, complete packet transport, client/server, and `flock`-based named daemon locks. Public names are re-exported from `control/mod.rs`. |
 | `src/codec/` | Source/physical/target codec boundary. Protocol-specific wire formats live in `ds5_usb.rs`, `ds5_bt.rs`, and `ds4_usb.rs`; `feature.rs` owns feature-cache policy and `types.rs` owns transport frame/command types. |
-| `src/mapping.rs` | `MappingConfig` (remap rules, blocked_buttons, combo/macro configs), `Target` enum, `apply()` two-phase remap with snapshot isolation |
+| `src/mapping.rs` | `MappingConfig` (remap rules, blocked_buttons, combo/macro configs), typed `Target`, and two-phase remap collection with snapshot isolation. `OutputIntent` unions digital/keyboard owners and reduces trigger contributions by maximum. |
 | `src/model.rs` | Transport-neutral `Button`, `GamepadState`, and canonical button enumeration. Contains no USB/BT report offsets. |
 | `src/keycodes.rs` | Canonical keyboard names, Linux keycodes, and `resolve_keycode()` shared by config validation, capabilities, and uinput setup. |
 | `src/capabilities.rs` | Stable versioned TOML capability contract consumed by the GUI through `edgemap capabilities`. Publishes output devices, button/target sets, reserved macro names, and keyboard codes. |
 | `src/config/` | `ActiveConfig` bounded regular-file snapshot (64 KiB), Serde schema, semantic validation, deterministic default TOML, target resolution, and compilation to `MappingConfig`. `config/mod.rs` keeps the public facade. |
 | `src/device/` | libudev monitor/discovery, Sony device/transport identification, hidraw IO/ioctls, and device-node lifecycle. `HidrawDevice` composes the device-access guard and skips UHID virtuals. |
 | `src/uhid.rs` | Raw UHID wrapper (create2, input2, get/set report reply), complete-write checks, UHID event size validation |
-| `src/keyboard.rs` | uinput keyboard device lifecycle and press/release/flush behavior. Registered names and numeric codes come from shared `keycodes.rs`. |
+| `src/keyboard.rs` | uinput keyboard lifecycle and desired-state synchronization. It diffs the desired key set against successfully held keys, so failed presses/releases remain eligible for retry. Registered names and numeric codes come from shared `keycodes.rs`. |
 | `src/descriptor.rs` | Built-in target HID descriptors: `DS_USB_DESCRIPTOR`, `DS_EDGE_USB_DESCRIPTOR` (BT Edge auto target identity), and `DS4_USB_DESCRIPTOR` (used when `output_device = "dualshock4"`) |
 | `src/shutdown.rs` | signalfd-based SIGINT/SIGTERM handling shared by both daemons; poll/epoll integration, interruptible retry delays, and child-process signal-mask reset |
 | `src/bin/edgemap/` | User CLI and daemon application. `cli.rs` preserves stdout/stderr/exit behavior, `control_session.rs` owns acknowledged requests/state drain, `paths.rs` owns XDG resolution, and `daemon/` owns monitoring, profiles, notifications, and the daemon state machine. |
-| `gui/edgemap_gui/` | Maintainable PyQt6 source package: capability parsing, config document/snapshot, deterministic serializers, editor lifecycle, profile/combo/macro/keyboard dialogs, and Rust CLI integration. |
-| `gui/edgemap-gui` | Small installation-prefix-aware launcher for the private Python package; no zipapp or generated GUI artifact is tracked. |
-| `scripts/stage_release.sh` | Sole release-tree builder shared by CI and the tag workflow. Validates inputs, installs only source `.py` files, rewrites service binary prefixes, and refuses to overwrite an existing output directory. |
+| `gui/edgemap_gui/` | Maintainable PyQt6 source package: capability parsing, config document/snapshot, deterministic serializers, durable atomic saves (including parent-directory fsync), editor lifecycle, profile/combo/macro/keyboard dialogs, and Rust CLI integration. |
+| `gui/edgemap-gui` | Small installation-prefix-aware Python 3.11+ launcher for the private Python package; no zipapp or generated GUI artifact is tracked. |
+| `scripts/stage_release.sh` | Sole release-tree builder shared by CI and the tag workflow. Validates inputs, installs only source `.py` files plus the canonical `LICENSE`, rewrites service binary prefixes, and refuses to overwrite an existing output directory. |
 | `install.sh` | Cwd-independent release installer/uninstaller; operational details live in `docs/INSTALLATION_TESTING.md`. |
 
 ## Three-layer pipeline (L1 → L2 → L3)
@@ -62,17 +62,20 @@ Input order inside `handle_hidraw_input()`:
 2. Bad or short source frames are dropped; never raw-forward unknown report bytes
 
 **L1: Physical Input Filtering**
-1. **Turbo** — reads `physical_snapshot`, suppresses source button, toggles source for L2 remap
-2. **Combo detection** — reads pre-suppress clone, suppresses modifier+key (including analog for L2/R2)
-3. **Block** — `blocked_buttons` suppression (including analog for L2/R2)
-4. **Freeze** — clone state as `l1` (immutable reference for L2)
+1. **Touchpad split derivation** — when split mode is enabled, clear the parent press and derive exactly one left/right child from the decoded report before taking the physical snapshot
+2. **Physical snapshot** — freeze the split-aware source state used by turbo and diagnostics
+3. **Turbo** — reads `physical_snapshot`, suppresses its source, and advances/toggles the source for L2 processing
+4. **Combo detection** — reads a post-turbo clone, suppresses modifier+key (including analog for L2/R2)
+5. **Block** — `blocked_buttons` suppression (including analog for L2/R2)
+6. **Freeze** — clone state as `l1` (immutable reference for L2)
 
 **L2: Virtual Input Generation**
-1. **Macro detection** — reads L1 (only `MacroSource::Physical`), triggers on edge
-2. **Remap** — `apply(&l1, &mut state, &mut keyboard_events)` — two-phase, snapshot isolation, clears source then sets targets (gamepad or keyboard)
-3. **Combo injection** — applies active combo outputs (after remap to prevent source-clear wipe, bugfix #33), pushes keyboard events
-4. **Macro injection** — active macro steps write buttons/keyboard events every frame
-5. **Keyboard flush** — unified press/release of all keyboard events across L2 sources (#75)
+1. **Macro detection** — source-frame transforms read L1 and activate/deactivate only `MacroSource::Physical` runtimes
+2. **Remap collection** — `collect(&l1, &mut state, &mut intent)` evaluates a frozen snapshot, clears sources, and contributes targets
+3. **Combo injection** — active combo outputs contribute after remap so source clearing cannot erase them; combo macros activate only while observing a source frame
+4. **Macro contribution** — active steps advance and contribute their current targets
+5. **Intent reduction** — digital buttons and keyboard keys are set unions across remap/combo/macro owners; L2/R2 analog contributions use the maximum value. Stick writes remain ordered state mutations and are not ownership-reduced.
+6. **Keyboard synchronization** — diff the complete desired key set against the successfully held set, preserving shared ownership and retrying failed transitions on later transforms
 
 **L3: Output**
 - `TargetCodec::encode_input()` writes the selected virtual target report → `UHID_INPUT2`
@@ -80,6 +83,11 @@ Input order inside `handle_hidraw_input()`:
 **Physical output path**
 - UHID OUTPUT: `TargetCodec::decode_output()` → `OutputCommand` → `PhysicalCodec::encode_output()` → physical hidraw write
 - UHID SET_REPORT: `PhysicalCodec::encode_set_report()` decides whether a target feature report can be forwarded to physical hidraw
+
+**Timing path**
+- Source transforms cache the latest decoded `ControllerFrame`. Timer transforms reuse that frame but do not observe fresh source edges, so deadlines cannot retrigger physical/combo macro activation.
+- Turbo, macro transitions, and Bluetooth repeat expose their next deadlines. The epoll loop arms one `CLOCK_MONOTONIC` one-shot timerfd to the earliest deadline.
+- Late wakeups advance runtime phase directly to `now` and schedule the first future deadline instead of replaying missed transitions. A timer turn emits at most one due target report; when BT repeat is active, runtime changes update its cached report and remain on the repeat cadence.
 
 ## Codec boundaries
 
@@ -105,18 +113,18 @@ Input order inside `handle_hidraw_input()`:
 - **Config switching**: `edgemap switch-config` reads and validates a configuration under the user account, then sends the source label and complete TOML content in one acknowledged seqpacket. dseuhid parses, validates, builds, and commits that in-memory content transactionally; it never opens the client-provided path. Failed applies preserve the previous mapping, runtimes, active content, and output-device setting.
 - **Control socket**: `/run/dseuhid/control.sock` is a Unix `SOCK_SEQPACKET` endpoint with at most 16 active clients and one delivered request per event-loop turn. The versioned request protocol carries only `switch-config`; hello/state packets carry `uhid_ready` and `needs_config`. Config failure replies expose only fixed category messages. `/run/dseuhid/daemon.lock` uses `flock` for atomic single-instance ownership and contains the PID only for diagnostics. Access details live in `docs/INSTALLATION_TESTING.md`.
 - **Config file limits**: `-c`, edgemap CLI, validation, and profile selection accept only regular files no larger than 64 KiB. Files are opened nonblocking and reads are independently capped, rejecting FIFO/device nodes and preventing unbounded pseudo-file reads. Runtime socket content is capped to the same size.
-- **edgemap daemon**: auto-creates `edgemap.toml` + `default.toml` under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`) on first run. Profiles in `[profiles.*]` sections with `match_process` (comm exact) and/or `match_cmdline` (substring), first match in declaration order wins. Each 3-second profile scan reads each PID's required `comm`/`cmdline` data at most once. A persistent control connection reports dseuhid lifetime and UHID/config state; inotify watches `edgemap.toml` and socket recreation. Only `needs_config=true`, an edgemap.toml reload, or a genuinely changed profile decision makes the daemon re-inject; manual config switches otherwise remain active until the daemon chooses a different profile. Sends notifications only after acknowledged switches.
+- **edgemap daemon**: auto-creates `edgemap.toml` + `default.toml` under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`) on first run. Profiles in `[profiles.*]` sections with `match_process` (comm exact) and/or `match_cmdline` (substring), first match in TOML declaration order wins. Each 3-second profile scan reads each PID's required `comm`/`cmdline` data at most once. A persistent control connection reports dseuhid lifetime and UHID/config state; inotify watches `edgemap.toml` and socket recreation, while periodic/state-triggered resynchronization closes watch replacement races and recovers from queue overflow. Selected, effective, and failed config decisions advance only after acknowledged applies; an invalid selected profile may fall back to the validated base config without hiding the failure. Only `needs_config=true`, an edgemap.toml reload, or a genuinely changed profile decision makes the daemon re-inject; manual config switches otherwise remain active until the daemon chooses a different profile. Sends notifications only after acknowledged switches.
 - **edgemap single instance**: daemon mode holds an exclusive `flock` on `$XDG_STATE_HOME/edgemap/edgemap.lock` (fallback `~/.local/state/edgemap/edgemap.lock`). The file contains the PID for diagnostics; process lifetime is determined only by the kernel lock.
 - **Byte 10 high nibble** = DSE Edge buttons: FnLeft=0x10, FnRight=0x20, LeftPaddle=0x40, RightPaddle=0x80. Byte 11 low nibble must be preserved, high nibble zeroed.
-- **Two-phase apply** (`mapping.rs`): Phase 1 clears source + collects targets, Phase 2 sets all targets atomically. Prevents cross-map (A→B, B→A) collisions.
-- **Snapshot isolation**: `apply()` clones state before rules evaluate — rules read snapshot, write to live state. Prevents rule ordering artifacts.
+- **Two-phase mapping** (`mapping.rs`): source rules are evaluated from one frozen snapshot while source clears and target intent are collected; reduced digital/trigger targets are applied afterward. Stick targets mutate the output state directly but still read the frozen rule snapshot. This prevents cross-map (A→B, B→A) collisions.
+- **Snapshot isolation**: `collect()` clones L1 before rules evaluate — every rule condition reads the snapshot while writes go to output state/intent. This prevents rule-order activation artifacts.
 - **DSE buttons excluded from targets** — only standard buttons, stick dirs, and trigger-full are valid targets. Edge buttons (paddles, Fn) can only be sources.
 - **Device detection** skips virtual UHID devices (checks `/sys/class/hidraw/N/device/uevent` for `DRIVER=uhid`) to avoid recursively proxying itself.
 - **GET_REPORT cache**: physical codec policy reads physical feature reports 0x05 (IMU calibration) and 0x20 (firmware info) for DS5 USB/BT physical devices backing DS5 USB targets. BT feature reports are CRC-validated with seed 0xA3 and kept full-size in the USB target cache. Read/validation failures warn and fall back to target responses. Report 0x09 (MAC address) is intentionally skipped — caching it would duplicate the physical device's MAC in sysfs, causing `hid-playstation` probe failure (#63).
 - **Bluetooth source**: DS5/Edge BT input report 0x31 is decoded into `ControllerFrame` with USB-compatible backing. Virtual targets remain USB UHID only. BT physical main output is supported by wrapping DS5 USB target output into the DS5 BT 0x31 output envelope with sequence tag and CRC; BT SET_REPORT/vendor feature-report forwarding is intentionally unsupported for now. Genshin Impact sends feature report 0x08, but hardware rejected a naive HIDIOCSFEATURE transfer even with a feature CRC tail. For BT source → DS5 USB target gyro cadence issues, dseuhid normalizes UHID input cadence by repeating the latest UHID input at 1000Hz by default; repeat frames advance `raw[7]` while keeping the sensor timestamp unchanged until a real BT frame arrives. A 250Hz retest also avoids the original severe drift, so stable cadence appears more important than raw rate. `DSEUHID_BT_DS5_USB_REPEAT_HZ` overrides the DS5 target rate, and `DSEUHID_BT_DS5_USB_REPEAT_MODE=passthrough` restores the original one-physical-frame-to-one-UHID-frame behavior. BT source → DS4 USB target repeat is opt-in only via `DSEUHID_BT_DS4_USB_REPEAT_HZ`; it advances DS4 sequence fields without DS5 timestamp handling.
 - **`Target::Block` removed** — replaced by `MappingConfig.blocked_buttons` (L1 suppression, not L2 remap). `remap="block"` in config maps to this.
-- **`apply()` signature**: `apply(&self, l1: &GamepadState, state: &mut GamepadState, keyboard_out: &mut Vec<(u16, bool)>)` — reads frozen L1 output, writes to mutable state, pushes keyboard events.
-- **Combo injection never clears** — only pushes activation, not deactivation. State re-parse handles cleanup naturally.
+- **Mapping collection**: the proxy uses `collect(&self, l1: &GamepadState, state: &mut GamepadState, intent: &mut OutputIntent)` so all L2 producers share one ownership-aware reduction. The public `apply()` helper retains its compatibility signature for direct mapping users and converts the collected keyboard owners into pressed events.
+- **Combo injection is additive** — an active combo contributes its target but never clears another producer's target. Each transform recomputes the complete intent, so inactive combos disappear naturally while shared owners remain active.
 - **Passthrough mode**: `remap = "passthrough"` leaves a button untouched with no L2 processing. This is a mapping-layer passthrough, not a promise that every physical button can be represented by every virtual target. Edge paddle/FN passthrough is meaningful for Edge auto target; DS4 target drops those buttons, and forced DS5 writes the bits but visibility depends on target descriptor/driver behavior.
 - **Kernel compatibility**: tested Linux 7.0, should work 6.7+, may work 5.12+. Requires UHID + `hid-playstation` driver.
 - **GUI capability source**: `edgemap capabilities` is the only source for GUI button, target, reserved macro-name, output-device, and keyboard lists. The GUI refuses to start if the versioned TOML contract cannot be queried or parsed; it must not carry stale fallback lists. Rust tests compare advertised source/gamepad sets with validator rules in both directions.

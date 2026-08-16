@@ -37,7 +37,7 @@ The `edgemap-gui` launcher resolves `/usr` or `/usr/local` from its own path and
 GitHub Actions builds this tarball layout on a tag:
 
 ```text
-edgemap-v1.3.0-x86_64.tar.gz
+edgemap-v1.3.1-x86_64.tar.gz
 ├── install.sh                 # sudo ./install.sh
 ├── LICENSE                    # canonical GPLv3 license
 ├── dseuhid                    → /usr/local/bin/

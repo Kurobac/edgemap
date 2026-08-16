@@ -1,4 +1,4 @@
-# edgemap — Project Status (2026-08-01)
+# edgemap — Project Status (2026-08-16)
 
 ## Overview
 
@@ -47,15 +47,16 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v1.2.0 | `88824b7` | **Event-driven daemon coordination**: libudev hotplug, signalfd shutdown, acknowledged Unix seqpacket IPC, atomic daemon locks, transactional startup/reload handling; 218 Rust + 21 GUI tests |
 | v1.2.1 | `b22c909` | **Control-plane hardening**: generic config errors, bounded regular-file loading, client/request limits, and systemd resource ceilings; 223 Rust + 21 GUI tests |
 | v1.3.0 | `f17697e` | **Architecture and GUI overhaul**: content-based config switching, responsibility-focused Rust modules, capability-driven Python package, and unified release tooling; 171 Rust + 30 GUI tests |
-| Unreleased | `73545b9` | **Correctness and release hardening**: split touch handling, strict config/daemon state, ownership-aware deadline scheduling, corrected defaults and durable GUI saves, and verified release payloads; 240 Rust + 35 GUI tests |
+| v1.3.1 | — | **Correctness and release hardening**: split touch handling, strict config/daemon state, ownership-aware deadline scheduling, corrected defaults and durable GUI saves, and verified release payloads; 240 Rust + 35 GUI tests |
 
-## Post-v1.3.0 Development Notes (Unreleased)
+## v1.3.1 Release Notes
 
 - Split touchpad children are derived from the decoded DS5 report before the physical snapshot, so left/right turbo, combo, gamepad, and keyboard mappings observe presses and releases exactly once. Compilation detects split mode first and excludes the parent/children from the generic mapping pass.
 - Configuration validation and compilation share typed target parsing. CLI/config creation reject ambiguous input, profile selection preserves TOML declaration order, and the edgemap daemon separately tracks selected, effective, and failed configurations so an unacknowledged or invalid candidate cannot become live state. Runtime watches resynchronize from filesystem/socket state after races or inotify overflow.
 - Remap, combo, and macro producers now contribute to one `OutputIntent`: digital buttons and keyboard keys use ownership unions, while trigger analog values use the maximum contribution. Releasing one producer no longer clears an output still owned by another.
 - Turbo, macro transitions, and Bluetooth repeat share one monotonic one-shot timerfd. Late wakeups advance directly to current phase without catch-up reports, and each timer turn emits at most one due target report.
 - `GamepadState::default()` uses neutral sticks, the DualSense headphone flag is decoded as active-high for USB and Bluetooth, GUI atomic saves fsync the parent directory after replacement, and the packaged launcher requires Python 3.11 or newer.
+- Hardened release staging and installer boundaries. Staging refuses existing or aliased output directories and cleans up only directories it created; the installer explicitly requires root, uses fixed system paths, rejects `DESTDIR`, and CI exercises install, upgrade, and uninstall on a disposable runner.
 - CI pins third-party actions and enforces formatting, locked Rust build/tests, Clippy with warnings denied, release-tag validation, the fixed-path installer test, and the Python 3.11 GUI suite. Tagged builds test the same release binaries that are staged, and every payload includes the canonical GPLv3 `LICENSE`.
 - Current automated suite: 240 Rust tests (101 library, 96 `dseuhid`, 26 `edgemap`, 17 CLI integration) plus 35 GUI tests.
 

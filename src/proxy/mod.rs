@@ -710,11 +710,40 @@ mod tests {
     use super::*;
     use std::os::fd::{AsRawFd, OwnedFd};
 
-    use nix::sys::socket::{recv, socketpair, AddressFamily, MsgFlags, SockFlag, SockType};
+    use nix::sys::socket::{recv, send, socketpair, AddressFamily, MsgFlags, SockFlag, SockType};
 
     use crate::codec::{PhysicalCodec, SourceCodec};
     use crate::mapping::TurboConfig;
     use crate::uhid::UhidEventType;
+
+    // Event handlers share the process-wide disconnect flag, like the single production loop.
+    static EVENT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn packet_pair() -> (OwnedFd, OwnedFd) {
+        socketpair(
+            AddressFamily::Unix,
+            SockType::SeqPacket,
+            None,
+            SockFlag::SOCK_NONBLOCK | SockFlag::SOCK_CLOEXEC,
+        )
+        .unwrap()
+    }
+
+    fn send_test_packet(fd: &OwnedFd, packet: &[u8]) {
+        assert_eq!(
+            send(fd.as_raw_fd(), packet, MsgFlags::MSG_NOSIGNAL).unwrap(),
+            packet.len()
+        );
+    }
+
+    fn output_event(data: &[u8]) -> Vec<u8> {
+        let mut event = vec![0; 4103];
+        event[..4].copy_from_slice(&6u32.to_le_bytes());
+        event[4..4 + data.len()].copy_from_slice(data);
+        event[4100..4102].copy_from_slice(&(data.len() as u16).to_le_bytes());
+        event[4102] = 1;
+        event
+    }
 
     fn frame_with(buttons: &[crate::model::Button]) -> ControllerFrame {
         let mut raw = [0u8; 64];
@@ -864,6 +893,297 @@ mod tests {
             .handle_timing_tick(&mut seq, start + Duration::from_secs(2))
             .unwrap();
         assert!(receive_uhid_packet(&receiver).is_none());
+    }
+
+    #[test]
+    fn rejected_config_preserves_live_mapping_runtimes_keyboard_and_repeat() {
+        use crate::model::Button;
+
+        let original = ActiveConfig::from_content(
+            "original.toml".into(),
+            r#"
+version = 2
+[cross]
+remap = "circle"
+turbo = true
+turbo_interval_ms = 10
+[square]
+remap = "held"
+[macros.held]
+mode = "hold"
+sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
+"#
+            .into(),
+        )
+        .unwrap();
+        for (content, code) in [
+            ("not valid TOML", "load-failed"),
+            (
+                "version = 2\noutput_device = \"invalid\"",
+                "validation-failed",
+            ),
+        ] {
+            let (mut proxy, receiver) = test_proxy(MappingConfig::default());
+            proxy.apply_active_config(original.clone()).unwrap();
+            let start = Instant::now();
+            let frame = frame_with(&[Button::Cross, Button::Square]);
+            prime_runtime_and_repeat(&mut proxy, &frame, start);
+            assert_eq!(proxy.keyboard.recorded_key_events(), [(57, true)]);
+            let deadline = proxy.next_timing_deadline();
+
+            let invalid =
+                ActiveConfig::from_content("invalid.toml".into(), content.into()).unwrap();
+            assert_eq!(proxy.apply_active_config(invalid).unwrap_err().0, code);
+            assert_eq!(proxy.active_config(), Some(&original));
+            assert_eq!(proxy.output_device_config, "auto");
+            assert!(!proxy.recreate_uhid);
+            assert!(proxy.last_frame.is_some());
+            assert!(proxy.last_snapshot.as_ref().unwrap().button(Button::Cross));
+            assert!(proxy.last_output.as_ref().unwrap().button(Button::Circle));
+            assert_eq!(proxy.next_timing_deadline(), deadline);
+            assert!(proxy.runtimes.turbo[0].active);
+            assert!(proxy.runtimes.macros[0].active);
+            assert_eq!(proxy.keyboard.recorded_key_events(), [(57, true)]);
+
+            // Cached reports and subsequent timer transforms must still use the old config.
+            let mut seq = 1;
+            proxy.handle_timing_tick(&mut seq, start).unwrap();
+            let packet = receive_uhid_packet(&receiver).unwrap();
+            assert_eq!(packet[6 + 8] & 0x60, 0x40); // Circle, not Cross.
+            proxy
+                .handle_timing_tick(&mut seq, start + Duration::from_millis(10))
+                .unwrap();
+            let packet = receive_uhid_packet(&receiver).unwrap();
+            assert_eq!(packet[6 + 8] & 0x60, 0); // Old turbo reaches its off phase.
+            proxy
+                .handle_timing_tick(&mut seq, start + Duration::from_millis(20))
+                .unwrap();
+            let packet = receive_uhid_packet(&receiver).unwrap();
+            assert_eq!(packet[6 + 8] & 0x60, 0x40); // The next on phase still applies the old remap.
+            assert_eq!(proxy.keyboard.recorded_key_events(), [(57, true)]);
+        }
+    }
+
+    #[test]
+    fn output_target_change_requests_recreation_and_retains_config_content() {
+        for output in ["auto", "dualsense", "dualshock4"] {
+            let (mut proxy, _) = test_proxy(MappingConfig::default());
+            proxy.keyboard.press(57);
+            let config = ActiveConfig::from_content(
+                "/nonexistent/retained.toml".into(),
+                format!("version = 2\noutput_device = \"{output}\"\n[cross]\nremap = \"circle\"\n"),
+            )
+            .unwrap();
+            proxy.apply_active_config(config.clone()).unwrap();
+            assert_eq!(proxy.recreate_uhid, output != "auto");
+            assert_eq!(proxy.output_device_config, output);
+            assert_eq!(proxy.active_config(), Some(&config));
+            assert_eq!(
+                proxy.keyboard.recorded_key_events(),
+                [(57, true), (57, false)]
+            );
+            let frame = frame_with(&[crate::model::Button::Cross]);
+            let report = proxy.encode_frame(&frame, Instant::now(), false, 1);
+            assert_eq!(report[8] & 0x60, 0x40);
+            // Once a recreation request has been consumed, reapplying the same target
+            // must not request another recreation.
+            proxy.recreate_uhid = false;
+            proxy.apply_active_config(config).unwrap();
+            assert!(!proxy.recreate_uhid);
+        }
+    }
+
+    #[test]
+    fn control_apply_reports_failure_without_commit_and_acknowledges_success() {
+        let dir = std::env::temp_dir().join(format!("proxy-apply-{}", std::process::id()));
+        let initial = crate::control::ControlState {
+            uhid_ready: true,
+            needs_config: true,
+        };
+        let mut server = ControlServer::bind(&dir, initial).unwrap();
+        let client = crate::control::ControlClient::connect(&dir.join("control.sock")).unwrap();
+        assert!(server.drain_requests().unwrap().is_empty());
+        assert_eq!(
+            client.receive().unwrap(),
+            Some(crate::control::ServerPacket::Hello(initial))
+        );
+        let (mut proxy, _) = test_proxy(MappingConfig::default());
+        let old = ActiveConfig::from_content("old.toml".into(), "version = 2\n".into()).unwrap();
+        proxy.apply_active_config(old.clone()).unwrap();
+
+        let bad = ActiveConfig::from_content(
+            "private-source.toml".into(),
+            "version = 2\noutput_device = \"private-invalid-target\"".into(),
+        )
+        .unwrap();
+        client
+            .send_request(&ControlRequest::SwitchConfig(bad))
+            .unwrap();
+        proxy.handle_control_requests(&mut server).unwrap();
+        assert_eq!(
+            client.receive().unwrap(),
+            Some(crate::control::ServerPacket::Error {
+                code: "validation-failed".into(),
+                message: "configuration validation failed".into(),
+            })
+        );
+        assert_eq!(client.receive().unwrap(), None); // No ACK or success state after rejection.
+        assert_eq!(server.state(), initial);
+        assert_eq!(proxy.active_config(), Some(&old));
+
+        let next = ActiveConfig::from_content(
+            "/nonexistent/profile.toml".into(),
+            "version = 2\noutput_device = \"dualshock4\"".into(),
+        )
+        .unwrap();
+        client
+            .send_request(&ControlRequest::SwitchConfig(next.clone()))
+            .unwrap();
+        proxy.handle_control_requests(&mut server).unwrap();
+        assert_eq!(
+            client.receive().unwrap(),
+            Some(crate::control::ServerPacket::OkSwitchConfig)
+        );
+        assert_eq!(
+            client.receive().unwrap(),
+            Some(crate::control::ServerPacket::State(
+                crate::control::ControlState {
+                    uhid_ready: true,
+                    needs_config: false
+                }
+            ))
+        );
+        assert_eq!(proxy.active_config(), Some(&next));
+        assert!(proxy.recreate_uhid);
+        drop(client);
+        drop(server);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn source_handler_drops_bad_frames_then_forwards_valid_input_and_detects_eof() {
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (mut proxy, receiver) = test_proxy(MappingConfig::default());
+        let (physical, sender) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        send_test_packet(&sender, &[1, 0]);
+        send_test_packet(&sender, &[0xff; 64]);
+        let report = proxy
+            .codec
+            .target
+            .encode_input(&frame_with(&[crate::model::Button::Cross]), 0)
+            .unwrap();
+        send_test_packet(&sender, &report);
+        let mut seq = 0;
+        proxy.handle_hidraw_input(&mut seq).unwrap();
+        let packet = receive_uhid_packet(&receiver).unwrap();
+        assert_eq!(&packet[..6], &[12, 0, 0, 0, 64, 0]);
+        assert_eq!(packet[6 + 8] & 0x20, 0x20);
+        assert!(receive_uhid_packet(&receiver).is_none());
+        assert!(!DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst));
+        drop(sender);
+        proxy.handle_hidraw_input(&mut seq).unwrap();
+        assert!(DISCONNECTED.swap(false, std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn output_handler_drops_invalid_reports_and_keeps_running_after_write_failure() {
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (mut proxy, receiver) = test_proxy(MappingConfig::default());
+        let (physical, physical_peer) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        proxy.codec.physical = PhysicalCodec::Ds5Bt;
+        let mut valid = vec![0; 48];
+        valid[0] = 2;
+        valid[3] = 67;
+        send_test_packet(&receiver, &output_event(&[2])); // Too short for BT output.
+        send_test_packet(&receiver, &output_event(&valid));
+        proxy.handle_uhid_event().unwrap();
+        let output = receive_uhid_packet(&physical_peer).unwrap();
+        assert_eq!(&output[..3], &[0x31, 0, 0x10]);
+        assert_eq!(&output[3..50], &valid[1..]);
+        assert!(receive_uhid_packet(&physical_peer).is_none());
+
+        // ENOSPC is an output failure, not a device-disconnect error.
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let original =
+            std::mem::replace(&mut proxy.hidraw, HidrawDevice::from_test_fd(full.into()));
+        send_test_packet(&receiver, &output_event(&valid));
+        proxy.handle_uhid_event().unwrap();
+        assert!(!DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst));
+        proxy.hidraw = original;
+        let input = proxy
+            .codec
+            .target
+            .encode_input(&frame_with(&[]), 0)
+            .unwrap();
+        send_test_packet(&physical_peer, &input);
+        proxy.handle_hidraw_input(&mut 0).unwrap();
+        assert_one_input_packet_then_empty(&receiver);
+    }
+
+    #[test]
+    fn feature_handler_replies_with_cache_fallback_missing_and_forwarding_error() {
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (mut proxy, receiver) = test_proxy(MappingConfig::default());
+        let fallback = proxy.codec.target.fallback_feature_report(0x09).unwrap();
+        proxy.report_cache.insert(0x09, vec![9, 42, 43]);
+        for (id, report, expected, error) in
+            [(1u32, 0x09, vec![9, 42, 43], 0u16), (2, 0xff, vec![], 1)]
+        {
+            let mut event = vec![9, 0, 0, 0];
+            event.extend_from_slice(&id.to_le_bytes());
+            event.extend_from_slice(&[report, 0]);
+            send_test_packet(&receiver, &event);
+            proxy.handle_uhid_event().unwrap();
+            let reply = receive_uhid_packet(&receiver).unwrap();
+            assert_eq!(&reply[..4], &[10, 0, 0, 0]);
+            assert_eq!(&reply[4..8], &id.to_le_bytes());
+            assert_eq!(&reply[8..10], &error.to_le_bytes());
+            assert_eq!(&reply[10..12], &(expected.len() as u16).to_le_bytes());
+            assert_eq!(&reply[12..], expected);
+        }
+        proxy.report_cache = FeatureReportCache::new();
+        send_test_packet(&receiver, &[9, 0, 0, 0, 3, 0, 0, 0, 9, 0]);
+        proxy.handle_uhid_event().unwrap();
+        let reply = receive_uhid_packet(&receiver).unwrap();
+        assert_eq!(&reply[4..10], &[3, 0, 0, 0, 0, 0]);
+        assert_eq!(&reply[12..], fallback);
+
+        // /dev/null cannot serve HIDIOCSFEATURE; the error must be acknowledged.
+        send_test_packet(&receiver, &[13, 0, 0, 0, 4, 0, 0, 0, 8, 0, 1, 0, 8]);
+        proxy.handle_uhid_event().unwrap();
+        assert_eq!(
+            receive_uhid_packet(&receiver).unwrap(),
+            [14, 0, 0, 0, 4, 0, 0, 0, 1, 0]
+        );
+        assert!(!DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst));
+        // A subsequent request is still served after the failed feature operation.
+        send_test_packet(&receiver, &[9, 0, 0, 0, 5, 0, 0, 0, 9, 0]);
+        proxy.handle_uhid_event().unwrap();
+        assert_eq!(&receive_uhid_packet(&receiver).unwrap()[12..], fallback);
+    }
+
+    #[test]
+    fn malformed_uhid_event_and_kernel_stop_are_fatal_handler_errors() {
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        let (mut proxy, receiver) = test_proxy(MappingConfig::default());
+        send_test_packet(&receiver, &[6, 0, 0, 0]);
+        assert_eq!(
+            proxy.handle_uhid_event().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        send_test_packet(&receiver, &[3, 0, 0, 0]);
+        assert_eq!(
+            proxy.handle_uhid_event().unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
     }
 
     #[test]

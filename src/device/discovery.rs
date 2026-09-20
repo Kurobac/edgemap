@@ -181,9 +181,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_find_sysfs_hidraw() {
-        let path = Path::new("/dev/hidraw0");
-        let _sysfs = find_sysfs_hidraw(path);
+    fn hidraw_path_recognition_excludes_uhid() {
         assert!(is_hidraw_path(Path::new("/dev/hidraw12")));
         assert!(!is_hidraw_path(Path::new("/dev/uhid")));
     }

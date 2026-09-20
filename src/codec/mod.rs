@@ -520,6 +520,122 @@ mod tests {
     }
 
     #[test]
+    fn bluetooth_input_output_and_feature_match_independent_crc_vectors() {
+        // Fixed CRCs computed independently with Python's zlib.crc32(bytes([seed]) + payload).
+        // Do not regenerate expectations with ps_crc32: these check the implementation and seeds.
+        let mut input = [0u8; 78];
+        input[0] = 0x31;
+        input[9] = 0x28; // USB byte 8: Cross with a neutral hat.
+        input[74..].copy_from_slice(&[0x71, 0xd5, 0xd8, 0x07]); // seed 0xA1
+        let frame = SourceCodec::Ds5Bt.decode_input(&input).unwrap();
+        assert!(frame.state.button(Button::Cross));
+        assert!(!frame.state.button(Button::DpadUp));
+
+        let mut feature = vec![5];
+        feature.extend(1u8..37);
+        feature.extend_from_slice(&[0xcd, 0x22, 0x95, 0x80]); // seed 0xA3
+        assert_eq!(
+            PhysicalCodec::Ds5Bt
+                .decode_feature_report(
+                    PhysicalFeatureReportRequest {
+                        report_id: 5,
+                        size: 41
+                    },
+                    feature.clone(),
+                )
+                .unwrap(),
+            feature
+        );
+
+        let mut usb: Vec<u8> = (0..48).collect();
+        usb[0] = 2;
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        let output = PhysicalCodec::Ds5Bt
+            .encode_output(&command, &mut PhysicalOutputState::default())
+            .unwrap();
+        let mut expected = vec![0; 78];
+        expected[..3].copy_from_slice(&[0x31, 0, 0x10]);
+        expected[3..50].copy_from_slice(&usb[1..]);
+        expected[74..].copy_from_slice(&[0xb8, 0x9d, 0x78, 0x35]); // seed 0xA2
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn ds4_input_encodes_sticks_buttons_triggers_motion_and_touch_coordinates() {
+        let mut raw = ds5_usb_raw();
+        // Contact 5: x=1234, y=1080. The second contact is inactive.
+        raw[33..41].copy_from_slice(&[5, 0xd2, 0x84, 0x43, 0x86, 0, 0, 0]);
+        let mut frame = SourceCodec::Ds5Usb.decode_input(&raw).unwrap();
+        frame.state = GamepadState::default();
+        frame.state.left_stick_x = 17;
+        frame.state.left_stick_y = 34;
+        frame.state.right_stick_x = 51;
+        frame.state.right_stick_y = 68;
+        frame.state.l2_analog = 93;
+        frame.state.r2_analog = 171;
+        for button in [
+            Button::Square,
+            Button::Circle,
+            Button::L1,
+            Button::R2,
+            Button::Create,
+            Button::R3,
+            Button::PS,
+            Button::Touchpad,
+            Button::DpadUp,
+            Button::DpadRight,
+            Button::LeftPaddle,
+            Button::FnRight,
+        ] {
+            frame.state.set_button(button, true);
+        }
+        frame.motion = Some(MotionFrame {
+            gyro: [-1000, 2000, -3000],
+            accel: [4000, -5000, 6000],
+        });
+        let out = TargetCodec::Ds4Usb.encode_input(&frame, 0x15).unwrap();
+        assert_eq!(&out[..10], &[1, 17, 34, 51, 68, 0x51, 0x99, 0x57, 93, 171]);
+        assert_eq!(
+            &out[13..25],
+            &[24, 252, 208, 7, 72, 244, 160, 15, 120, 236, 112, 23]
+        );
+        assert_eq!(&out[33..43], &[1, 0x15, 5, 0xd2, 0xe4, 0x3a, 0x80, 0, 0, 0]);
+
+        // Both contacts inactive must clear the touch packet's active flag.
+        raw[33] = 0x85;
+        let out = TargetCodec::Ds4Usb
+            .encode_input(&SourceCodec::Ds5Usb.decode_input(&raw).unwrap(), 0)
+            .unwrap();
+        assert_eq!(out[33], 0);
+        assert_eq!(out[35], 0x80);
+        assert_eq!(out[39], 0x80);
+    }
+
+    #[test]
+    fn ds4_hat_encodes_all_directions_and_neutral_for_conflicting_inputs() {
+        for (buttons, hat) in [
+            (vec![], 8),
+            (vec![Button::DpadUp], 0),
+            (vec![Button::DpadUp, Button::DpadRight], 1),
+            (vec![Button::DpadRight], 2),
+            (vec![Button::DpadDown, Button::DpadRight], 3),
+            (vec![Button::DpadDown], 4),
+            (vec![Button::DpadDown, Button::DpadLeft], 5),
+            (vec![Button::DpadLeft], 6),
+            (vec![Button::DpadUp, Button::DpadLeft], 7),
+            (vec![Button::DpadUp, Button::DpadDown], 8),
+            (vec![Button::DpadUp, Button::DpadLeft, Button::DpadRight], 8),
+        ] {
+            let mut frame = SourceCodec::Ds5Usb.decode_input(&ds5_usb_raw()).unwrap();
+            frame.state = GamepadState::default();
+            for button in buttons {
+                frame.state.set_button(button, true);
+            }
+            assert_eq!(TargetCodec::Ds4Usb.encode_input(&frame, 0).unwrap()[5], hat);
+        }
+    }
+
+    #[test]
     fn ds4_output_conversion_is_exposed_through_codec_boundary() {
         let mut ds4 = [0u8; 32];
         ds4[0] = 0x05;
@@ -893,37 +1009,6 @@ mod tests {
         assert_eq!(bt[0], DS5_BT_OUTPUT_REPORT_ID);
         assert_eq!(bt[1], 0x00);
         assert_eq!(bt[2], DS5_BT_OUTPUT_TAG);
-        assert_eq!(
-            &bt[DS5_BT_OUTPUT_PAYLOAD_OFFSET..DS5_BT_OUTPUT_PAYLOAD_OFFSET + usb.len() - 1],
-            &usb[1..]
-        );
-        assert!(
-            bt[DS5_BT_OUTPUT_PAYLOAD_OFFSET + usb.len() - 1..DS5_BT_OUTPUT_CRC_OFFSET]
-                .iter()
-                .all(|b| *b == 0)
-        );
-        let crc = u32::from_le_bytes([bt[74], bt[75], bt[76], bt[77]]);
-        assert_eq!(
-            crc,
-            ps_crc32(PS_OUTPUT_CRC32_SEED, &bt[..DS5_BT_OUTPUT_CRC_OFFSET])
-        );
-    }
-
-    #[test]
-    fn physical_ds5_bt_wraps_edge_ds5_usb_output() {
-        let mut usb = [0u8; DS5_USB_OUTPUT_REPORT_MAX_SIZE];
-        usb[0] = DS5_USB_OUTPUT_REPORT_ID;
-        for (i, byte) in usb[1..].iter_mut().enumerate() {
-            *byte = (i as u8).wrapping_add(1);
-        }
-        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
-        let mut state = PhysicalOutputState::default();
-
-        let bt = PhysicalCodec::Ds5Bt
-            .encode_output(&command, &mut state)
-            .unwrap();
-
-        assert_eq!(bt[0], DS5_BT_OUTPUT_REPORT_ID);
         assert_eq!(
             &bt[DS5_BT_OUTPUT_PAYLOAD_OFFSET..DS5_BT_OUTPUT_PAYLOAD_OFFSET + usb.len() - 1],
             &usb[1..]

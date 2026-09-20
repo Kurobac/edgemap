@@ -948,4 +948,32 @@ mod tests {
 
         assert!(runtimes.macros.iter().all(|runtime| !runtime.active));
     }
+
+    #[test]
+    fn blocked_and_combo_triggers_clear_both_digital_and_analog_input() {
+        for (modifier, key) in [(Button::L2, Button::R2), (Button::R2, Button::L2)] {
+            let mut frame = frame_with(&[modifier, key]);
+            frame.state.l2_analog = 93;
+            frame.state.r2_analog = 171;
+            for combo in [false, true] {
+                let mut mapping = MappingConfig::default();
+                if combo {
+                    mapping.combo_configs.push(crate::mapping::ComboRule {
+                        modifier,
+                        key,
+                        output: Target::Button(Button::Cross),
+                    });
+                } else {
+                    mapping.blocked_buttons = vec![modifier, key];
+                }
+                let mut runtimes = MappingRuntimes::from_mapping(&mapping);
+                let output = transform(&frame, &mapping, &mut runtimes, Instant::now());
+                assert!(!output.state.button(Button::L2));
+                assert!(!output.state.button(Button::R2));
+                assert_eq!(output.state.l2_analog, 0);
+                assert_eq!(output.state.r2_analog, 0);
+                assert_eq!(output.state.button(Button::Cross), combo);
+            }
+        }
+    }
 }

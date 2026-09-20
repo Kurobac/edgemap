@@ -1,4 +1,5 @@
 import os
+from contextlib import ExitStack
 from pathlib import Path
 import shutil
 import tempfile
@@ -18,6 +19,9 @@ from edgemap_gui import app as app_module
 from edgemap_gui import config_document as config_document_module
 from edgemap_gui.dialogs import keyboard as keyboard_dialog
 from edgemap_gui.dialogs import macro as macro_dialog
+from edgemap_gui.dialogs.combo import ComboDialog
+from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtWidgets import QLineEdit
 
 
 class HelperTests(unittest.TestCase):
@@ -199,7 +203,7 @@ class HelperTests(unittest.TestCase):
         document.revert()
         self.assertEqual(document.data, {"version": 2})
 
-    def test_package_serializer_matches_legacy_serializer(self):
+    def test_serializer_preserves_macro_names_modes_and_steps(self):
         config = {
             "version": 2,
             "cross": {"remap": "rapid fire"},
@@ -214,8 +218,24 @@ class HelperTests(unittest.TestCase):
         }
         serialized = package_gui.serialize_config(config, ("cross",))
         parsed = tomllib.loads(serialized)
-        self.assertEqual(parsed["cross"]["remap"], "rapid fire")
-        self.assertEqual(parsed["macros"]["rapid fire"]["sequence"][0]["key"], "key:space")
+        self.assertEqual(parsed, config)
+
+    def test_client_reports_process_and_validation_failures(self):
+        client = package_gui.EdgemapClient("test-edgemap")
+        for error, message in (
+            (FileNotFoundError(), "binary not found"),
+            (subprocess.TimeoutExpired("test-edgemap", 10), "timed out"),
+            (PermissionError("denied"), "failed to run"),
+        ):
+            with self.subTest(error=error), patch.object(
+                subprocess, "run", side_effect=error
+            ), self.assertRaisesRegex(package_gui.EdgemapClientError, message):
+                client.validate_path("config.toml")
+        failed = subprocess.CompletedProcess([], 1, "", "invalid target")
+        with patch.object(subprocess, "run", return_value=failed), self.assertRaisesRegex(
+            package_gui.EdgemapClientError, "config validation failed: invalid target"
+        ):
+            client.validate_path("config.toml")
 
     def test_toml_quote_round_trip(self):
         value = 'game "quoted"\\path\nnext'
@@ -293,6 +313,167 @@ class WidgetTests(unittest.TestCase):
         binary = ROOT / "target" / "debug" / "edgemap"
         cls.client = package_gui.EdgemapClient(str(binary))
         cls.capabilities = cls.client.capabilities()
+
+    def make_editor(self, directory):
+        with patch.dict(os.environ, {"HOME": directory, "XDG_CONFIG_HOME": directory}):
+            editor = gui.EdgemapEditor(self.capabilities, self.client)
+        self.addCleanup(editor.deleteLater)
+        return editor
+
+    def test_existing_file_save_validates_writes_and_advances_saved_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "saved.toml"
+            path.write_text('version = 2\n[cross]\nremap = "cross"\n')
+            editor = self.make_editor(directory)
+            editor.config = tomllib.loads(path.read_text())
+            editor.document.mark_saved(str(path))
+            editor.config["cross"]["remap"] = "circle"
+            self.assertTrue(editor.document.dirty)
+            self.assertTrue(editor._save_config())
+            self.assertEqual(tomllib.loads(path.read_text())["cross"]["remap"], "circle")
+            self.assertFalse(editor.document.dirty)
+            self.assertEqual(editor.current_file, str(path))
+            editor.config["cross"]["remap"] = "square"
+            editor.document.revert()
+            self.assertEqual(editor.config["cross"]["remap"], "circle")
+
+    def test_failed_existing_file_save_preserves_bytes_path_and_dirty_state(self):
+        for failure in ("validation", "write"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "saved.toml"
+                original = 'version = 2\n[cross]\nremap = "cross"\n'
+                path.write_text(original)
+                editor = self.make_editor(directory)
+                editor.config = tomllib.loads(original)
+                editor.document.mark_saved(str(path))
+                remap = "invalid-target" if failure == "validation" else "circle"
+                editor.config["cross"]["remap"] = remap
+                with ExitStack() as stack:
+                    warning = stack.enter_context(patch.object(gui.QMessageBox, "warning"))
+                    if failure == "write":
+                        stack.enter_context(patch.object(
+                            config_document_module.os, "replace", side_effect=OSError("write failed")
+                        ))
+                    self.assertFalse(editor._save_config())
+                    warning.assert_called_once()
+                self.assertEqual(path.read_text(), original)
+                self.assertEqual(list(Path(directory).glob("tmp*")), [])
+                self.assertEqual(editor.current_file, str(path))
+                self.assertTrue(editor.document.dirty)
+                self.assertEqual(editor.config["cross"]["remap"], remap)
+                editor.document.revert()
+                self.assertEqual(editor.config, tomllib.loads(original))
+
+    def test_close_save_keeps_window_open_on_cancel_validation_or_write_failure(self):
+        for failure in ("cancel", "validation", "write"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                editor = self.make_editor(directory)
+                editor.config = {"version": 2, "cross": {"remap": "cross"}}
+                editor.document.mark_saved()
+                editor.config["cross"]["remap"] = "invalid-target" if failure == "validation" else "circle"
+                target = Path(directory) / "new.toml"
+                event = QCloseEvent()
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(
+                        gui.QMessageBox, "warning", return_value=gui.QMessageBox.StandardButton.Save
+                    ))
+                    stack.enter_context(patch.object(
+                        gui.QFileDialog, "getSaveFileName",
+                        return_value=("" if failure == "cancel" else str(target), ""),
+                    ))
+                    if failure == "write":
+                        stack.enter_context(patch.object(
+                            config_document_module.os, "replace", side_effect=OSError("write failed")
+                        ))
+                    editor.closeEvent(event)
+                self.assertFalse(event.isAccepted())
+                self.assertTrue(editor.document.dirty)
+                self.assertIsNone(editor.current_file)
+                self.assertFalse(target.exists())
+
+    def test_close_successful_save_writes_file_before_accepting_close(self):
+        with tempfile.TemporaryDirectory() as directory:
+            editor = self.make_editor(directory)
+            editor.config = {"version": 2, "cross": {"remap": "circle"}}
+            target = Path(directory) / "new.toml"
+            event = QCloseEvent()
+            with patch.object(
+                gui.QMessageBox, "warning", return_value=gui.QMessageBox.StandardButton.Save
+            ), patch.object(gui.QFileDialog, "getSaveFileName", return_value=(str(target), "")):
+                editor.closeEvent(event)
+            self.assertTrue(event.isAccepted())
+            self.assertFalse(editor.document.dirty)
+            self.assertEqual(editor.current_file, str(target))
+            self.assertEqual(tomllib.loads(target.read_text())["cross"]["remap"], "circle")
+
+    def test_open_invalid_config_preserves_current_document(self):
+        with tempfile.TemporaryDirectory() as directory:
+            editor = self.make_editor(directory)
+            original = {"version": 2, "cross": {"remap": "cross"}}
+            editor.config = original.copy()
+            editor.document.mark_saved(str(Path(directory) / "original.toml"))
+            editor.config = {"version": 2, "cross": {"remap": "circle"}}
+            invalid = Path(directory) / "invalid.toml"
+            for content in ("invalid TOML", 'version = 2\n[cross]\nremap = "invalid-target"\n'):
+                invalid.write_text(content)
+                with self.subTest(content=content), patch.object(
+                    gui.QMessageBox, "warning", return_value=gui.QMessageBox.StandardButton.Discard
+                ):
+                    editor._open_config(str(invalid))
+                self.assertEqual(editor.config["cross"]["remap"], "circle")
+                self.assertTrue(editor.document.dirty)
+                self.assertEqual(editor.current_file, str(Path(directory) / "original.toml"))
+            editor.document.revert()
+            self.assertEqual(editor.config, original)
+
+    def test_combo_dialog_add_remove_and_save_preserves_edits(self):
+        original = [{"key": "cross", "output": "circle"}]
+        dialog = ComboDialog(None, "left_paddle", original, {}, self.capabilities)
+        self.addCleanup(dialog.deleteLater)
+        dialog.table.cellWidget(0, 0).setCurrentText("square")
+        dialog.table.cellWidget(0, 1).setCurrentText("key:space")
+        dialog._add()
+        self.assertEqual(dialog.table.cellWidget(0, 0).currentText(), "square")
+        self.assertEqual(dialog.table.cellWidget(0, 1).currentText(), "key:space")
+        dialog.table.cellWidget(1, 0).setCurrentText("triangle")
+        dialog.table.cellWidget(1, 1).setCurrentText("r1")
+        dialog._remove(0)
+        dialog._save()
+        self.assertEqual(dialog.result(), gui.QDialog.DialogCode.Accepted)
+        self.assertEqual(dialog.combos, [{"key": "triangle", "output": "r1"}])
+        self.assertEqual(original, [{"key": "cross", "output": "circle"}])
+
+    def test_combo_dialog_rejects_duplicate_self_and_fn_face_keys(self):
+        for modifier, keys in (
+            ("left_paddle", ["cross", "cross"]),
+            ("left_paddle", ["left_paddle"]),
+            ("left_fn", ["cross"]),
+        ):
+            with self.subTest(modifier=modifier, keys=keys):
+                dialog = ComboDialog(None, modifier, [
+                    {"key": key, "output": "circle"} for key in keys
+                ], {}, self.capabilities)
+                self.addCleanup(dialog.deleteLater)
+                with patch.object(gui.QMessageBox, "warning") as warning:
+                    dialog._save()
+                warning.assert_called_once()
+                self.assertEqual(dialog.result(), gui.QDialog.DialogCode.Rejected)
+
+    def test_real_keyboard_picker_filters_and_returns_selected_capability(self):
+        picker = keyboard_dialog.KeyboardPicker(None, self.capabilities, "key:space")
+        self.addCleanup(picker.deleteLater)
+        role = gui.Qt.ItemDataRole.UserRole
+        self.assertEqual(picker.list_widget.currentItem().data(role), "space")
+        self.assertEqual(picker.list_widget.count(), len(self.capabilities.keyboard_keys))
+        picker.findChild(QLineEdit).setText("ENTER")
+        visible = [picker.list_widget.item(i) for i in range(picker.list_widget.count())
+                   if not picker.list_widget.item(i).isHidden()]
+        self.assertEqual({item.data(role) for item in visible}, {"enter", "kpenter"})
+        item = next(item for item in visible if item.data(role) == "kpenter")
+        picker.list_widget.setCurrentItem(item)
+        picker._accept()
+        self.assertEqual(picker.result(), gui.QDialog.DialogCode.Accepted)
+        self.assertEqual(picker.key_name(), "key:kpenter")
 
     def test_editor_constructs_with_real_capabilities(self):
         with tempfile.TemporaryDirectory() as home, patch.dict(

@@ -1155,6 +1155,12 @@ mod path_tests {
     #[test]
     fn child_reaper_waits_for_process_exit() {
         let child = std::process::Command::new("true").spawn().unwrap();
+        let pid = nix::unistd::Pid::from_raw(child.id() as i32);
         reap_child(child).unwrap().join().unwrap();
+        // The child must already have been reaped, not merely handed to a thread.
+        assert_eq!(
+            nix::sys::wait::waitpid(pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG)),
+            Err(nix::errno::Errno::ECHILD)
+        );
     }
 }

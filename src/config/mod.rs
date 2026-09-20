@@ -402,6 +402,45 @@ mod tests {
     }
 
     #[test]
+    fn active_config_rejects_fifo_without_waiting_for_a_writer() {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        let path = std::env::temp_dir().join(format!(
+            "dseuhid-fifo-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        nix::unistd::mkfifo(
+            &path,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let reader_path = path.clone();
+        let reader = std::thread::spawn(move || {
+            let _ = sender.send(ActiveConfig::read(reader_path.to_str().unwrap()));
+        });
+        let result = receiver.recv_timeout(Duration::from_secs(2));
+        // Unblock a regressed blocking open before joining, so a failure cannot hang the suite.
+        let _writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path)
+            .unwrap();
+        reader.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(result
+            .expect("FIFO read waited for a writer")
+            .unwrap_err()
+            .contains("not a regular file"));
+    }
+
+    #[test]
     fn output_device_config() {
         let cfg = parse("output_device = \"dualshock4\"\n[cross]\nremap = \"cross\"\n");
         assert!(validate(&cfg).is_ok());
@@ -758,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn every_validated_config_compiles_to_a_mapping() {
+    fn representative_validated_configs_compile_to_mappings() {
         let configs = [
             parse("[cross]\nremap = \"circle\"\n"),
             parse("[cross]\nremap = \"key:space\"\n"),

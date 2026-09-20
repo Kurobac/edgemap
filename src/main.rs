@@ -139,21 +139,6 @@ mod main_tests {
     }
 
     #[test]
-    fn cli_parser_accepts_one_config_path() {
-        let args = [
-            "dseuhid".to_string(),
-            "--config-path".to_string(),
-            "/tmp/config.toml".to_string(),
-        ];
-        assert_eq!(
-            parse_cli(&args),
-            Ok(CliAction::Run {
-                config_path: Some("/tmp/config.toml".to_string())
-            })
-        );
-    }
-
-    #[test]
     fn cli_parser_covers_all_supported_aliases_and_invalid_shapes() {
         let parse = |arguments: &[&str]| {
             let args = std::iter::once("dseuhid".to_string())

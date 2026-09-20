@@ -8,12 +8,12 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 240 tests total (101 library + 96 dseuhid + 26 edgemap + 17 CLI integration)
+cargo test                # 255 tests total (102 library + 105 dseuhid + 31 edgemap + 17 CLI integration)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
 PYTHONPATH=gui python3 -m edgemap_gui  # config editor GUI from source (PyQt6)
-QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests -p 'test_gui.py' -v  # 35 GUI tests
+QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests -p 'test_gui.py' -v  # 44 GUI tests
 ```
 
 GitHub CI pins third-party actions and runs `cargo fmt --check`, locked debug builds/tests, the fixed-path installer integration test on a disposable runner, `cargo clippy --locked --all-targets -- -D warnings`, release-tag validation, and the PyQt6 offscreen GUI suite under Python 3.11. Tagged releases repeat the Rust checks, installer test the release binaries that will be staged, verify the tag matches `Cargo.toml`, and publish only after the GUI job succeeds.

@@ -34,6 +34,7 @@ pub(crate) fn send_daemon_control_request(
     request: &control::ControlRequest,
     shutdown: &ShutdownSignal,
     state: &mut control::ControlState,
+    mut observe: impl FnMut(control::ControlState),
 ) -> Result<(), DaemonRequestError> {
     client
         .send_request(request)
@@ -45,7 +46,10 @@ pub(crate) fn send_daemon_control_request(
             .map_err(|e| DaemonRequestError::Failed(e.to_string()))?
         {
             match packet {
-                control::ServerPacket::State(new_state) => *state = new_state,
+                control::ServerPacket::State(new_state) => {
+                    *state = new_state;
+                    observe(new_state);
+                }
                 control::ServerPacket::OkSwitchConfig
                     if matches!(request, control::ControlRequest::SwitchConfig(_)) =>
                 {
@@ -164,11 +168,6 @@ pub(crate) fn send_control_request(
             {
                 return Ok(state)
             }
-            control::ServerPacket::OkHapticsDemo
-                if matches!(request, control::ControlRequest::HapticsDemo) =>
-            {
-                return Ok(state)
-            }
             control::ServerPacket::Error { code, message } => {
                 return Err(format!("{code}: {message}"));
             }
@@ -278,12 +277,53 @@ mod tests {
                     );
                     send(fd, b"ok switch-config", MsgFlags::MSG_NOSIGNAL).unwrap();
                 });
-                let result = send_daemon_control_request(client, &request(), &shutdown, &mut state);
+                let result =
+                    send_daemon_control_request(client, &request(), &shutdown, &mut state, |_| {});
                 let _ = completed.send(());
                 responder.join().unwrap();
                 assert!(result.is_ok());
             });
             assert_eq!(state, READY);
+        });
+    }
+
+    #[test]
+    fn daemon_request_observes_disconnect_and_reconnect_before_ack() {
+        with_connection(|server, client| {
+            let shutdown = ShutdownSignal::new().unwrap();
+            let bt = ControlState {
+                bt_haptics: Some(control::HapticsDevice::DualSenseEdge),
+                ..READY
+            };
+            server.set_state(bt);
+            drain_control_state(client, |_| {}).unwrap();
+            let mut state = bt;
+            let mut observed = Vec::new();
+            std::thread::scope(|scope| {
+                let responder = scope.spawn(|| {
+                    let fd = reply_to_request(
+                        server,
+                        &[
+                            b"state uhid_ready=0 needs_config=1 bt_haptics=none",
+                            b"state uhid_ready=1 needs_config=0 bt_haptics=dualsense-edge",
+                        ],
+                        false,
+                    );
+                    send(fd, b"ok switch-config", MsgFlags::MSG_NOSIGNAL).unwrap();
+                });
+                let result = send_daemon_control_request(
+                    client,
+                    &request(),
+                    &shutdown,
+                    &mut state,
+                    |state| observed.push(state),
+                );
+                responder.join().unwrap();
+                assert!(result.is_ok());
+            });
+            assert_eq!(state, bt);
+            assert_eq!(observed, [INITIAL, bt]);
+            assert_eq!(drain_control_state(client, |_| {}).unwrap(), None);
         });
     }
 
@@ -307,8 +347,13 @@ mod tests {
                 let mut state = INITIAL;
                 std::thread::scope(|scope| {
                     let responder = scope.spawn(|| reply_to_request(server, &packets, disconnect));
-                    let result =
-                        send_daemon_control_request(client, &request(), &shutdown, &mut state);
+                    let result = send_daemon_control_request(
+                        client,
+                        &request(),
+                        &shutdown,
+                        &mut state,
+                        |_| {},
+                    );
                     responder.join().unwrap();
                     match result {
                         Err(DaemonRequestError::Failed(message)) => {
@@ -379,7 +424,7 @@ mod tests {
             }
             let shutdown = ShutdownSignal::new().unwrap();
             let mut state = INITIAL;
-            match send_daemon_control_request(client, &request(), &shutdown, &mut state) {
+            match send_daemon_control_request(client, &request(), &shutdown, &mut state, |_| {}) {
                 Err(DaemonRequestError::Failed(message)) => assert!(message.contains("timed out")),
                 _ => panic!("silent peer did not time out"),
             }
@@ -397,7 +442,7 @@ mod tests {
             );
             let mut state = INITIAL;
             assert!(matches!(
-                send_daemon_control_request(client, &request(), &shutdown, &mut state),
+                send_daemon_control_request(client, &request(), &shutdown, &mut state, |_| {}),
                 Err(DaemonRequestError::Shutdown)
             ));
             assert!(!shutdown.consume().unwrap());

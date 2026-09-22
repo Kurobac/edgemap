@@ -122,16 +122,16 @@ fn edgemap_help_uses_stdout() {
 
     assert!(output.status.success());
     assert!(stdout(&output).contains("Usage: edgemap <COMMAND> [ARGS]"));
-    assert!(stdout(&output).contains("haptics-demo"));
+    assert!(!stdout(&output).contains("haptics-demo"));
     assert!(output.stderr.is_empty());
 }
 
 #[test]
-fn haptics_demo_rejects_arguments_before_contacting_daemon() {
-    let output = edgemap(&["haptics-demo", "extra"]);
+fn removed_haptics_demo_is_an_unknown_command() {
+    let output = edgemap(&["haptics-demo"]);
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
-    assert!(stderr(&output).contains("haptics-demo does not accept arguments"));
+    assert!(stderr(&output).contains("unknown command 'haptics-demo'"));
 }
 
 #[test]

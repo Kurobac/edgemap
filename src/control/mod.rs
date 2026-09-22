@@ -202,15 +202,8 @@ mod tests {
             b"switch-config\0profile.toml\0version = 2\n"
         );
         assert_eq!(request.ok_packet(), b"ok switch-config");
-        let demo = ControlRequest::HapticsDemo;
-        assert_eq!(demo.encode(), b"haptics-demo");
-        assert_eq!(parse_request(&demo.encode()), Ok(demo.clone()));
-        assert_eq!(demo.ok_packet(), b"ok haptics-demo");
-        assert_eq!(
-            parse_server_packet(demo.ok_packet()),
-            Ok(ServerPacket::OkHapticsDemo)
-        );
-        assert!(parse_request(b"haptics-demo extra").is_err());
+        assert!(parse_request(b"haptics-demo").is_err());
+        assert!(parse_server_packet(b"ok haptics-demo").is_err());
         assert_eq!(
             parse_server_packet(b"error not-ready UHID proxy is not ready"),
             Ok(ServerPacket::Error {

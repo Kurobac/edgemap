@@ -578,9 +578,13 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
             ConfigApplyPlan::Request(pending) => {
                 let request = control::ControlRequest::SwitchConfig(pending.active_config.clone());
                 let result = match (control_client.as_ref(), control_state.as_mut()) {
-                    (Some(client), Some(control_state)) => {
-                        send_daemon_control_request(client, &request, &shutdown, control_state)
-                    }
+                    (Some(client), Some(control_state)) => send_daemon_control_request(
+                        client,
+                        &request,
+                        &shutdown,
+                        control_state,
+                        |state| audio.update(state.bt_haptics.filter(|_| state.uhid_ready)),
+                    ),
                     _ => Err(DaemonRequestError::Failed(
                         "dseuhid control connection is unavailable".to_string(),
                     )),

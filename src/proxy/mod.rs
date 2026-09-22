@@ -27,7 +27,7 @@ mod runtime;
 mod uhid_events;
 
 pub(crate) use haptics::bt_haptics_buffer_from_env;
-use haptics::{HapticsDemo, LiveHaptics};
+use haptics::LiveHaptics;
 use pipeline::{transform, transform_timer};
 pub(crate) use repeat::validate_repeat_env;
 use repeat::RepeatInput;
@@ -82,7 +82,6 @@ pub struct Proxy {
     last_frame: Option<ControllerFrame>,
     repeat_input: Option<RepeatInput>,
     physical_output_state: PhysicalOutputState,
-    haptics_demo: Option<HapticsDemo>,
     live_haptics: LiveHaptics,
     speaker_active: bool,
     physical_set_report_unsupported_warned: HashSet<u8>,
@@ -158,7 +157,6 @@ impl Proxy {
             last_frame: None,
             repeat_input,
             physical_output_state,
-            haptics_demo: None,
             live_haptics: LiveHaptics::default(),
             speaker_active: false,
             physical_set_report_unsupported_warned: HashSet::new(),
@@ -332,11 +330,6 @@ impl Proxy {
                     .as_ref()
                     .and_then(RepeatInput::next_deadline),
             )
-            .chain(
-                self.haptics_demo
-                    .as_ref()
-                    .and_then(HapticsDemo::next_deadline),
-            )
             .chain(self.live_haptics.next_deadline())
             .min()
     }
@@ -357,8 +350,7 @@ impl Proxy {
     }
 
     fn handle_timing_tick(&mut self, seq: &mut u8, now: Instant) -> io::Result<()> {
-        let haptics_active =
-            self.haptics_demo.is_some() || self.live_haptics.next_deadline().is_some();
+        let haptics_active = self.live_haptics.next_deadline().is_some();
         self.handle_haptics_tick(now);
         if haptics_active && DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(());
@@ -402,7 +394,6 @@ impl Proxy {
     }
 
     fn clear_timing_state(&mut self) {
-        self.stop_haptics_demo();
         self.stop_live_haptics();
         self.last_frame = None;
         if let Some(repeat) = self.repeat_input.as_mut() {
@@ -571,9 +562,7 @@ impl Proxy {
                             if let Some(receiver) = &pcm_receiver {
                                 let now = Instant::now();
                                 if let Err(error) = receiver.drain(|samples| {
-                                    if self.haptics_demo.is_none() {
-                                        self.live_haptics.push(samples, now);
-                                    }
+                                    self.live_haptics.push(samples, now);
                                 }) {
                                     error!("Bluetooth PCM receive failed: {error}");
                                 }
@@ -619,7 +608,6 @@ impl Proxy {
         };
 
         if exit_reason == ExitReason::DeviceGone {
-            self.haptics_demo = None;
             self.live_haptics = LiveHaptics::default();
         }
         self.clear_timing_state();
@@ -631,7 +619,6 @@ impl Proxy {
         for pending in control.drain_requests()? {
             let request = pending.request;
             let result = match &request {
-                ControlRequest::HapticsDemo => self.start_haptics_demo(Instant::now()),
                 ControlRequest::SwitchConfig(active_config) => {
                     info!(
                         "control request received: action=switch-config, source={}",
@@ -643,11 +630,9 @@ impl Proxy {
             match result {
                 Ok(()) => {
                     control.reply_ok(pending.client, &request);
-                    if matches!(request, ControlRequest::SwitchConfig(_)) {
-                        let mut state = control.state();
-                        state.needs_config = false;
-                        control.set_state(state);
-                    }
+                    let mut state = control.state();
+                    state.needs_config = false;
+                    control.set_state(state);
                 }
                 Err((code, _detail)) => {
                     error!("control request failed: code={code}");
@@ -737,9 +722,6 @@ fn public_control_error_message(code: &str) -> &'static str {
         "load-failed" => "configuration load failed",
         "validation-failed" => "configuration validation failed",
         "mapping-failed" => "configuration mapping failed",
-        "unsupported-output" => "haptics demo requires a Bluetooth DualSense or DualSense Edge",
-        "haptics-busy" => "haptics demo is already running",
-        "output-failed" => "failed to start haptics demo; see dseuhid logs",
         _ => "control request failed",
     }
 }
@@ -1181,115 +1163,6 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
     }
 
     #[test]
-    fn haptics_request_preserves_config_state_and_runs_without_input_frames() {
-        let _guard = EVENT_TEST_LOCK.lock().unwrap();
-        DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
-        let (mut proxy, uhid_peer) = test_proxy(MappingConfig::default());
-        let (physical, physical_peer) = packet_pair();
-        proxy.hidraw = HidrawDevice::from_test_fd(physical);
-        proxy.codec.physical = PhysicalCodec::Ds5Bt;
-        let dir = std::env::temp_dir().join(format!("dhap-{}", std::process::id()));
-        let state = crate::control::ControlState {
-            uhid_ready: true,
-            needs_config: true,
-            bt_haptics: None,
-        };
-        let mut server = ControlServer::bind(&dir, state).unwrap();
-        let client = crate::control::ControlClient::connect(&dir.join("control.sock")).unwrap();
-        assert!(server.drain_requests().unwrap().is_empty());
-        client.receive().unwrap();
-        client.send_request(&ControlRequest::HapticsDemo).unwrap();
-        proxy.handle_control_requests(&mut server).unwrap();
-        assert_eq!(
-            client.receive().unwrap(),
-            Some(crate::control::ServerPacket::OkHapticsDemo)
-        );
-        assert_eq!(server.state(), state);
-        assert!(proxy.active_config.is_none());
-        let mode = receive_uhid_packet(&physical_peer).unwrap();
-        assert_eq!(&mode[..4], &[0x31, 0, 0x10, 1]);
-        assert!(mode[4..74].iter().all(|&b| b == 0));
-        client.send_request(&ControlRequest::HapticsDemo).unwrap();
-        proxy.handle_control_requests(&mut server).unwrap();
-        assert!(
-            matches!(client.receive().unwrap(), Some(crate::control::ServerPacket::Error { code, .. }) if code == "haptics-busy")
-        );
-        assert!(receive_uhid_packet(&physical_peer).is_none());
-
-        let start = proxy
-            .haptics_demo
-            .as_ref()
-            .unwrap()
-            .next_deadline()
-            .unwrap();
-        assert_eq!(proxy.next_timing_deadline(), Some(start));
-        proxy.handle_timing_tick(&mut 0, start).unwrap();
-        let left = receive_uhid_packet(&physical_peer).unwrap();
-        assert_eq!(&left[..2], &[0x32, 0x10]);
-        assert!(left[13..77].chunks_exact(2).any(|pair| pair[0] != 0));
-        assert!(left[13..77].chunks_exact(2).all(|pair| pair[1] == 0));
-
-        let mut control = [0; 48];
-        control[0] = 2;
-        control[1] = 0x03;
-        control[39] = 4;
-        send_test_packet(&uhid_peer, &output_event(&control));
-        proxy.handle_uhid_event().unwrap();
-        let report = receive_uhid_packet(&physical_peer).unwrap();
-        assert_eq!(report[1], 0x20);
-        assert_eq!(&report[3..50], &control[1..]);
-        proxy
-            .handle_timing_tick(&mut 0, start + Duration::from_millis(1700))
-            .unwrap();
-        let right = receive_uhid_packet(&physical_peer).unwrap();
-        assert_eq!(right[1], 0x30);
-        assert!(right[13..77].chunks_exact(2).any(|pair| pair[1] != 0));
-        assert!(right[13..77].chunks_exact(2).all(|pair| pair[0] == 0));
-        proxy
-            .handle_timing_tick(&mut 0, start + Duration::from_secs(5))
-            .unwrap();
-        let stop = receive_uhid_packet(&physical_peer).unwrap();
-        assert!(stop[13..77].iter().all(|&b| b == 0));
-        assert!(proxy.haptics_demo.is_none());
-        assert!(proxy.next_timing_deadline().is_none());
-        assert!(receive_uhid_packet(&physical_peer).is_none());
-        assert!(receive_uhid_packet(&uhid_peer).is_none());
-        drop(client);
-        drop(server);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn haptics_teardown_stops_output_and_disconnect_discards_demo() {
-        let _guard = EVENT_TEST_LOCK.lock().unwrap();
-        DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
-        let (mut proxy, _) = test_proxy(MappingConfig::default());
-        let (physical, peer) = packet_pair();
-        proxy.hidraw = HidrawDevice::from_test_fd(physical);
-        assert_eq!(
-            proxy.start_haptics_demo(Instant::now()).unwrap_err().0,
-            "unsupported-output"
-        );
-        assert!(receive_uhid_packet(&peer).is_none());
-        proxy.codec.physical = PhysicalCodec::Ds5Bt;
-        proxy.start_haptics_demo(Instant::now()).unwrap();
-        receive_uhid_packet(&peer).unwrap();
-        proxy.clear_timing_state();
-        let stop = receive_uhid_packet(&peer).unwrap();
-        assert_eq!(stop[0], 0x32);
-        assert!(stop[13..77].iter().all(|&b| b == 0));
-        assert!(proxy.haptics_demo.is_none());
-        assert!(proxy.next_timing_deadline().is_none());
-        proxy.start_haptics_demo(Instant::now()).unwrap();
-        receive_uhid_packet(&peer).unwrap();
-        DISCONNECTED.store(true, std::sync::atomic::Ordering::SeqCst);
-        proxy.clear_timing_state();
-        assert!(proxy.haptics_demo.is_none());
-        assert!(receive_uhid_packet(&peer).is_none());
-        DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    #[test]
     fn audio_identity_tracks_dualsense_target_and_preserves_native_audio_for_ds4() {
         use crate::control::HapticsDevice;
         let (mut proxy, _peer) = test_proxy(MappingConfig::default());
@@ -1410,7 +1283,6 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
             now,
         );
         assert!(receive_uhid_packet(&peer).is_none());
-        assert_eq!(proxy.start_haptics_demo(now).unwrap_err().0, "haptics-busy");
         let deadline = proxy.next_timing_deadline().unwrap();
         proxy.handle_timing_tick(&mut 0, deadline).unwrap();
         let report = receive_uhid_packet(&peer).unwrap();
@@ -1426,7 +1298,7 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
     }
 
     #[test]
-    fn haptics_write_failure_cancels_demo_but_preserves_input_path() {
+    fn live_haptics_write_failure_preserves_input_path() {
         let _guard = EVENT_TEST_LOCK.lock().unwrap();
         DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
         let (mut proxy, uhid_peer) = test_proxy(MappingConfig::default());
@@ -1434,22 +1306,23 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
         proxy.hidraw = HidrawDevice::from_test_fd(physical);
         proxy.codec.physical = PhysicalCodec::Ds5Bt;
         let start = Instant::now();
-        proxy.start_haptics_demo(start).unwrap();
-        receive_uhid_packet(&peer).unwrap();
+        proxy.live_haptics.push(
+            crate::control::haptics::AudioFrame {
+                haptics: [12; 64],
+                speaker: None,
+            },
+            start,
+        );
+        let deadline = proxy.next_timing_deadline().unwrap();
         let full = std::fs::OpenOptions::new()
             .write(true)
             .open("/dev/full")
             .unwrap();
         let physical =
             std::mem::replace(&mut proxy.hidraw, HidrawDevice::from_test_fd(full.into()));
-        proxy.handle_timing_tick(&mut 0, start).unwrap();
-        assert!(proxy.haptics_demo.is_none());
+        proxy.handle_timing_tick(&mut 0, deadline).unwrap();
+        assert!(proxy.live_haptics.next_deadline().is_none());
         assert!(!DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(
-            proxy.start_haptics_demo(start).unwrap_err().0,
-            "output-failed"
-        );
-        assert!(proxy.haptics_demo.is_none());
         proxy.hidraw = physical;
         let input = proxy
             .codec

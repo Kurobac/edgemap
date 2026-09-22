@@ -115,18 +115,9 @@ Input order inside `handle_hidraw_input()`:
   after changing the environment. The combined speaker report keeps its buffer
   value of 64. Example: `sudo env DSEUHID_BT_HAPTICS_BUFFER=64 ./target/debug/dseuhid`.
 - `proxy/output.rs` owns the shared physical write/error path. Ordinary game
-  output retains its flags; only an explicit demo start sends a minimal state
-  update selecting audio haptics. No rumble/PCM priority policy is applied.
-- `proxy/haptics.rs` generates a finite 75 Hz waveform at peak 24/127 with 10 ms
-  ramps: left 1 s, silence 0.5 s, right 1 s. Its sample-based deadlines join the
-  existing timerfd schedule independently of input reports. Late ticks skip
-  expired samples rather than bursting old packets. A final silent frame ends
-  playback. Session teardown sends silence if still connected, and disconnect
-  discards the demo. Individual output failures cancel it without stopping input.
-- Control protocol v3 retains `haptics-demo` / `ok haptics-demo`. The ACK means
-  started, not completed. Demo requests do not alter
-  configuration state. Missing controllers, USB sessions, duplicate requests and
-  initial output failures return errors. Completion/later failures are logged.
+  output retains its flags. No rumble/PCM priority policy is applied.
+  Session teardown sends silence if still connected; disconnect discards queued
+  audio. Individual output failures stop live playback without stopping input.
 - `edgemap daemon` creates the PipeWire sink `edgemap.dualsense` when the control
   state reports `uhid_ready=1` with a `bt_haptics` model, and destroys it on disconnect or daemon
   shutdown. A UHID session recreation also recreates the PCM endpoint and sink.
@@ -166,8 +157,7 @@ Input order inside `handle_hidraw_input()`:
   retains at most three blocks, starts with one block of buffering, and emits at
   most one block per due tick. Late ticks discard missed blocks. Underrun sends a
   silent block; continuous zero input does not keep physical playback active.
-  Live PCM does not select rumble/audio mode. An explicit demo is rejected while
-  live playback is active; PCM arriving during the finite demo is discarded.
+  Live PCM does not select rumble/audio mode.
 - The opt-in speaker path adds `OutputCommand::Audio`, encoded only on BT as
   a single 398-byte `0x36` report: control `0x91` (FE, five buffer lengths of 64,
   one counter), state `0x90` (63 bytes), PCM `0x92` (64 bytes), and Opus `0x93`
@@ -197,8 +187,12 @@ Input order inside `handle_hidraw_input()`:
   packets, replacing the v2 boolean. Both daemons must be updated
   together. The control socket remains separate from binary PCM. `pw-cat` must be
   installed for capture; audio process/socket failures are logged. The input proxy
-  continues operating when audio is unavailable. See `BT_HAPTICS_TESTING.md` for
-  the audio demo and native PipeWire integration test.
+  continues operating when audio is unavailable. Audio demos live in
+  [`scripts/haptics_audio_demo.py`](../scripts/haptics_audio_demo.py) and
+  [`scripts/speaker_audio_demo.py`](../scripts/speaker_audio_demo.py). Native
+  PipeWire integration tests are in [`daemon/audio.rs`](../src/bin/edgemap/daemon/audio.rs);
+  they are ignored by default and require a live user PipeWire session plus
+  `pw-cat` and `pactl`.
 
 ## Error handling policy
 
@@ -213,7 +207,7 @@ Input order inside `handle_hidraw_input()`:
 
 - **Config**: no default path. `-c`/`--config-path` optional — if omitted, starts in passthrough mode. edgemap is the intended way to manage config.
 - **Config switching**: `edgemap switch-config` reads and validates a configuration under the user account, then sends the source label and complete TOML content in one acknowledged seqpacket. dseuhid parses, validates, builds, and commits that in-memory content transactionally; it never opens the client-provided path. Failed applies preserve the previous mapping, runtimes, active content, and output-device setting.
-- **Control socket**: `/run/dseuhid/control.sock` is a Unix `SOCK_SEQPACKET` endpoint with at most 16 active clients and one delivered request per event-loop turn. The versioned request protocol carries `switch-config` and `haptics-demo`; hello/state packets carry `uhid_ready`, `needs_config`, and `bt_haptics`. Config failure replies expose only fixed category messages. `/run/dseuhid/daemon.lock` uses `flock` for atomic single-instance ownership and contains the PID only for diagnostics. Access details live in `docs/INSTALLATION_TESTING.md`.
+- **Control socket**: `/run/dseuhid/control.sock` is a Unix `SOCK_SEQPACKET` endpoint with at most 16 active clients and one delivered request per event-loop turn. The versioned request protocol carries `switch-config`; hello/state packets carry `uhid_ready`, `needs_config`, and `bt_haptics`. Config failure replies expose only fixed category messages. `/run/dseuhid/daemon.lock` uses `flock` for atomic single-instance ownership and contains the PID only for diagnostics. Access details live in `docs/INSTALLATION_TESTING.md`.
 - **Config file limits**: `-c`, edgemap CLI, validation, and profile selection accept only regular files no larger than 64 KiB. Files are opened nonblocking and reads are independently capped, rejecting FIFO/device nodes and preventing unbounded pseudo-file reads. Runtime socket content is capped to the same size.
 - **edgemap daemon**: auto-creates `edgemap.toml` + `default.toml` under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`) on first run. Profiles in `[profiles.*]` sections with `match_process` (comm exact) and/or `match_cmdline` (substring), first match in TOML declaration order wins. Each 3-second profile scan reads each PID's required `comm`/`cmdline` data at most once. A persistent control connection reports dseuhid lifetime and UHID/config state; inotify watches `edgemap.toml` and socket recreation, while periodic/state-triggered resynchronization closes watch replacement races and recovers from queue overflow. Selected, effective, and failed config decisions advance only after acknowledged applies; an invalid selected profile may fall back to the validated base config without hiding the failure. Only `needs_config=true`, an edgemap.toml reload, or a genuinely changed profile decision makes the daemon re-inject; manual config switches otherwise remain active until the daemon chooses a different profile. Sends notifications only after acknowledged switches.
 - **edgemap single instance**: daemon mode holds an exclusive `flock` on `$XDG_STATE_HOME/edgemap/edgemap.lock` (fallback `~/.local/state/edgemap/edgemap.lock`). The file contains the PID for diagnostics; process lifetime is determined only by the kernel lock.

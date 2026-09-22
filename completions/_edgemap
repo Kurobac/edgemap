@@ -18,7 +18,6 @@ _edgemap() {
         "create-config[Print default config template]" \
         "switch-config[Apply a config file to running dseuhid]" \
         "sc[Apply a config file to running dseuhid]" \
-        "haptics-demo[Play a short Bluetooth haptics test]" \
         "d[Run in daemon mode (auto-create, auto-switch)]" \
         "daemon[Run in daemon mode]" \
         "help[Print help]"

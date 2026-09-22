@@ -168,7 +168,7 @@ fn run_capture(
             }
             used += n;
             let complete = used / 16 * 16;
-            for quad in bytes[..complete].chunks_exact(16) {
+            for quad in bytes[..complete].as_chunks::<16>().0 {
                 if let Some(speaker) = &mut speaker {
                     speaker.push(quad);
                 }
@@ -446,7 +446,7 @@ mod tests {
                         assert!(n == 72 || (speaker_demo && n == 272), "packet size {n}");
                         speaker_frames += usize::from(n == 272);
                         let mut active = [false; 2];
-                        for stereo in packet[8..72].chunks_exact(2) {
+                        for stereo in packet[8..72].as_chunks::<2>().0 {
                             for ch in 0..2 {
                                 let sample = stereo[ch] as i8;
                                 energy[ch] += sample.unsigned_abs() as u64;
@@ -509,7 +509,7 @@ mod tests {
 
     pub(super) fn quad(values: [f32; 4]) -> [u8; 16] {
         let mut bytes = [0; 16];
-        for (dst, value) in bytes.chunks_exact_mut(4).zip(values) {
+        for (dst, value) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(values) {
             dst.copy_from_slice(&value.to_le_bytes());
         }
         bytes

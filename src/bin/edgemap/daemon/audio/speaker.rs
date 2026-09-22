@@ -135,7 +135,7 @@ impl Speaker {
             return Ok(None);
         }
         let mut pcm = [0.0; 480 * 2];
-        for (i, stereo) in pcm.chunks_exact_mut(2).enumerate() {
+        for (i, stereo) in pcm.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             // Integer phase avoids drift between the speaker and haptics clocks.
             let index = i * 16 / 15;
             let fraction = (i * 16 % 15) as f32 / 15.0;
@@ -214,7 +214,7 @@ mod tests {
                 unsafe { decode(decoder, packet.as_ptr(), 200, pcm.as_mut_ptr(), 480, 0) },
                 480
             );
-            decoded.extend(pcm.chunks_exact(2).map(|s| [s[0], s[1]]));
+            decoded.extend_from_slice(pcm.as_chunks::<2>().0);
         }
         unsafe { destroy(decoder) };
         // Hardware renders at 45 kHz: 512 input frames -> 480 decoded frames.

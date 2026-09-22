@@ -1,0 +1,127 @@
+use std::time::{Duration, Instant};
+
+use crate::codec::HapticsFrame;
+
+const TONE_SAMPLES: u64 = HapticsFrame::RATE;
+const RIGHT_START: u64 = TONE_SAMPLES + HapticsFrame::RATE / 2;
+const TOTAL_SAMPLES: u64 = RIGHT_START + TONE_SAMPLES;
+const SILENCE_FRAME: u64 = TOTAL_SAMPLES.div_ceil(HapticsFrame::FRAMES as u64);
+const FRAME_NUMERATOR_NS: u64 = HapticsFrame::FRAMES as u64 * 1_000_000_000;
+
+/// Finite PCM producer for hardware testing. Absolute sample time keeps a
+/// late wakeup from replaying old haptics or extending the test indefinitely.
+pub(super) struct HapticsDemo {
+    start: Instant,
+    next_frame: u64,
+}
+
+impl HapticsDemo {
+    pub(super) fn new(start: Instant) -> Self {
+        Self {
+            start,
+            next_frame: 0,
+        }
+    }
+
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        (self.next_frame <= SILENCE_FRAME).then(|| {
+            self.start
+                + Duration::from_nanos(
+                    (self.next_frame * FRAME_NUMERATOR_NS).div_ceil(HapticsFrame::RATE),
+                )
+        })
+    }
+
+    pub(super) fn take_due_frame(&mut self, now: Instant) -> Option<HapticsFrame> {
+        if now < self.next_deadline()? {
+            return None;
+        }
+        let elapsed_frame = (now.duration_since(self.start).as_nanos() * HapticsFrame::RATE as u128
+            / FRAME_NUMERATOR_NS as u128)
+            .min(SILENCE_FRAME as u128) as u64;
+        let frame_index = self.next_frame.max(elapsed_frame);
+        self.next_frame = frame_index + 1;
+        let mut frame = HapticsFrame::SILENCE;
+        for (i, stereo) in frame.0.chunks_exact_mut(2).enumerate() {
+            let sample = frame_index * HapticsFrame::FRAMES as u64 + i as u64;
+            let (channel, local_sample) = if sample < TONE_SAMPLES {
+                (0, sample)
+            } else if (RIGHT_START..TOTAL_SAMPLES).contains(&sample) {
+                (1, sample - RIGHT_START)
+            } else {
+                continue;
+            };
+            // 75 Hz, peak 24/127, with 10 ms ramps to avoid edge clicks.
+            let ramp = local_sample.min(TONE_SAMPLES - 1 - local_sample).min(30) as f64 / 30.0;
+            let phase =
+                std::f64::consts::TAU * 75.0 * local_sample as f64 / HapticsFrame::RATE as f64;
+            stereo[channel] = (phase.sin() * 24.0 * ramp).round() as i8;
+        }
+        Some(frame)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn demo_separates_channels_and_finishes_with_silence() {
+        let start = Instant::now();
+        let mut demo = HapticsDemo::new(start);
+        let mut count = 0;
+        let mut energy = [0u64; 2];
+        let mut last = None;
+        while let Some(deadline) = demo.next_deadline() {
+            let frame = demo.take_due_frame(deadline).unwrap();
+            for (i, stereo) in frame.0.chunks_exact(2).enumerate() {
+                let sample = count * HapticsFrame::FRAMES as u64 + i as u64;
+                if sample < TONE_SAMPLES {
+                    assert_eq!(stereo[1], 0);
+                } else if (RIGHT_START..TOTAL_SAMPLES).contains(&sample) {
+                    assert_eq!(stereo[0], 0);
+                } else {
+                    assert_eq!(stereo, &[0, 0]);
+                }
+                for ch in 0..2 {
+                    assert!(stereo[ch].abs() <= 24);
+                    energy[ch] += stereo[ch].unsigned_abs() as u64;
+                }
+            }
+            last = Some(frame);
+            count += 1;
+        }
+        assert_eq!(count, SILENCE_FRAME + 1);
+        assert_eq!(last, Some(HapticsFrame::SILENCE));
+        assert!(energy[0] > 0);
+        assert_eq!(energy[0], energy[1]);
+        assert!(demo
+            .take_due_frame(start + Duration::from_secs(10))
+            .is_none());
+    }
+
+    #[test]
+    fn late_wakeups_skip_old_samples_without_bursting() {
+        let start = Instant::now();
+        let mut demo = HapticsDemo::new(start);
+        demo.take_due_frame(start).unwrap();
+        assert_eq!(
+            demo.next_deadline(),
+            Some(start + Duration::from_nanos(10_666_667))
+        );
+        assert!(demo
+            .take_due_frame(start + Duration::from_millis(5))
+            .is_none());
+        let now = start + Duration::from_millis(1700);
+        let frame = demo.take_due_frame(now).unwrap();
+        assert!(frame.0.chunks_exact(2).all(|stereo| stereo[0] == 0));
+        assert!(frame.0.chunks_exact(2).any(|stereo| stereo[1] != 0));
+        assert!(demo.next_deadline().unwrap() > now);
+        assert!(demo.take_due_frame(now).is_none());
+        assert_eq!(
+            demo.take_due_frame(start + Duration::from_secs(5)),
+            Some(HapticsFrame::SILENCE)
+        );
+        assert!(demo.next_deadline().is_none());
+    }
+}

@@ -1,8 +1,8 @@
 use std::io;
 
-use log::{debug, error, info, trace, warn};
+use log::{debug, info, trace, warn};
 
-use crate::codec::{CodecError, PhysicalCodec};
+use crate::codec::PhysicalCodec;
 use crate::uhid::UhidEvent;
 
 use super::{
@@ -44,20 +44,16 @@ impl Proxy {
                                 });
                             match encoded {
                                 Ok(encoded) => {
-                                    if let Err(e) = self.hidraw.write_output(&encoded) {
+                                    if let Err(e) = self.write_physical_output(&encoded) {
                                         if is_disconnect_io_error(&e) {
-                                            warn!("failed to write output report: {e}");
                                             info!("controller disconnected");
-                                            DISCONNECTED
-                                                .store(true, std::sync::atomic::Ordering::SeqCst);
                                             break;
                                         }
-                                        error!("failed to write output report: {e}");
                                     }
                                 }
-                                Err(CodecError::InvalidReport) => {
+                                Err(error) => {
                                     warn!(
-                                        "invalid output report dropped: target={:?}, controller={:?}",
+                                        "invalid output report dropped: error={error:?}, target={:?}, controller={:?}",
                                         self.codec.target, self.codec.physical
                                     );
                                     warn!(

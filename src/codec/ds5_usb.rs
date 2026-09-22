@@ -230,6 +230,18 @@ pub(super) fn decode_output(data: &[u8]) -> Ds5UsbOutput {
     Ds5UsbOutput { raw: data.to_vec() }
 }
 
+impl Ds5UsbOutput {
+    /// Select PCM haptics for the standalone demo, without enabling changes
+    /// to triggers, LEDs, speaker volume or microphone settings.
+    pub fn audio_haptics_mode() -> Self {
+        let mut raw = vec![0; 48];
+        raw[0] = 0x02;
+        // Enable the vibration update with UseRumbleNotHaptics cleared.
+        raw[1] = 0x01;
+        Self { raw }
+    }
+}
+
 pub(super) fn fallback_feature_report(report_id: u8) -> Option<Vec<u8>> {
     match report_id {
         0x05 => Some(vec![

@@ -13,17 +13,20 @@ pub struct ControlState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlRequest {
     SwitchConfig(ActiveConfig),
+    HapticsDemo,
 }
 
 impl ControlRequest {
     pub(super) fn ok_packet(&self) -> &'static [u8] {
         match self {
             Self::SwitchConfig(_) => b"ok switch-config",
+            Self::HapticsDemo => b"ok haptics-demo",
         }
     }
 
     pub fn encode(&self) -> Vec<u8> {
         match self {
+            Self::HapticsDemo => b"haptics-demo".to_vec(),
             Self::SwitchConfig(config) => {
                 let mut packet = Vec::with_capacity(
                     SWITCH_CONFIG_PREFIX.len() + config.source().len() + 1 + config.content().len(),
@@ -43,6 +46,7 @@ pub enum ServerPacket {
     Hello(ControlState),
     State(ControlState),
     OkSwitchConfig,
+    OkHapticsDemo,
     Error { code: String, message: String },
 }
 
@@ -110,6 +114,9 @@ pub fn parse_server_packet(packet: &[u8]) -> Result<ServerPacket, String> {
     if text == "ok switch-config" {
         return Ok(ServerPacket::OkSwitchConfig);
     }
+    if text == "ok haptics-demo" {
+        return Ok(ServerPacket::OkHapticsDemo);
+    }
     if let Some(error) = text.strip_prefix("error ") {
         let (code, message) = error
             .split_once(' ')
@@ -126,6 +133,9 @@ pub fn parse_server_packet(packet: &[u8]) -> Result<ServerPacket, String> {
 }
 
 pub(super) fn parse_request(packet: &[u8]) -> Result<ControlRequest, String> {
+    if packet == b"haptics-demo" {
+        return Ok(ControlRequest::HapticsDemo);
+    }
     if let Some(payload) = packet.strip_prefix(SWITCH_CONFIG_PREFIX) {
         let separator = payload
             .iter()

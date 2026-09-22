@@ -160,6 +160,11 @@ pub(crate) fn send_control_request(
             {
                 return Ok(state)
             }
+            control::ServerPacket::OkHapticsDemo
+                if matches!(request, control::ControlRequest::HapticsDemo) =>
+            {
+                return Ok(state)
+            }
             control::ServerPacket::Error { code, message } => {
                 return Err(format!("{code}: {message}"));
             }

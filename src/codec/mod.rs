@@ -12,7 +12,7 @@ use feature::{report_with_id, DS5_PHYSICAL_FEATURE_REPORTS_TO_CACHE};
 pub use feature::{FeatureReportCache, PhysicalFeatureReportRequest};
 #[allow(unused_imports)]
 pub use types::{ControllerFrame, MotionFrame, SourceReport, TouchpadContact, TouchpadFrame};
-pub use types::{Ds4UsbOutput, Ds5UsbOutput, OutputCommand};
+pub use types::{Ds4UsbOutput, Ds5UsbOutput, HapticsFrame, OutputCommand};
 
 #[cfg(test)]
 use ds5_bt::{
@@ -30,6 +30,7 @@ use ds5_bt::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodecError {
     InvalidReport,
+    UnsupportedOutput,
 }
 
 pub type CodecResult<T> = Result<T, CodecError>;
@@ -108,6 +109,7 @@ pub enum PhysicalCodec {
 #[derive(Debug, Default)]
 pub struct PhysicalOutputState {
     ds5_bt_seq: u8,
+    ds5_bt_haptics_counter: u8,
 }
 
 impl PhysicalCodec {
@@ -153,6 +155,10 @@ impl PhysicalCodec {
                 let ds5 = ds4_usb::convert_output_to_ds5(output.as_bytes());
                 ds5_bt::encode_output_from_ds5_usb_bytes(&ds5, state)
             }
+            (Self::Ds5Bt, OutputCommand::Haptics(frame)) => {
+                Ok(ds5_bt::encode_haptics(frame, state))
+            }
+            (Self::Ds5Usb, OutputCommand::Haptics(_)) => Err(CodecError::UnsupportedOutput),
         }
     }
 

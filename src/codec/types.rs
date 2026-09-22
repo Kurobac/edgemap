@@ -28,6 +28,18 @@ impl Ds4UsbOutput {
 pub enum OutputCommand {
     Ds5Usb(Ds5UsbOutput),
     Ds4Usb(Ds4UsbOutput),
+    Haptics(HapticsFrame),
+}
+
+/// One 10.667 ms block of interleaved left/right signed PCM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HapticsFrame(pub [i8; Self::SAMPLES]);
+
+impl HapticsFrame {
+    pub const RATE: u64 = 3000;
+    pub const FRAMES: usize = 32;
+    pub const SAMPLES: usize = Self::FRAMES * 2;
+    pub const SILENCE: Self = Self([0; Self::SAMPLES]);
 }
 
 #[derive(Debug, Clone)]

@@ -16,9 +16,19 @@ pub(crate) const USAGE: &str = concat!(
     "  v, validate [PATH]           Validate one config or all configs\n",
     "  cc, create-config [PATH]     Create the default config; print it if PATH is omitted\n",
     "  sc, switch-config <PATH>     Switch to another config\n",
+    "  haptics-demo                 Play a short Bluetooth haptics test\n",
     "  d, daemon [--config <PATH>]  Watch dseuhid and manage config selection\n",
     "  help                         Print help\n",
 );
+
+pub(crate) fn cmd_haptics_demo(args: &[String]) -> ! {
+    if args.len() != 2 {
+        eprintln!("error: haptics-demo does not accept arguments");
+        eprintln!("Usage: edgemap haptics-demo");
+        std::process::exit(1);
+    }
+    send_control_command(control::ControlRequest::HapticsDemo)
+}
 
 pub(crate) fn cmd_capabilities(args: &[String]) -> ! {
     if args.len() > 2 {
@@ -180,6 +190,9 @@ pub(crate) fn cmd_create_config(args: &[String]) -> ! {
 
 fn send_control_command(request: control::ControlRequest) -> ! {
     let success = match &request {
+        control::ControlRequest::HapticsDemo => {
+            "Haptics demo started: left 1 s, pause 0.5 s, right 1 s.".to_string()
+        }
         control::ControlRequest::SwitchConfig(active_config) => {
             format!("Config switched: {}", active_config.source())
         }

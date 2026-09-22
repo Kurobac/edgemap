@@ -5,7 +5,10 @@ mod control_session;
 mod daemon;
 mod paths;
 
-use cli::{cmd_capabilities, cmd_create_config, cmd_switch_config, cmd_validate, print_usage};
+use cli::{
+    cmd_capabilities, cmd_create_config, cmd_haptics_demo, cmd_switch_config, cmd_validate,
+    print_usage,
+};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -18,6 +21,7 @@ fn main() {
         "v" | "validate" => cmd_validate(&args),
         "cc" | "create-config" => cmd_create_config(&args),
         "sc" | "switch-config" => cmd_switch_config(&args),
+        "haptics-demo" => cmd_haptics_demo(&args),
         "d" | "daemon" => daemon::cmd_daemon(&args),
         "help" | "--help" | "-h" => {
             print_usage(true);

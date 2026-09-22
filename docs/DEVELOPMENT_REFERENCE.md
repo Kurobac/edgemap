@@ -8,7 +8,7 @@ DualSense UHID proxy project. Two binaries: `dseuhid` (UHID proxy daemon) and `e
 
 ```bash
 cargo build               # 0 warnings (binaries: dseuhid + edgemap)
-cargo test                # 255 tests total (102 library + 105 dseuhid + 31 edgemap + 17 CLI integration)
+cargo test                # 264 tests total (102 library + 113 dseuhid + 31 edgemap + 18 CLI integration)
 cargo run -- version
 cargo run -- help
 cargo run --bin edgemap -- help  # edgemap CLI help
@@ -98,6 +98,33 @@ Input order inside `handle_hidraw_input()`:
 - DS5 USB target keeps the DS5 USB source report as backing where possible. DS4 target converts input/output through DS4-specific USB report code.
 - DS5/DS4 USB byte layout helpers in `src/codec/ds5_usb.rs` and `src/codec/ds4_usb.rs` must not be reused for Bluetooth layouts; Bluetooth envelopes and CRC handling belong in `src/codec/ds5_bt.rs`.
 
+## Bluetooth haptics demo
+
+- `OutputCommand::Haptics(HapticsFrame)` is the PCM entry into the physical codec:
+  32 interleaved stereo sample frames, signed 8-bit, 3 kHz (64 bytes per block).
+  USB physical HID rejects this command; USB audio is a separate transport.
+- `ds5_bt.rs` encodes the SAxense 142-byte `0x32` container with control `0x11`
+  and PCM `0x12` sub-packets. The control payload is `FE 00 00 00 00 FF counter`,
+  keeping microphone streaming disabled. The audio counter advances per PCM
+  packet; the outer four-bit sequence is shared with ordinary `0x31` output.
+  Both report types use the existing `0xA2`-seed CRC.
+- `proxy/output.rs` owns the shared physical write/error path. Ordinary game
+  output retains its flags; only an explicit demo start sends a minimal state
+  update selecting audio haptics. No rumble/PCM priority policy is applied.
+- `proxy/haptics.rs` generates a finite 75 Hz waveform at peak 24/127 with 10 ms
+  ramps: left 1 s, silence 0.5 s, right 1 s. Its sample-based deadlines join the
+  existing timerfd schedule independently of input reports. Late ticks skip
+  expired samples rather than bursting old packets. A final silent frame ends
+  playback. Session teardown sends silence if still connected, and disconnect
+  discards the demo. Individual output failures cancel it without stopping input.
+- Control protocol v1 adds `haptics-demo` / `ok haptics-demo`; existing messages
+  are unchanged. The ACK means started, not completed. Demo requests do not alter
+  configuration state. Missing controllers, USB sessions, duplicate requests and
+  initial output failures return errors. Completion/later failures are logged.
+- This stage has no PipeWire endpoint. The planned sound-card lifecycle is create
+  on Bluetooth connection and destroy on disconnect; endpoint identity work is
+  deferred. Future audio producers can supply `HapticsFrame` to the same codec.
+
 ## Error handling policy
 
 - Bad/short input frames: drop the frame. Do not raw-forward unknown source bytes to the virtual target.
@@ -111,7 +138,7 @@ Input order inside `handle_hidraw_input()`:
 
 - **Config**: no default path. `-c`/`--config-path` optional — if omitted, starts in passthrough mode. edgemap is the intended way to manage config.
 - **Config switching**: `edgemap switch-config` reads and validates a configuration under the user account, then sends the source label and complete TOML content in one acknowledged seqpacket. dseuhid parses, validates, builds, and commits that in-memory content transactionally; it never opens the client-provided path. Failed applies preserve the previous mapping, runtimes, active content, and output-device setting.
-- **Control socket**: `/run/dseuhid/control.sock` is a Unix `SOCK_SEQPACKET` endpoint with at most 16 active clients and one delivered request per event-loop turn. The versioned request protocol carries only `switch-config`; hello/state packets carry `uhid_ready` and `needs_config`. Config failure replies expose only fixed category messages. `/run/dseuhid/daemon.lock` uses `flock` for atomic single-instance ownership and contains the PID only for diagnostics. Access details live in `docs/INSTALLATION_TESTING.md`.
+- **Control socket**: `/run/dseuhid/control.sock` is a Unix `SOCK_SEQPACKET` endpoint with at most 16 active clients and one delivered request per event-loop turn. The versioned request protocol carries `switch-config` and `haptics-demo`; hello/state packets carry `uhid_ready` and `needs_config`. Config failure replies expose only fixed category messages. `/run/dseuhid/daemon.lock` uses `flock` for atomic single-instance ownership and contains the PID only for diagnostics. Access details live in `docs/INSTALLATION_TESTING.md`.
 - **Config file limits**: `-c`, edgemap CLI, validation, and profile selection accept only regular files no larger than 64 KiB. Files are opened nonblocking and reads are independently capped, rejecting FIFO/device nodes and preventing unbounded pseudo-file reads. Runtime socket content is capped to the same size.
 - **edgemap daemon**: auto-creates `edgemap.toml` + `default.toml` under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`) on first run. Profiles in `[profiles.*]` sections with `match_process` (comm exact) and/or `match_cmdline` (substring), first match in TOML declaration order wins. Each 3-second profile scan reads each PID's required `comm`/`cmdline` data at most once. A persistent control connection reports dseuhid lifetime and UHID/config state; inotify watches `edgemap.toml` and socket recreation, while periodic/state-triggered resynchronization closes watch replacement races and recovers from queue overflow. Selected, effective, and failed config decisions advance only after acknowledged applies; an invalid selected profile may fall back to the validated base config without hiding the failure. Only `needs_config=true`, an edgemap.toml reload, or a genuinely changed profile decision makes the daemon re-inject; manual config switches otherwise remain active until the daemon chooses a different profile. Sends notifications only after acknowledged switches.
 - **edgemap single instance**: daemon mode holds an exclusive `flock` on `$XDG_STATE_HOME/edgemap/edgemap.lock` (fallback `~/.local/state/edgemap/edgemap.lock`). The file contains the PID for diagnostics; process lifetime is determined only by the kernel lock.

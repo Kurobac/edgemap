@@ -19,6 +19,32 @@ but makes no warranty regarding functionality or stability.
 Some games may require a [patched Proton build](https://github.com/Kurobac/proton-eg-patch)
 for DualSense HD haptics or the DualShock 4 target (`output_device = "dualshock4"`).
 
+## Bluetooth haptics demo (experimental)
+
+With a Bluetooth DualSense or DualSense Edge connected to a running build of
+`dseuhid` that includes the demo, run:
+
+```bash
+edgemap haptics-demo
+```
+
+The daemon plays a low-amplitude 75 Hz test: left grip for 1 second, silence
+for 0.5 seconds, then right grip for 1 second, followed by a silent frame.
+The command acknowledges that the demo started; completion or output failures
+are logged by `dseuhid`. A second request while it is running returns an error.
+USB connections are not supported by this HID audio demo.
+
+This tests the Bluetooth PCM transport with a generated waveform. Game audio
+capture and a virtual sound card are not implemented yet. Packet framing is
+based on [SAxense's Bluetooth haptics research](https://github.com/egormanga/SAxense).
+
+To test a source build without installing it, run `cargo build`, stop the
+installed daemon with `sudo systemctl stop dseuhid`, and run
+`sudo ./target/debug/dseuhid` in a terminal. In another terminal in the source
+directory, run `./target/debug/edgemap haptics-demo`. After testing, press Ctrl+C
+in the daemon terminal and restore the installed service with
+`sudo systemctl start dseuhid`.
+
 ## Install
 
 ### Arch Linux

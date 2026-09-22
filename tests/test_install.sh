@@ -238,6 +238,23 @@ verify_preflight_failure() {
     assert_system_targets_absent
 }
 
+verify_unrunnable_binary_preflight() {
+    local broken_payload=$TEST_ROOT/broken-binary-payload
+    local output=$TEST_ROOT/binary-error
+
+    cp -a "$PAYLOAD" "$broken_payload"
+    printf '#!/usr/bin/env bash\necho "libc.so.6: missing test dependency" >&2\nexit 127\n' \
+        >"$broken_payload/edgemap"
+    if "$broken_payload/install.sh" >"$output" 2>&1; then
+        fail "installer accepted an unrunnable binary"
+    fi
+    grep -q 'release binary cannot run: edgemap' "$output" ||
+        fail "installer did not identify the unrunnable binary"
+    grep -q 'libc.so.6: missing test dependency' "$output" ||
+        fail "installer hid the binary loading error"
+    assert_system_targets_absent
+}
+
 verify_installation() {
     local relative
     local source
@@ -278,6 +295,21 @@ verify_upgrade_replaces_gui() {
     verify_installation
 }
 
+verify_missing_pw_cat_warning() {
+    local tools=$TEST_ROOT/installer-tools
+    local output=$TEST_ROOT/optional-audio-warning
+    local tool
+
+    mkdir "$tools"
+    for tool in bash readlink dirname install rm cp; do
+        ln -s "$(command -v "$tool")" "$tools/$tool"
+    done
+    PATH="$tools" "$PAYLOAD/install.sh" >"$output" 2>&1
+    grep -q 'pw-cat is not installed; Bluetooth HD haptics and speaker audio are unavailable' \
+        "$output" || fail "installer did not explain the missing optional audio tool"
+    verify_installation
+}
+
 verify_uninstallation() {
     (cd /tmp && "$PAYLOAD/install.sh" uninstall)
     assert_system_targets_absent
@@ -292,10 +324,12 @@ assert_system_targets_absent
 SYSTEM_CLEANUP_ARMED=true
 verify_installer_guards
 verify_preflight_failure
+verify_unrunnable_binary_preflight
 
 (cd /tmp && "$PAYLOAD/install.sh")
 verify_installation
 verify_upgrade_replaces_gui
+verify_missing_pw_cat_warning
 verify_uninstallation
 SYSTEM_CLEANUP_ARMED=false
 

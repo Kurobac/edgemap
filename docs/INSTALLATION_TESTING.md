@@ -30,6 +30,28 @@ makepkg -si
 
 `install.sh` is a cwd-independent release installer/uninstaller with payload preflight, mandatory root, fixed system paths, direct file operations, and explicit systemd guidance. `DESTDIR` is intentionally unsupported.
 
+Before replacing installed files, the installer runs both packaged binaries with
+`--help` to verify that they can load. Missing shared libraries or incompatible
+binaries abort installation with the original loader error. Required runtime
+packages include `systemd-libs` on Arch or `libudev1` on Debian/Ubuntu. Building
+requires the corresponding development files (`libudev-dev` on Debian/Ubuntu).
+
+Bluetooth HD haptics and the experimental speaker path additionally need `pw-cat`
+(`pipewire-audio` on Arch, `pipewire-bin` on Debian/Ubuntu) and a running user
+PipeWire session. Missing `pw-cat` produces a warning without blocking installation
+of the HID proxy. The installer does not install packages or enable the speaker
+demo; `EDGEMAP_SPEAKER_DEMO=1` remains an explicit opt-in for `edgemap daemon`.
+
+Opus is optional and used only by the speaker path: `opus` on Arch or `libopus0`
+on Debian/Ubuntu. `edgemap` loads `libopus.so.0` dynamically when speaker capture
+starts. Without it, normal edgemap startup still works; its HD haptics path does
+not load Opus. An explicit speaker request fails with a dependency error instead
+of silently falling back. The installed `pw-cat` must still have its own runtime
+dependencies satisfied (on Arch, `libsndfile` indirectly requires Opus). No Opus
+development package is needed to build. CI/release Rust tests install `libopus0`
+to exercise the encoder/decoder; GUI-only jobs do not need it. The Arch package
+lists both Opus and PipeWire as optional dependencies.
+
 The `edgemap-gui` launcher resolves `/usr` or `/usr/local` from its own path and imports the private package from `<prefix>/lib/edgemap-gui`.
 
 ## Release tree

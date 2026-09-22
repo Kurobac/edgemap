@@ -281,6 +281,28 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires libopus.so.0 to be unavailable in an isolated filesystem"]
+    fn missing_opus_rejects_speaker_capture_with_dependency_error() {
+        let (_stop, worker_stop) = UnixStream::pair().unwrap();
+        let (_receiver, sender) = UnixDatagram::pair().unwrap();
+        let error = run_capture(
+            worker_stop,
+            sender,
+            "edgemap.test-missing-opus",
+            HapticsDevice::DualSenseEdge,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Bluetooth speaker requires libopus.so.0"),
+            "{error}"
+        );
+        eprintln!("{error}");
+    }
+
+    #[test]
     #[ignore = "requires a live user PipeWire session and pw-cat/pactl"]
     fn pipewire_quad_capture_to_pcm_and_sink_cleanup() {
         for device in [HapticsDevice::DualSense, HapticsDevice::DualSenseEdge] {

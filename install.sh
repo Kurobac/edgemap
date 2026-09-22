@@ -79,6 +79,21 @@ for file in "${required_files[@]}"; do
     fi
 done
 
+# Check the packaged executables before replacing any installed files. This
+# also catches missing required shared libraries.
+for binary in dseuhid edgemap; do
+    if ! "./$binary" --help >/dev/null; then
+        echo "error: release binary cannot run: $binary; check the loader error above" >&2
+        echo "Required libraries include libudev (Arch: systemd-libs; Debian/Ubuntu: libudev1)." >&2
+        exit 1
+    fi
+done
+
+if ! command -v pw-cat >/dev/null 2>&1; then
+    echo "warning: pw-cat is not installed; Bluetooth HD haptics and speaker audio are unavailable" >&2
+    echo "Install pipewire-audio (Arch) or pipewire-bin (Debian/Ubuntu), and run PipeWire in your user session." >&2
+fi
+
 echo "Installing edgemap..."
 
 install -Dm755 dseuhid /usr/local/bin/dseuhid

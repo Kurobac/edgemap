@@ -1,30 +1,84 @@
 //! DualSense's speaker consumes 480 Opus samples in each 512/48000 s interval.
 //! Match mdrv-ds's 16:15 resampling and 200-byte, 160 kbit/s CBR payload.
+use std::ffi::{c_void, CStr};
 use std::io;
 use std::ptr::NonNull;
 
 use dseuhid::control::haptics::OPUS_BYTES;
 
-#[link(name = "opus")]
-unsafe extern "C" {
-    fn opus_encoder_create(
-        rate: i32,
-        channels: i32,
-        application: i32,
-        error: *mut i32,
-    ) -> *mut libc::c_void;
-    fn opus_encoder_destroy(encoder: *mut libc::c_void);
-    fn opus_encoder_ctl(encoder: *mut libc::c_void, request: i32, ...) -> i32;
-    fn opus_encode_float(
-        encoder: *mut libc::c_void,
-        pcm: *const f32,
-        frame_size: i32,
-        data: *mut u8,
-        max_data_bytes: i32,
-    ) -> i32;
+type EncoderCreate = unsafe extern "C" fn(i32, i32, i32, *mut i32) -> *mut c_void;
+type EncoderDestroy = unsafe extern "C" fn(*mut c_void);
+type EncoderCtl = unsafe extern "C" fn(*mut c_void, i32, ...) -> i32;
+type EncodeFloat = unsafe extern "C" fn(*mut c_void, *const f32, i32, *mut u8, i32) -> i32;
+
+struct OpusLibrary(NonNull<c_void>);
+
+impl OpusLibrary {
+    fn open() -> io::Result<Self> {
+        // Load only when speaker output is requested, never at program startup.
+        let handle =
+            unsafe { libc::dlopen(c"libopus.so.0".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        NonNull::new(handle).map(Self).ok_or_else(|| {
+            let error = unsafe { libc::dlerror() };
+            let detail = if error.is_null() { "unknown loader error".into() }
+                else { unsafe { CStr::from_ptr(error) }.to_string_lossy().into_owned() };
+            io::Error::other(format!("Bluetooth speaker requires libopus.so.0 (Arch: opus; Debian/Ubuntu: libopus0): {detail}"))
+        })
+    }
+
+    fn symbol(&self, name: &CStr) -> io::Result<NonNull<c_void>> {
+        // The library owns the symbol lifetime; all resolved pointers stay inside
+        // Speaker (or its decoder test) and are used before the handle closes.
+        NonNull::new(unsafe { libc::dlsym(self.0.as_ptr(), name.as_ptr()) }).ok_or_else(|| {
+            io::Error::other(format!(
+                "libopus.so.0 is missing symbol {}",
+                name.to_string_lossy()
+            ))
+        })
+    }
+}
+
+impl Drop for OpusLibrary {
+    fn drop(&mut self) {
+        unsafe { libc::dlclose(self.0.as_ptr()) };
+    }
+}
+
+struct Opus {
+    _library: OpusLibrary,
+    create: EncoderCreate,
+    destroy: EncoderDestroy,
+    ctl: EncoderCtl,
+    encode: EncodeFloat,
+}
+
+impl Opus {
+    fn load() -> io::Result<Self> {
+        let library = OpusLibrary::open()?;
+        // These function signatures match libopus's public C ABI. The library
+        // guard also closes the handle if resolving any symbol fails.
+        unsafe {
+            Ok(Self {
+                create: std::mem::transmute::<*mut c_void, EncoderCreate>(
+                    library.symbol(c"opus_encoder_create")?.as_ptr(),
+                ),
+                destroy: std::mem::transmute::<*mut c_void, EncoderDestroy>(
+                    library.symbol(c"opus_encoder_destroy")?.as_ptr(),
+                ),
+                ctl: std::mem::transmute::<*mut c_void, EncoderCtl>(
+                    library.symbol(c"opus_encoder_ctl")?.as_ptr(),
+                ),
+                encode: std::mem::transmute::<*mut c_void, EncodeFloat>(
+                    library.symbol(c"opus_encode_float")?.as_ptr(),
+                ),
+                _library: library,
+            })
+        }
+    }
 }
 
 pub(super) struct Speaker {
+    opus: Opus,
     encoder: NonNull<libc::c_void>,
     front: [[f32; 2]; 512],
     used: usize,
@@ -33,12 +87,14 @@ pub(super) struct Speaker {
 
 impl Speaker {
     pub(super) fn new() -> io::Result<Self> {
+        let opus = Opus::load()?;
         let mut error = 0;
         // OPUS_APPLICATION_AUDIO. The object stays on the capture thread.
-        let raw = unsafe { opus_encoder_create(48000, 2, 2049, &mut error) };
+        let raw = unsafe { (opus.create)(48000, 2, 2049, &mut error) };
         let encoder = NonNull::new(raw)
             .ok_or_else(|| io::Error::other(format!("Opus encoder creation failed: {error}")))?;
         let speaker = Self {
+            opus,
             encoder,
             front: [[0.0; 2]; 512],
             used: 0,
@@ -46,7 +102,7 @@ impl Speaker {
         };
         // OPUS_SET_BITRATE, OPUS_SET_VBR. libopus's public ABI uses int varargs.
         for (request, value) in [(4002, 160_000i32), (4006, 0i32)] {
-            let result = unsafe { opus_encoder_ctl(speaker.encoder.as_ptr(), request, value) };
+            let result = unsafe { (speaker.opus.ctl)(speaker.encoder.as_ptr(), request, value) };
             if result != 0 {
                 return Err(io::Error::other(format!(
                     "Opus ctl {request} failed: {result}"
@@ -90,7 +146,7 @@ impl Speaker {
         }
         let mut packet = [0; OPUS_BYTES];
         let size = unsafe {
-            opus_encode_float(
+            (self.opus.encode)(
                 self.encoder.as_ptr(),
                 pcm.as_ptr(),
                 480,
@@ -110,7 +166,7 @@ impl Speaker {
 impl Drop for Speaker {
     fn drop(&mut self) {
         // The pointer is exclusively owned, and initialized by libopus.
-        unsafe { opus_encoder_destroy(self.encoder.as_ptr()) };
+        unsafe { (self.opus.destroy)(self.encoder.as_ptr()) };
     }
 }
 
@@ -118,24 +174,31 @@ impl Drop for Speaker {
 mod tests {
     use super::*;
 
-    unsafe extern "C" {
-        fn opus_decoder_create(rate: i32, channels: i32, error: *mut i32) -> *mut libc::c_void;
-        fn opus_decoder_destroy(decoder: *mut libc::c_void);
-        fn opus_decode_float(
-            decoder: *mut libc::c_void,
-            data: *const u8,
-            len: i32,
-            pcm: *mut f32,
-            frame_size: i32,
-            fec: i32,
-        ) -> i32;
-    }
+    type DecoderCreate = unsafe extern "C" fn(i32, i32, *mut i32) -> *mut c_void;
+    type DecoderDestroy = unsafe extern "C" fn(*mut c_void);
+    type DecodeFloat = unsafe extern "C" fn(*mut c_void, *const u8, i32, *mut f32, i32, i32) -> i32;
 
     #[test]
     fn opus_round_trip_preserves_front_channels_and_controller_clock() {
         let mut speaker = Speaker::new().unwrap();
         let mut error = 0;
-        let decoder = unsafe { opus_decoder_create(48000, 2, &mut error) };
+        let library = &speaker.opus._library;
+        let create = unsafe {
+            std::mem::transmute::<*mut c_void, DecoderCreate>(
+                library.symbol(c"opus_decoder_create").unwrap().as_ptr(),
+            )
+        };
+        let destroy = unsafe {
+            std::mem::transmute::<*mut c_void, DecoderDestroy>(
+                library.symbol(c"opus_decoder_destroy").unwrap().as_ptr(),
+            )
+        };
+        let decode = unsafe {
+            std::mem::transmute::<*mut c_void, DecodeFloat>(
+                library.symbol(c"opus_decode_float").unwrap().as_ptr(),
+            )
+        };
+        let decoder = unsafe { create(48000, 2, &mut error) };
         assert!(!decoder.is_null());
         let mut decoded = Vec::new();
         for block in 0..100 {
@@ -148,14 +211,12 @@ mod tests {
             let packet = speaker.finish_block().unwrap().unwrap();
             let mut pcm = [0.0; 960];
             assert_eq!(
-                unsafe {
-                    opus_decode_float(decoder, packet.as_ptr(), 200, pcm.as_mut_ptr(), 480, 0)
-                },
+                unsafe { decode(decoder, packet.as_ptr(), 200, pcm.as_mut_ptr(), 480, 0) },
                 480
             );
             decoded.extend(pcm.chunks_exact(2).map(|s| [s[0], s[1]]));
         }
-        unsafe { opus_decoder_destroy(decoder) };
+        unsafe { destroy(decoder) };
         // Hardware renders at 45 kHz: 512 input frames -> 480 decoded frames.
         // Count crossings after encoder warmup, measuring at that physical clock.
         let tail = &decoded[4800..];

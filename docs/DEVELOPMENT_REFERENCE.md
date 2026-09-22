@@ -183,7 +183,10 @@ Input order inside `handle_hidraw_input()`:
   triggers and microphone volume remain untouched. End/underrun/session teardown
   mutes speaker volume; disconnect skips writes. This is explicit demo setup,
   not game volume arbitration. Plain PCM retains its previous behavior. libopus
-  is required to link/run `edgemap`.
+  is loaded with `dlopen` only when speaker capture starts, and remains loaded
+  until its encoder is destroyed. It is optional for startup and HD haptics and
+  is not a link-time dependency. Missing libraries/symbols explicitly fail the
+  speaker request; they do not silently select a PCM-only mode.
 - Protocol v3 encodes `bt_haptics=none|dualsense|dualsense-edge` in hello/state
   packets, replacing the v2 boolean. Both daemons must be updated
   together. The control socket remains separate from binary PCM. `pw-cat` must be

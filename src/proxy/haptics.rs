@@ -11,6 +11,25 @@ const FRAME_NUMERATOR_NS: u64 = HapticsFrame::FRAMES as u64 * 1_000_000_000;
 
 const PCM_PERIOD: Duration = Duration::from_nanos(FRAME_NUMERATOR_NS.div_ceil(HapticsFrame::RATE));
 
+fn parse_bt_haptics_buffer(value: &str) -> Result<u8, String> {
+    match value.parse::<u8>() {
+        Ok(buffer) if buffer != 0 => Ok(buffer),
+        _ => Err(format!(
+            "invalid DSEUHID_BT_HAPTICS_BUFFER={value}; expected decimal integer 1..=255"
+        )),
+    }
+}
+
+pub(crate) fn bt_haptics_buffer_from_env() -> Result<u8, String> {
+    match std::env::var("DSEUHID_BT_HAPTICS_BUFFER") {
+        Ok(value) => parse_bt_haptics_buffer(&value),
+        Err(std::env::VarError::NotPresent) => Ok(crate::codec::DEFAULT_BT_HAPTICS_BUFFER),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("invalid DSEUHID_BT_HAPTICS_BUFFER: value is not valid Unicode".into())
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct LiveHaptics {
     frames: std::collections::VecDeque<AudioFrame>,
@@ -115,6 +134,16 @@ impl HapticsDemo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn haptics_buffer_accepts_nonzero_bytes_in_decimal() {
+        for (text, expected) in [("1", 1), ("32", 32), ("64", 64), ("255", 255)] {
+            assert_eq!(parse_bt_haptics_buffer(text), Ok(expected));
+        }
+        for text in ["", "0", "256", "-1", "0x20", "32.0", "invalid"] {
+            assert!(parse_bt_haptics_buffer(text).is_err(), "{text}");
+        }
+    }
 
     #[test]
     fn live_queue_bounds_latency_skips_late_frames_and_stops_on_underrun() {

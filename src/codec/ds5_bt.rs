@@ -146,7 +146,7 @@ pub(super) fn encode_haptics(frame: &HapticsFrame, state: &mut PhysicalOutputSta
         0,
         0,
         0,
-        0xFF,
+        state.ds5_bt_haptics_buffer,
         state.ds5_bt_haptics_counter,
     ]);
     bt[11..13].copy_from_slice(&[0x92, HapticsFrame::SAMPLES as u8]);
@@ -263,15 +263,37 @@ mod tests {
         assert_eq!(packet.len(), 142);
         assert_eq!(
             &packet[..13],
-            &[0x32, 0, 0x91, 7, 0xFE, 0, 0, 0, 0, 0xFF, 0, 0x92, 64]
+            &[0x32, 0, 0x91, 7, 0xFE, 0, 0, 0, 0, 0x20, 0, 0x92, 64]
         );
         assert_eq!(packet[13..77], frame.0.map(|sample| sample as u8));
         assert!(packet[77..138].iter().all(|&b| b == 0));
         // Python zlib.crc32(b"\xa2" + packet[:138]), independent of ps_crc32.
         assert_eq!(
             u32::from_le_bytes(packet[138..].try_into().unwrap()),
-            0x70D272B8
+            0x40EBCBF6
         );
+    }
+
+    #[test]
+    fn haptics_buffer_override_preserves_pcm_and_combined_audio() {
+        let mut frame = HapticsFrame(std::array::from_fn(|i| i as i8 - 32));
+        frame.0[0] = i8::MIN;
+        frame.0[1] = i8::MAX;
+        let baseline = encode_haptics(&frame, &mut PhysicalOutputState::default());
+        // Independently computed with Python zlib, as in the default-buffer test.
+        for (buffer, crc) in [(64, 0x9CBD6BF4u32), (255, 0x70D272B8)] {
+            let mut state = PhysicalOutputState {
+                ds5_bt_haptics_buffer: buffer,
+                ..PhysicalOutputState::default()
+            };
+            let packet = encode_haptics(&frame, &mut state);
+            assert_eq!(packet[9], buffer);
+            assert_eq!(&packet[..9], &baseline[..9]);
+            assert_eq!(&packet[10..138], &baseline[10..138]);
+            assert_eq!(u32::from_le_bytes(packet[138..].try_into().unwrap()), crc);
+            let combined = encode_audio(&frame, &[0; 200], &mut state);
+            assert_eq!(&combined[5..10], &[64; 5]);
+        }
     }
 
     #[test]

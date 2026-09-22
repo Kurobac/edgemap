@@ -106,10 +106,23 @@ pub enum PhysicalCodec {
     Ds5Bt,
 }
 
-#[derive(Debug, Default)]
+pub(crate) const DEFAULT_BT_HAPTICS_BUFFER: u8 = 32;
+
+#[derive(Debug)]
 pub struct PhysicalOutputState {
     ds5_bt_seq: u8,
     ds5_bt_haptics_counter: u8,
+    pub(crate) ds5_bt_haptics_buffer: u8,
+}
+
+impl Default for PhysicalOutputState {
+    fn default() -> Self {
+        Self {
+            ds5_bt_seq: 0,
+            ds5_bt_haptics_counter: 0,
+            ds5_bt_haptics_buffer: DEFAULT_BT_HAPTICS_BUFFER,
+        }
+    }
 }
 
 impl PhysicalCodec {

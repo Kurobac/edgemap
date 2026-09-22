@@ -104,10 +104,16 @@ Input order inside `handle_hidraw_input()`:
   32 interleaved stereo sample frames, signed 8-bit, 3 kHz (64 bytes per block).
   USB physical HID rejects this command; USB audio is a separate transport.
 - `ds5_bt.rs` encodes the SAxense 142-byte `0x32` container with control `0x11`
-  and PCM `0x12` sub-packets. The control payload is `FE 00 00 00 00 FF counter`,
-  keeping microphone streaming disabled. The audio counter advances per PCM
+  and PCM `0x12` sub-packets. The control payload is `FE 00 00 00 00 20 counter`,
+  keeping microphone streaming disabled and setting the controller audio buffer
+  to 32 instead of SAxense's maximum 255. The audio counter advances per PCM
   packet; the outer four-bit sequence is shared with ordinary `0x31` output.
   Both report types use the existing `0xA2`-seed CRC.
+- `DSEUHID_BT_HAPTICS_BUFFER` on `dseuhid` overrides the PCM-only `0x32`
+  controller buffer (decimal 1–255, default 32; not milliseconds). Invalid values
+  fail daemon startup. Each BT session logs the selected value; restart the proxy
+  after changing the environment. The combined speaker report keeps its buffer
+  value of 64. Example: `sudo env DSEUHID_BT_HAPTICS_BUFFER=64 ./target/debug/dseuhid`.
 - `proxy/output.rs` owns the shared physical write/error path. Ordinary game
   output retains its flags; only an explicit demo start sends a minimal state
   update selecting audio haptics. No rumble/PCM priority policy is applied.

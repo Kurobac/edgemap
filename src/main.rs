@@ -116,7 +116,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    if let Err(e) = proxy::validate_repeat_env() {
+    if let Err(e) =
+        proxy::validate_repeat_env().and_then(|()| proxy::bt_haptics_buffer_from_env().map(|_| ()))
+    {
         error!("{e}");
         std::process::exit(1);
     }

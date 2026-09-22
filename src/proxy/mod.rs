@@ -26,6 +26,7 @@ mod repeat;
 mod runtime;
 mod uhid_events;
 
+pub(crate) use haptics::bt_haptics_buffer_from_env;
 use haptics::{HapticsDemo, LiveHaptics};
 use pipeline::{transform, transform_timer};
 pub(crate) use repeat::validate_repeat_env;
@@ -128,6 +129,15 @@ impl Proxy {
             output_device_config,
         } = init;
         let repeat_input = RepeatInput::from_env(codec);
+        let mut physical_output_state = PhysicalOutputState::default();
+        if codec.physical == crate::codec::PhysicalCodec::Ds5Bt {
+            physical_output_state.ds5_bt_haptics_buffer = bt_haptics_buffer_from_env()
+                .expect("haptics environment was validated at daemon startup");
+            info!(
+                "Bluetooth haptics buffer: value={}",
+                physical_output_state.ds5_bt_haptics_buffer
+            );
+        }
         let runtimes = {
             let mapping = mapping.read().unwrap();
             MappingRuntimes::from_mapping(&mapping)
@@ -147,7 +157,7 @@ impl Proxy {
             last_output: None,
             last_frame: None,
             repeat_input,
-            physical_output_state: PhysicalOutputState::default(),
+            physical_output_state,
             haptics_demo: None,
             live_haptics: LiveHaptics::default(),
             speaker_active: false,

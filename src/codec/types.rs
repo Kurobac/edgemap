@@ -29,6 +29,10 @@ pub enum OutputCommand {
     Ds5Usb(Ds5UsbOutput),
     Ds4Usb(Ds4UsbOutput),
     Haptics(HapticsFrame),
+    Audio {
+        haptics: HapticsFrame,
+        speaker: [u8; crate::control::haptics::OPUS_BYTES],
+    },
 }
 
 /// One 10.667 ms block of interleaved left/right signed PCM.

@@ -158,7 +158,12 @@ impl PhysicalCodec {
             (Self::Ds5Bt, OutputCommand::Haptics(frame)) => {
                 Ok(ds5_bt::encode_haptics(frame, state))
             }
-            (Self::Ds5Usb, OutputCommand::Haptics(_)) => Err(CodecError::UnsupportedOutput),
+            (Self::Ds5Bt, OutputCommand::Audio { haptics, speaker }) => {
+                Ok(ds5_bt::encode_audio(haptics, speaker, state))
+            }
+            (Self::Ds5Usb, OutputCommand::Haptics(_) | OutputCommand::Audio { .. }) => {
+                Err(CodecError::UnsupportedOutput)
+            }
         }
     }
 

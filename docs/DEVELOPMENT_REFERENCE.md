@@ -135,8 +135,13 @@ Input order inside `handle_hidraw_input()`:
 - `daemon/audio.rs` runs `pw-cat` in the user's PipeWire session as an Audio/Sink:
   interleaved F32LE, 48 kHz, FL/FR/RL/RR. A 255-tap Hamming-windowed sinc low-pass
   (1250 Hz cutoff, about 2.65 ms group delay) precedes 16:1 decimation of RL/RR to
-  signed 8-bit stereo at 3 kHz. FL/FR are discarded; controller speaker playback
-  is not part of this implementation. The capture worker owns no physical HID fd.
+  signed 8-bit stereo at 3 kHz. FL/FR are normally discarded. For the opt-in
+  speaker demo (`EDGEMAP_SPEAKER_DEMO=1` on `edgemap daemon`), `audio/speaker.rs`
+  resamples each 512-frame front block to 480 stereo frames (16:15 linear
+  interpolation) and uses system libopus: 48 kHz, AUDIO, 160 kbit/s CBR, 200 bytes.
+  Both paths therefore share the 10.667 ms physical clock. Eight encoded silent
+  blocks flush the speaker after activity, then stop; rear-only input never starts
+  Opus playback. The capture worker owns no physical HID fd.
 - The sink publishes `device.bus=usb`, Sony VID 0x054c, model-specific PID
   (0x0ce6/0x0df2), manufacturer/product descriptions, nicknames, `device.class=sound`
   and `device.form-factor=controller`. PipeWire maps the last key to PulseAudio's
@@ -147,13 +152,38 @@ Input order inside `handle_hidraw_input()`:
   CLOCK_MONOTONIC timestamp over `/run/dseuhid/haptics.sock` (Unix datagram, 0666).
   The proxy owns this socket for the Bluetooth session, drains at most 16 datagrams
   per turn, and rejects malformed, future-dated, or more than 100 ms old blocks.
-  A nonblocking sender drops a block if the socket is full.
+  A nonblocking sender drops a block if the socket is full. Speaker demo packets
+  append 200 Opus bytes (272 bytes total); PCM-only packets retain the 72-byte
+  format. The receiver accepts exactly these two sizes and queues both channels
+  together, so dropping a late block does not separate their timelines.
 - Live PCM shares the existing timerfd and physical output sequence. The queue
   retains at most three blocks, starts with one block of buffering, and emits at
   most one block per due tick. Late ticks discard missed blocks. Underrun sends a
   silent block; continuous zero input does not keep physical playback active.
   Live PCM does not select rumble/audio mode. An explicit demo is rejected while
   live playback is active; PCM arriving during the finite demo is discarded.
+- The opt-in speaker path adds `OutputCommand::Audio`, encoded only on BT as
+  a single 398-byte `0x36` report: control `0x91` (FE, five buffer lengths of 64,
+  one counter), state `0x90` (63 bytes), PCM `0x92` (64 bytes), and Opus `0x93`
+  (200 bytes). This follows the combined carrier in DS5Dongle, mdrv-ds and
+  LinuxAudio4Dualsense5. Microphone streaming stays disabled. Both outer sequence
+  and audio counter advance once per combined block and remain continuous when
+  switching to/from PCM-only `0x32` output.
+- An earlier demo interleaved standalone `0x32` and `0x35` reports with different
+  buffer declarations/counter positions. On Edge, PCM-only sections vibrated but
+  adding Opus silenced both lanes. An HCI capture confirmed valid CRCs, nonzero
+  PCM and decodable, non-silent Opus; standalone coexistence was not established.
+  Combined playback replaces that path and was confirmed working on Edge:
+  speaker-only, haptics-only, and simultaneous speaker/haptics demo segments.
+  Native game speaker behavior and game-controlled audio settings remain untested.
+- The first Opus block starts with a minimal `0x31` audio-mode update; the same
+  audio state is carried in every `0x36`. The demo uses native speaker audio
+  control 0x09, volume 100, preamp 0x0A, and power-save control 0x10 (microphone
+  muted, output paths powered). Only audio-related valid bits are set; LEDs,
+  triggers and microphone volume remain untouched. End/underrun/session teardown
+  mutes speaker volume; disconnect skips writes. This is explicit demo setup,
+  not game volume arbitration. Plain PCM retains its previous behavior. libopus
+  is required to link/run `edgemap`.
 - Protocol v3 encodes `bt_haptics=none|dualsense|dualsense-edge` in hello/state
   packets, replacing the v2 boolean. Both daemons must be updated
   together. The control socket remains separate from binary PCM. `pw-cat` must be

@@ -231,6 +231,23 @@ pub(super) fn decode_output(data: &[u8]) -> Ds5UsbOutput {
 }
 
 impl Ds5UsbOutput {
+    /// Minimal speaker routing/volume update for the opt-in audio demo.
+    /// Do not mark LEDs, triggers or microphone volume as valid.
+    pub fn speaker_demo_mode(enabled: bool) -> Self {
+        let mut raw = vec![0; 48];
+        raw[0] = 0x02;
+        raw[1] = 0x20; // Speaker volume valid.
+        if enabled {
+            raw[1] |= 0x81; // Audio routing + audio haptics mode valid.
+            raw[2] = 0x82; // AudioControl2 and power-save control valid.
+            raw[6] = 100; // Speaker volume.
+            raw[8] = 0x09; // Native speaker audio configuration (DS5Dongle/DS4Windows).
+            raw[10] = 0x10; // Keep microphone muted, speaker/haptics powered.
+            raw[38] = 0x0a; // Speaker preamp from the native audio state.
+        }
+        Self { raw }
+    }
+
     /// Select PCM haptics for the standalone demo, without enabling changes
     /// to triggers, LEDs, speaker volume or microphone settings.
     pub fn audio_haptics_mode() -> Self {

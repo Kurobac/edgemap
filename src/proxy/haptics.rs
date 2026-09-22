@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::codec::HapticsFrame;
+use crate::control::haptics::AudioFrame;
 
 const TONE_SAMPLES: u64 = HapticsFrame::RATE;
 const RIGHT_START: u64 = TONE_SAMPLES + HapticsFrame::RATE / 2;
@@ -12,13 +13,13 @@ const PCM_PERIOD: Duration = Duration::from_nanos(FRAME_NUMERATOR_NS.div_ceil(Ha
 
 #[derive(Default)]
 pub(super) struct LiveHaptics {
-    frames: std::collections::VecDeque<HapticsFrame>,
+    frames: std::collections::VecDeque<AudioFrame>,
     deadline: Option<Instant>,
 }
 
 impl LiveHaptics {
-    pub(super) fn push(&mut self, frame: HapticsFrame, now: Instant) {
-        if self.deadline.is_none() && frame == HapticsFrame::SILENCE {
+    pub(super) fn push(&mut self, frame: AudioFrame, now: Instant) {
+        if self.deadline.is_none() && frame == AudioFrame::SILENCE {
             return;
         }
         if self.frames.len() == 3 {
@@ -33,7 +34,7 @@ impl LiveHaptics {
         self.deadline
     }
 
-    pub(super) fn take_due_frame(&mut self, now: Instant) -> Option<HapticsFrame> {
+    pub(super) fn take_due_frame(&mut self, now: Instant) -> Option<AudioFrame> {
         let deadline = self.deadline?;
         if now < deadline {
             return None;
@@ -43,8 +44,7 @@ impl LiveHaptics {
             self.frames.pop_front();
         }
         if let Some(frame) = self.frames.pop_front() {
-            if frame == HapticsFrame::SILENCE
-                && self.frames.iter().all(|f| *f == HapticsFrame::SILENCE)
+            if frame == AudioFrame::SILENCE && self.frames.iter().all(|f| *f == AudioFrame::SILENCE)
             {
                 self.frames.clear();
                 self.deadline = None;
@@ -54,7 +54,7 @@ impl LiveHaptics {
             Some(frame)
         } else {
             self.deadline = None;
-            Some(HapticsFrame::SILENCE)
+            Some(AudioFrame::SILENCE)
         }
     }
 }
@@ -120,31 +120,49 @@ mod tests {
     fn live_queue_bounds_latency_skips_late_frames_and_stops_on_underrun() {
         let start = Instant::now();
         let mut live = LiveHaptics::default();
-        live.push(HapticsFrame::SILENCE, start);
+        live.push(AudioFrame::SILENCE, start);
         assert!(live.next_deadline().is_none());
         for i in 1..=5 {
-            live.push(HapticsFrame([i; 64]), start);
+            live.push(
+                AudioFrame {
+                    haptics: [i; 64],
+                    speaker: None,
+                },
+                start,
+            );
         }
         assert_eq!(live.frames.len(), 3);
         assert!(live.take_due_frame(start).is_none());
         assert_eq!(
             live.take_due_frame(start + PCM_PERIOD),
-            Some(HapticsFrame([3; 64]))
+            Some(AudioFrame {
+                haptics: [3; 64],
+                speaker: None
+            })
         );
         assert_eq!(
             live.take_due_frame(start + PCM_PERIOD * 3),
-            Some(HapticsFrame([5; 64]))
+            Some(AudioFrame {
+                haptics: [5; 64],
+                speaker: None
+            })
         );
         assert!(live.take_due_frame(start + PCM_PERIOD * 3).is_none());
         assert_eq!(
             live.take_due_frame(start + PCM_PERIOD * 4),
-            Some(HapticsFrame::SILENCE)
+            Some(AudioFrame::SILENCE)
         );
         assert!(live.next_deadline().is_none());
-        live.push(HapticsFrame([7; 64]), start + PCM_PERIOD * 5);
+        live.push(
+            AudioFrame {
+                haptics: [7; 64],
+                speaker: None,
+            },
+            start + PCM_PERIOD * 5,
+        );
         assert_eq!(
             live.take_due_frame(start + Duration::from_secs(10)),
-            Some(HapticsFrame::SILENCE)
+            Some(AudioFrame::SILENCE)
         );
         assert!(live.next_deadline().is_none());
     }
@@ -153,15 +171,21 @@ mod tests {
     fn continuous_idle_capture_sends_one_stop_and_releases_playback() {
         let start = Instant::now();
         let mut live = LiveHaptics::default();
-        live.push(HapticsFrame([10; 64]), start);
+        live.push(
+            AudioFrame {
+                haptics: [10; 64],
+                speaker: None,
+            },
+            start,
+        );
         live.take_due_frame(start + PCM_PERIOD).unwrap();
-        live.push(HapticsFrame::SILENCE, start + PCM_PERIOD);
+        live.push(AudioFrame::SILENCE, start + PCM_PERIOD);
         assert_eq!(
             live.take_due_frame(start + PCM_PERIOD * 2),
-            Some(HapticsFrame::SILENCE)
+            Some(AudioFrame::SILENCE)
         );
         for _ in 0..10 {
-            live.push(HapticsFrame::SILENCE, start + PCM_PERIOD * 3);
+            live.push(AudioFrame::SILENCE, start + PCM_PERIOD * 3);
         }
         assert!(live.next_deadline().is_none());
         assert!(live.frames.is_empty());

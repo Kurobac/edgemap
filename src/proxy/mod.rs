@@ -83,6 +83,7 @@ pub struct Proxy {
     physical_output_state: PhysicalOutputState,
     haptics_demo: Option<HapticsDemo>,
     live_haptics: LiveHaptics,
+    speaker_active: bool,
     physical_set_report_unsupported_warned: HashSet<u8>,
     runtimes: MappingRuntimes,
 }
@@ -149,6 +150,7 @@ impl Proxy {
             physical_output_state: PhysicalOutputState::default(),
             haptics_demo: None,
             live_haptics: LiveHaptics::default(),
+            speaker_active: false,
             physical_set_report_unsupported_warned: HashSet::new(),
             runtimes,
         }
@@ -560,8 +562,7 @@ impl Proxy {
                                 let now = Instant::now();
                                 if let Err(error) = receiver.drain(|samples| {
                                     if self.haptics_demo.is_none() {
-                                        self.live_haptics
-                                            .push(crate::codec::HapticsFrame(samples), now);
+                                        self.live_haptics.push(samples, now);
                                     }
                                 }) {
                                     error!("Bluetooth PCM receive failed: {error}");
@@ -1321,6 +1322,67 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
     }
 
     #[test]
+    fn speaker_demo_shares_pcm_timer_and_mutes_on_underrun_or_teardown() {
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (mut proxy, _uhid_peer) = test_proxy(MappingConfig::default());
+        let (physical, peer) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        proxy.codec.physical = PhysicalCodec::Ds5Bt;
+        let mut sequence = 0;
+        for teardown in [false, true] {
+            proxy.live_haptics.push(
+                crate::control::haptics::AudioFrame {
+                    haptics: [12; 64],
+                    speaker: Some([0x5a; 200]),
+                },
+                Instant::now(),
+            );
+            let deadline = proxy.next_timing_deadline().unwrap();
+            proxy.handle_timing_tick(&mut 0, deadline).unwrap();
+            for (id, length) in [(0x31, 78), (0x36, 398)] {
+                let report = receive_uhid_packet(&peer).unwrap();
+                assert_eq!(report.len(), length);
+                assert_eq!(&report[..2], &[id, sequence << 4]);
+                sequence += 1;
+                if id == 0x31 {
+                    assert_eq!(&report[3..5], &[0xa1, 0x82]);
+                    assert_eq!(report[8], 100);
+                    assert_eq!(report[10], 0x09);
+                    assert_eq!(report[12], 0x10);
+                    assert_eq!(report[40], 0x0a);
+                    // No trigger, LED, microphone volume or rumble values are set.
+                    for (index, value) in report[3..74].iter().enumerate() {
+                        if ![3, 4, 8, 10, 12, 40].contains(&(index + 3)) {
+                            assert_eq!(*value, 0);
+                        }
+                    }
+                }
+            }
+            assert!(receive_uhid_packet(&peer).is_none());
+            assert!(proxy.speaker_active);
+            if teardown {
+                proxy.clear_timing_state();
+            } else {
+                proxy
+                    .handle_timing_tick(&mut 0, proxy.next_timing_deadline().unwrap())
+                    .unwrap();
+            }
+            let mute = receive_uhid_packet(&peer).unwrap();
+            assert_eq!(&mute[..4], &[0x31, sequence << 4, 0x10, 0x20]);
+            sequence += 1;
+            assert!(mute[4..74].iter().all(|&b| b == 0));
+            let silence = receive_uhid_packet(&peer).unwrap();
+            assert_eq!(&silence[..2], &[0x32, sequence << 4]);
+            sequence += 1;
+            assert!(silence[13..77].iter().all(|&b| b == 0));
+            assert!(!proxy.speaker_active);
+            assert!(proxy.next_timing_deadline().is_none());
+            assert!(receive_uhid_packet(&peer).is_none());
+        }
+    }
+
+    #[test]
     fn live_pcm_uses_timer_without_mode_output_and_stops_on_teardown() {
         let _guard = EVENT_TEST_LOCK.lock().unwrap();
         DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1330,9 +1392,13 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
         proxy.codec.physical = PhysicalCodec::Ds5Bt;
         let now = Instant::now();
         let samples = std::array::from_fn(|i| i as i8 - 32);
-        proxy
-            .live_haptics
-            .push(crate::codec::HapticsFrame(samples), now);
+        proxy.live_haptics.push(
+            crate::control::haptics::AudioFrame {
+                haptics: samples,
+                speaker: None,
+            },
+            now,
+        );
         assert!(receive_uhid_packet(&peer).is_none());
         assert_eq!(proxy.start_haptics_demo(now).unwrap_err().0, "haptics-busy");
         let deadline = proxy.next_timing_deadline().unwrap();

@@ -1,5 +1,6 @@
 //! Local PCM transport. One datagram is a monotonic timestamp followed by
-//! 32 stereo signed-8-bit samples at 3 kHz; it is never a physical HID report.
+//! 32 stereo signed-8-bit samples at 3 kHz, optionally followed by one Opus
+//! speaker frame. It is never a physical HID report.
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::{fs::PermissionsExt, net::UnixDatagram};
@@ -7,7 +8,22 @@ use std::path::{Path, PathBuf};
 
 pub const HAPTICS_SOCKET: &str = "haptics.sock";
 pub const PCM_SAMPLES: usize = 64;
+pub const OPUS_BYTES: usize = 200;
 const PACKET_SIZE: usize = 8 + PCM_SAMPLES;
+const AUDIO_PACKET_SIZE: usize = PACKET_SIZE + OPUS_BYTES;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioFrame {
+    pub haptics: [i8; PCM_SAMPLES],
+    pub speaker: Option<[u8; OPUS_BYTES]>,
+}
+
+impl AudioFrame {
+    pub const SILENCE: Self = Self {
+        haptics: [0; PCM_SAMPLES],
+        speaker: None,
+    };
+}
 const MAX_AGE_NS: u64 = 100_000_000;
 
 fn monotonic_ns() -> io::Result<u64> {
@@ -22,24 +38,44 @@ fn monotonic_ns() -> io::Result<u64> {
 }
 
 pub fn send_pcm(socket: &UnixDatagram, samples: &[i8; PCM_SAMPLES]) -> io::Result<()> {
-    let mut packet = [0u8; PACKET_SIZE];
+    send_audio(
+        socket,
+        &AudioFrame {
+            haptics: *samples,
+            speaker: None,
+        },
+    )
+}
+
+pub fn send_audio(socket: &UnixDatagram, frame: &AudioFrame) -> io::Result<()> {
+    let mut packet = [0u8; AUDIO_PACKET_SIZE];
     packet[..8].copy_from_slice(&monotonic_ns()?.to_le_bytes());
-    for (dst, src) in packet[8..].iter_mut().zip(samples) {
+    for (dst, src) in packet[8..PACKET_SIZE].iter_mut().zip(frame.haptics.iter()) {
         *dst = *src as u8;
     }
-    socket.send(&packet)?;
+    let size = if let Some(speaker) = &frame.speaker {
+        packet[PACKET_SIZE..].copy_from_slice(speaker);
+        AUDIO_PACKET_SIZE
+    } else {
+        PACKET_SIZE
+    };
+    socket.send(&packet[..size])?;
     Ok(())
 }
 
-fn decode(packet: &[u8], now: u64) -> Option<[i8; PCM_SAMPLES]> {
-    if packet.len() != PACKET_SIZE {
+fn decode(packet: &[u8], now: u64) -> Option<AudioFrame> {
+    if packet.len() != PACKET_SIZE && packet.len() != AUDIO_PACKET_SIZE {
         return None;
     }
     let timestamp = u64::from_le_bytes(packet[..8].try_into().ok()?);
     if now.checked_sub(timestamp)? > MAX_AGE_NS {
         return None;
     }
-    Some(std::array::from_fn(|i| packet[8 + i] as i8))
+    Some(AudioFrame {
+        haptics: std::array::from_fn(|i| packet[8 + i] as i8),
+        speaker: (packet.len() == AUDIO_PACKET_SIZE)
+            .then(|| packet[PACKET_SIZE..].try_into().unwrap()),
+    })
 }
 
 pub struct PcmReceiver {
@@ -68,10 +104,10 @@ impl PcmReceiver {
         self.socket.as_fd()
     }
 
-    pub fn drain(&self, mut accept: impl FnMut([i8; PCM_SAMPLES])) -> io::Result<()> {
+    pub fn drain(&self, mut accept: impl FnMut(AudioFrame)) -> io::Result<()> {
         // Bound work per epoll turn; the fd stays readable if packets remain.
         for _ in 0..16 {
-            let mut packet = [0u8; PACKET_SIZE + 1];
+            let mut packet = [0u8; AUDIO_PACKET_SIZE + 1];
             match self.socket.recv(&mut packet) {
                 Ok(n) => {
                     if let Some(samples) = decode(&packet[..n], monotonic_ns()?) {
@@ -99,7 +135,13 @@ mod tests {
     fn rejects_wrong_size_stale_and_future_packets() {
         let mut packet = [255; PACKET_SIZE];
         packet[..8].copy_from_slice(&100u64.to_le_bytes());
-        assert_eq!(decode(&packet, 100), Some([-1; PCM_SAMPLES]));
+        assert_eq!(
+            decode(&packet, 100),
+            Some(AudioFrame {
+                haptics: [-1; PCM_SAMPLES],
+                speaker: None
+            })
+        );
         assert!(decode(&packet, 99).is_none());
         assert!(decode(&packet, MAX_AGE_NS + 101).is_none());
         assert!(decode(&packet[..PACKET_SIZE - 1], 100).is_none());
@@ -117,7 +159,25 @@ mod tests {
         send_pcm(&sender, &samples).unwrap();
         let mut received = Vec::new();
         receiver.drain(|p| received.push(p)).unwrap();
-        assert_eq!(received, [samples]);
+        assert_eq!(
+            received,
+            [AudioFrame {
+                haptics: samples,
+                speaker: None
+            }]
+        );
+        let audio = AudioFrame {
+            haptics: samples,
+            speaker: Some([0xab; OPUS_BYTES]),
+        };
+        send_audio(&sender, &audio).unwrap();
+        let mut received = Vec::new();
+        receiver.drain(|p| received.push(p)).unwrap();
+        assert_eq!(received, [audio]);
+        sender.send(&[0; AUDIO_PACKET_SIZE + 1]).unwrap();
+        receiver
+            .drain(|_| panic!("oversized datagram accepted"))
+            .unwrap();
         drop(receiver);
         assert!(!dir.join(HAPTICS_SOCKET).exists());
         std::fs::remove_dir(dir).unwrap();

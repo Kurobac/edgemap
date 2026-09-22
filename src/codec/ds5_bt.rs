@@ -158,9 +158,100 @@ pub(super) fn encode_haptics(frame: &HapticsFrame, state: &mut PhysicalOutputSta
     bt
 }
 
+/// Combined audio carrier used by DS5Dongle, mdrv-ds and LinuxAudio4Dualsense5.
+/// One control header owns both media lanes; interleaving standalone 0x35 with
+/// PCM-only 0x32 was observed to silence both lanes on our Edge.
+pub(super) fn encode_audio(
+    haptics: &HapticsFrame,
+    speaker: &[u8; crate::control::haptics::OPUS_BYTES],
+    state: &mut PhysicalOutputState,
+) -> Vec<u8> {
+    let mut bt = vec![0; 398];
+    bt[0] = 0x36;
+    bt[2..11].copy_from_slice(&[
+        0x91,
+        7,
+        0xFE,
+        64,
+        64,
+        64,
+        64,
+        64,
+        state.ds5_bt_haptics_counter,
+    ]);
+    // A sized state TLV must contain all 63 bytes before the next TLV.
+    // Only audio-related valid bits are set; game LEDs/triggers remain intact.
+    bt[11..13].copy_from_slice(&[0x90, 63]);
+    let audio_state = Ds5UsbOutput::speaker_demo_mode(true);
+    bt[13..60].copy_from_slice(&audio_state.as_bytes()[1..]);
+    bt[76..78].copy_from_slice(&[0x92, 64]);
+    for (dest, sample) in bt[78..142].iter_mut().zip(haptics.0) {
+        *dest = sample as u8;
+    }
+    bt[142..144].copy_from_slice(&[0x93, 200]);
+    bt[144..344].copy_from_slice(speaker);
+    state.ds5_bt_haptics_counter = state.ds5_bt_haptics_counter.wrapping_add(1);
+    finish_output(&mut bt, state);
+    bt
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combined_audio_has_one_control_header_and_continuous_pcm_counter() {
+        let speaker = std::array::from_fn(|i| i as u8);
+        let haptics = HapticsFrame(std::array::from_fn(|i| i as i8 - 32));
+        let mut state = PhysicalOutputState::default();
+        for i in 0..260u16 {
+            let packet = encode_audio(&haptics, &speaker, &mut state);
+            assert_eq!(packet.len(), 398);
+            assert_eq!(
+                &packet[..13],
+                &[
+                    0x36,
+                    ((i * 2) as u8 & 15) << 4,
+                    0x91,
+                    7,
+                    0xFE,
+                    64,
+                    64,
+                    64,
+                    64,
+                    64,
+                    (i * 2) as u8,
+                    0x90,
+                    63
+                ]
+            );
+            assert_eq!(
+                &packet[13..60],
+                &Ds5UsbOutput::speaker_demo_mode(true).as_bytes()[1..]
+            );
+            assert!(packet[60..76].iter().all(|&b| b == 0));
+            assert_eq!(&packet[76..78], &[0x92, 64]);
+            assert_eq!(packet[78..142], haptics.0.map(|s| s as u8));
+            assert_eq!(&packet[142..144], &[0x93, 200]);
+            assert_eq!(&packet[144..344], &speaker);
+            assert!(packet[344..394].iter().all(|&b| b == 0));
+            if i == 0 {
+                // Independent Python zlib.crc32(b"\xa2" + packet[:394]).
+                assert_eq!(
+                    u32::from_le_bytes(packet[394..].try_into().unwrap()),
+                    0xdd85c20c
+                );
+            }
+            let pcm = encode_haptics(&HapticsFrame::SILENCE, &mut state);
+            assert_eq!(pcm[1], ((i * 2 + 1) as u8 & 15) << 4);
+            assert_eq!(pcm[10], (i * 2 + 1) as u8);
+        }
+        assert_eq!(
+            PhysicalCodec::Ds5Usb
+                .encode_output(&OutputCommand::Audio { haptics, speaker }, &mut state),
+            Err(CodecError::UnsupportedOutput)
+        );
+    }
 
     #[test]
     fn haptics_packet_preserves_signed_pcm_and_matches_independent_crc() {

@@ -4,7 +4,9 @@ use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::process::{Child, Command, Stdio};
 use std::thread::JoinHandle;
 
-use dseuhid::control::haptics::{send_pcm, PCM_SAMPLES};
+use dseuhid::control::haptics::{send_audio, send_pcm, AudioFrame, PCM_SAMPLES};
+
+mod speaker;
 use dseuhid::control::HapticsDevice;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 
@@ -127,7 +129,9 @@ fn run_capture(
     socket: UnixDatagram,
     sink_name: &str,
     device: HapticsDevice,
+    speaker_demo: bool,
 ) -> io::Result<()> {
+    let mut speaker = speaker_demo.then(speaker::Speaker::new).transpose()?;
     socket.set_nonblocking(true)?;
     let mut capture = Capture(capture_command(sink_name, device).spawn()?);
     let mut output = capture.0.stdout.take().expect("piped pw-cat output");
@@ -165,11 +169,24 @@ fn run_capture(
             used += n;
             let complete = used / 16 * 16;
             for quad in bytes[..complete].chunks_exact(16) {
+                if let Some(speaker) = &mut speaker {
+                    speaker.push(quad);
+                }
                 if let Some(stereo) = filter.push(quad) {
                     frame[frame_used..frame_used + 2].copy_from_slice(&stereo);
                     frame_used += 2;
                     if frame_used == PCM_SAMPLES {
-                        match send_pcm(&socket, &frame) {
+                        let speaker = match &mut speaker {
+                            Some(speaker) => speaker.finish_block()?,
+                            None => None,
+                        };
+                        match send_audio(
+                            &socket,
+                            &AudioFrame {
+                                haptics: frame,
+                                speaker,
+                            },
+                        ) {
                             Ok(()) => {}
                             // Drop a late block instead of stalling the audio graph.
                             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -208,7 +225,13 @@ impl AudioBridge {
                 let result = (|| {
                     let socket = UnixDatagram::unbound()?;
                     socket.connect("/run/dseuhid/haptics.sock")?;
-                    run_capture(worker_stop, socket, SINK_NAME, device)
+                    run_capture(
+                        worker_stop,
+                        socket,
+                        SINK_NAME,
+                        device,
+                        std::env::var("EDGEMAP_SPEAKER_DEMO").as_deref() == Ok("1"),
+                    )
                 })();
                 if let Err(error) = result {
                     log::error!("Bluetooth audio bridge stopped: {error}");
@@ -261,23 +284,35 @@ mod tests {
     #[ignore = "requires a live user PipeWire session and pw-cat/pactl"]
     fn pipewire_quad_capture_to_pcm_and_sink_cleanup() {
         for device in [HapticsDevice::DualSense, HapticsDevice::DualSenseEdge] {
-            verify_pipewire_capture(device, false);
+            verify_pipewire_capture(device, false, false);
         }
     }
 
     #[test]
     #[ignore = "requires a live user PipeWire session and pw-cat/pactl"]
     fn pipewire_receiver_close_ends_capture_cleanly() {
-        verify_pipewire_capture(HapticsDevice::DualSenseEdge, true);
+        verify_pipewire_capture(HapticsDevice::DualSenseEdge, true, false);
     }
 
-    fn verify_pipewire_capture(device: HapticsDevice, close_receiver: bool) {
+    #[test]
+    #[ignore = "requires a live user PipeWire session and pw-cat/pactl"]
+    fn pipewire_speaker_and_haptics_capture_together() {
+        verify_pipewire_capture(HapticsDevice::DualSenseEdge, false, true);
+    }
+
+    fn verify_pipewire_capture(device: HapticsDevice, close_receiver: bool, speaker_demo: bool) {
         use std::io::Write;
         use std::time::{Duration, Instant};
         let name = format!(
             "edgemap.test-{}-{}",
             std::process::id(),
-            if close_receiver { "close" } else { "identity" }
+            if close_receiver {
+                "close"
+            } else if speaker_demo {
+                "speaker"
+            } else {
+                "identity"
+            }
         );
         let (receiver, sender) = UnixDatagram::pair().unwrap();
         receiver
@@ -285,8 +320,9 @@ mod tests {
             .unwrap();
         let (stop, worker_stop) = UnixStream::pair().unwrap();
         let thread_name = name.clone();
-        let worker =
-            std::thread::spawn(move || run_capture(worker_stop, sender, &thread_name, device));
+        let worker = std::thread::spawn(move || {
+            run_capture(worker_stop, sender, &thread_name, device, speaker_demo)
+        });
         // Always stop/join the capture, even when an assertion below fails.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -365,10 +401,11 @@ mod tests {
             let writer = std::thread::spawn(move || {
                 for i in 0..48000 {
                     let tone = (std::f32::consts::TAU * 100.0 * i as f32 / 48000.0).sin() * 0.25;
+                    let front = if speaker_demo { tone } else { 0.0 };
                     let values = match i / 12000 {
                         0 => [tone, tone, 0.0, 0.0],
-                        1 => [0.0, 0.0, tone, 0.0],
-                        2 => [0.0, 0.0, 0.0, tone],
+                        1 => [front, front, tone, 0.0],
+                        2 => [front, front, 0.0, tone],
                         _ => [0.0; 4],
                     };
                     stdin.write_all(&quad(values)).unwrap();
@@ -376,13 +413,16 @@ mod tests {
             });
             let mut energy = [0u64; 2];
             let mut silent_frames = 0;
+            let mut speaker_frames = 0;
+            let mut combined_frames = 0;
             let mut active_channels = [false; 2];
             let deadline = Instant::now() + Duration::from_secs(2);
             while Instant::now() < deadline {
-                let mut packet = [0u8; 73];
+                let mut packet = [0u8; 273];
                 match receiver.recv(&mut packet) {
                     Ok(n) => {
-                        assert_eq!(n, 72);
+                        assert!(n == 72 || (speaker_demo && n == 272), "packet size {n}");
+                        speaker_frames += usize::from(n == 272);
                         let mut active = [false; 2];
                         for stereo in packet[8..72].chunks_exact(2) {
                             for ch in 0..2 {
@@ -391,6 +431,7 @@ mod tests {
                                 active[ch] |= sample != 0;
                             }
                         }
+                        combined_frames += usize::from(n == 272 && active != [false; 2]);
                         if active == [false; 2] {
                             silent_frames += 1;
                         }
@@ -407,6 +448,13 @@ mod tests {
                 }
             }
             writer.join().unwrap();
+            if speaker_demo {
+                assert!(speaker_frames >= 60, "speaker frames: {speaker_frames}");
+                assert!(combined_frames >= 30, "combined frames: {combined_frames}");
+                eprintln!("speaker capture: Opus frames={speaker_frames}, simultaneous HD={combined_frames}");
+            } else {
+                assert_eq!(speaker_frames, 0);
+            }
             assert!(energy.iter().all(|e| *e > 5000), "{energy:?}");
             assert_eq!(active_channels, [true, true]);
             assert!(silent_frames >= 10, "{silent_frames}");
@@ -437,7 +485,7 @@ mod tests {
         }
     }
 
-    fn quad(values: [f32; 4]) -> [u8; 16] {
+    pub(super) fn quad(values: [f32; 4]) -> [u8; 16] {
         let mut bytes = [0; 16];
         for (dst, value) in bytes.chunks_exact_mut(4).zip(values) {
             dst.copy_from_slice(&value.to_le_bytes());

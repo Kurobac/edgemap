@@ -45,8 +45,8 @@ impl Proxy {
                 "physical controller is not Bluetooth".into(),
             ));
         }
-        if self.haptics_demo.is_some() {
-            return Err(("haptics-busy", "demo is still active".into()));
+        if self.haptics_demo.is_some() || self.live_haptics.next_deadline().is_some() {
+            return Err(("haptics-busy", "haptics playback is still active".into()));
         }
         // Only the explicitly requested demo selects a mode. Normal game
         // output keeps its flags intact; PCM encoding itself has no override.
@@ -58,6 +58,12 @@ impl Proxy {
     }
 
     pub(super) fn handle_haptics_tick(&mut self, now: Instant) {
+        if let Some(frame) = self.live_haptics.take_due_frame(now) {
+            if let Err(error) = self.send_output_command(&OutputCommand::Haptics(frame)) {
+                self.live_haptics = super::LiveHaptics::default();
+                error!("live haptics stopped after output failure: {error}");
+            }
+        }
         let Some(frame) = self
             .haptics_demo
             .as_mut()
@@ -75,6 +81,14 @@ impl Proxy {
         {
             self.haptics_demo = None;
             info!("Bluetooth haptics demo completed");
+        }
+    }
+
+    pub(super) fn stop_live_haptics(&mut self) {
+        let active = self.live_haptics.next_deadline().is_some();
+        self.live_haptics = super::LiveHaptics::default();
+        if active && !DISCONNECTED.load(Ordering::SeqCst) {
+            let _ = self.send_output_command(&OutputCommand::Haptics(HapticsFrame::SILENCE));
         }
     }
 

@@ -1,4 +1,5 @@
 mod client;
+pub mod haptics;
 mod lock;
 mod protocol;
 mod server;
@@ -11,7 +12,8 @@ use protocol::{
     hello_packet, parse_request, state_packet, MAX_CONFIG_SOURCE_SIZE, SWITCH_CONFIG_PREFIX,
 };
 pub use protocol::{
-    parse_server_packet, ControlRequest, ControlState, ServerPacket, PROTOCOL_VERSION,
+    parse_server_packet, ControlRequest, ControlState, HapticsDevice, ServerPacket,
+    PROTOCOL_VERSION,
 };
 pub use server::{ControlServer, PendingRequest, MAX_CONTROL_CLIENTS, SOCKET_FILE_NAME};
 
@@ -119,17 +121,59 @@ mod tests {
         ));
         assert_eq!(parse_request(&request.encode()), Ok(request));
         assert_eq!(
-            parse_server_packet(b"hello version=1 uhid_ready=1 needs_config=0"),
+            parse_server_packet(b"hello version=3 uhid_ready=1 needs_config=0 bt_haptics=none"),
             Ok(ServerPacket::Hello(ControlState {
                 uhid_ready: true,
                 needs_config: false,
+                bt_haptics: None,
             }))
         );
         assert!(parse_request(b"switch-config\0\0content").is_err());
         assert!(parse_request(b"switch-config\0source-without-delimiter").is_err());
         assert!(parse_request(b"reload").is_err());
         assert!(parse_request(&[0xff]).is_err());
-        assert!(parse_server_packet(b"hello version=2 uhid_ready=1 needs_config=0").is_err());
+        assert!(parse_server_packet(
+            b"hello version=1 uhid_ready=1 needs_config=0 bt_haptics=none"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn protocol_haptics_identity_round_trips_and_rejects_unknown_models() {
+        for (device, value) in [
+            (None, "none"),
+            (Some(HapticsDevice::DualSense), "dualsense"),
+            (Some(HapticsDevice::DualSenseEdge), "dualsense-edge"),
+        ] {
+            let state = ControlState {
+                uhid_ready: true,
+                needs_config: false,
+                bt_haptics: device,
+            };
+            assert_eq!(
+                hello_packet(state),
+                format!("hello version=3 uhid_ready=1 needs_config=0 bt_haptics={value}")
+                    .as_bytes()
+            );
+            assert_eq!(
+                parse_server_packet(&hello_packet(state)),
+                Ok(ServerPacket::Hello(state))
+            );
+            assert_eq!(
+                parse_server_packet(&state_packet(state)),
+                Ok(ServerPacket::State(state))
+            );
+        }
+        for value in ["0", "1", "dualshock4", "", "dualsense extra=1"] {
+            assert!(parse_server_packet(
+                format!("state uhid_ready=1 needs_config=0 bt_haptics={value}").as_bytes()
+            )
+            .is_err());
+        }
+        assert!(
+            parse_server_packet(b"hello version=2 uhid_ready=1 needs_config=0 bt_haptics=1")
+                .is_err()
+        );
     }
 
     #[test]
@@ -137,17 +181,19 @@ mod tests {
         let state = ControlState {
             uhid_ready: true,
             needs_config: false,
+            bt_haptics: None,
         };
         assert_eq!(
             hello_packet(state),
-            b"hello version=1 uhid_ready=1 needs_config=0"
+            b"hello version=3 uhid_ready=1 needs_config=0 bt_haptics=none"
         );
         assert_eq!(
             state_packet(ControlState {
                 uhid_ready: false,
                 needs_config: true,
+                bt_haptics: None,
             }),
-            b"state uhid_ready=0 needs_config=1"
+            b"state uhid_ready=0 needs_config=1 bt_haptics=none"
         );
 
         let request = ControlRequest::SwitchConfig(active_config("profile.toml", "version = 2\n"));
@@ -221,6 +267,7 @@ mod tests {
                         ControlState {
                             uhid_ready: false,
                             needs_config: true,
+                            bt_haptics: None,
                         },
                     )
                     .unwrap();
@@ -249,6 +296,7 @@ mod tests {
         let initial = ControlState {
             uhid_ready: false,
             needs_config: true,
+            bt_haptics: None,
         };
         let mut server = ControlServer::bind(dir.path(), initial).unwrap();
         let outer_epoll = Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC).unwrap();
@@ -299,6 +347,7 @@ mod tests {
         let ready = ControlState {
             uhid_ready: true,
             needs_config: false,
+            bt_haptics: None,
         };
         server.set_state(ready);
         assert_eq!(client.receive().unwrap(), Some(ServerPacket::State(ready)));
@@ -336,6 +385,7 @@ mod tests {
         let initial = ControlState {
             uhid_ready: true,
             needs_config: false,
+            bt_haptics: None,
         };
         let mut server = ControlServer::bind(dir.path(), initial).unwrap();
         let client = ControlClient::connect(&dir.socket_path()).unwrap();
@@ -369,6 +419,7 @@ mod tests {
         let initial = ControlState {
             uhid_ready: true,
             needs_config: false,
+            bt_haptics: None,
         };
         let mut server = ControlServer::bind(dir.path(), initial).unwrap();
         let mut clients = Vec::new();

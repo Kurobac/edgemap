@@ -98,7 +98,7 @@ Input order inside `handle_hidraw_input()`:
 - DS5 USB target keeps the DS5 USB source report as backing where possible. DS4 target converts input/output through DS4-specific USB report code.
 - DS5/DS4 USB byte layout helpers in `src/codec/ds5_usb.rs` and `src/codec/ds4_usb.rs` must not be reused for Bluetooth layouts; Bluetooth envelopes and CRC handling belong in `src/codec/ds5_bt.rs`.
 
-## Bluetooth haptics demo
+## Bluetooth haptics
 
 - `OutputCommand::Haptics(HapticsFrame)` is the PCM entry into the physical codec:
   32 interleaved stereo sample frames, signed 8-bit, 3 kHz (64 bytes per block).
@@ -117,13 +117,49 @@ Input order inside `handle_hidraw_input()`:
   expired samples rather than bursting old packets. A final silent frame ends
   playback. Session teardown sends silence if still connected, and disconnect
   discards the demo. Individual output failures cancel it without stopping input.
-- Control protocol v1 adds `haptics-demo` / `ok haptics-demo`; existing messages
-  are unchanged. The ACK means started, not completed. Demo requests do not alter
+- Control protocol v3 retains `haptics-demo` / `ok haptics-demo`. The ACK means
+  started, not completed. Demo requests do not alter
   configuration state. Missing controllers, USB sessions, duplicate requests and
   initial output failures return errors. Completion/later failures are logged.
-- This stage has no PipeWire endpoint. The planned sound-card lifecycle is create
-  on Bluetooth connection and destroy on disconnect; endpoint identity work is
-  deferred. Future audio producers can supply `HapticsFrame` to the same codec.
+- `edgemap daemon` creates the PipeWire sink `edgemap.dualsense` when the control
+  state reports `uhid_ready=1` with a `bt_haptics` model, and destroys it on disconnect or daemon
+  shutdown. A UHID session recreation also recreates the PCM endpoint and sink.
+  USB sessions do not create a sink. Every state transition is observed, including
+  disconnect/reconnect notifications drained together. Audio identity follows the
+  virtual DS5 target: auto preserves DualSense/Edge, forced DualSense uses 0x0ce6.
+  DS4 emulation retains the physical DualSense audio identity, matching the USB
+  source behavior. A model change recreates the sink under the same stable name.
+  If the connected PCM receiver closes before the control notification arrives,
+  Unix datagram `ECONNREFUSED` ends the old capture normally. It does not retry
+  or attach the old worker to a new session; control state owns the next start.
+- `daemon/audio.rs` runs `pw-cat` in the user's PipeWire session as an Audio/Sink:
+  interleaved F32LE, 48 kHz, FL/FR/RL/RR. A 255-tap Hamming-windowed sinc low-pass
+  (1250 Hz cutoff, about 2.65 ms group delay) precedes 16:1 decimation of RL/RR to
+  signed 8-bit stereo at 3 kHz. FL/FR are discarded; controller speaker playback
+  is not part of this implementation. The capture worker owns no physical HID fd.
+- The sink publishes `device.bus=usb`, Sony VID 0x054c, model-specific PID
+  (0x0ce6/0x0df2), manufacturer/product descriptions, nicknames, `device.class=sound`
+  and `device.form-factor=controller`. PipeWire maps the last key to PulseAudio's
+  `device.form_factor`. It remains a virtual sink, with session priority zero.
+  Existing Wine can use bus/VID/PID to construct a USB-shaped audio device path;
+  these properties do not create a sysfs USB parent or supply a ContainerId.
+- `control/haptics.rs` carries one 64-byte PCM block plus a little-endian u64
+  CLOCK_MONOTONIC timestamp over `/run/dseuhid/haptics.sock` (Unix datagram, 0666).
+  The proxy owns this socket for the Bluetooth session, drains at most 16 datagrams
+  per turn, and rejects malformed, future-dated, or more than 100 ms old blocks.
+  A nonblocking sender drops a block if the socket is full.
+- Live PCM shares the existing timerfd and physical output sequence. The queue
+  retains at most three blocks, starts with one block of buffering, and emits at
+  most one block per due tick. Late ticks discard missed blocks. Underrun sends a
+  silent block; continuous zero input does not keep physical playback active.
+  Live PCM does not select rumble/audio mode. An explicit demo is rejected while
+  live playback is active; PCM arriving during the finite demo is discarded.
+- Protocol v3 encodes `bt_haptics=none|dualsense|dualsense-edge` in hello/state
+  packets, replacing the v2 boolean. Both daemons must be updated
+  together. The control socket remains separate from binary PCM. `pw-cat` must be
+  installed for capture; audio process/socket failures are logged. The input proxy
+  continues operating when audio is unavailable. See `BT_HAPTICS_TESTING.md` for
+  the audio demo and native PipeWire integration test.
 
 ## Error handling policy
 
@@ -138,7 +174,7 @@ Input order inside `handle_hidraw_input()`:
 
 - **Config**: no default path. `-c`/`--config-path` optional — if omitted, starts in passthrough mode. edgemap is the intended way to manage config.
 - **Config switching**: `edgemap switch-config` reads and validates a configuration under the user account, then sends the source label and complete TOML content in one acknowledged seqpacket. dseuhid parses, validates, builds, and commits that in-memory content transactionally; it never opens the client-provided path. Failed applies preserve the previous mapping, runtimes, active content, and output-device setting.
-- **Control socket**: `/run/dseuhid/control.sock` is a Unix `SOCK_SEQPACKET` endpoint with at most 16 active clients and one delivered request per event-loop turn. The versioned request protocol carries `switch-config` and `haptics-demo`; hello/state packets carry `uhid_ready` and `needs_config`. Config failure replies expose only fixed category messages. `/run/dseuhid/daemon.lock` uses `flock` for atomic single-instance ownership and contains the PID only for diagnostics. Access details live in `docs/INSTALLATION_TESTING.md`.
+- **Control socket**: `/run/dseuhid/control.sock` is a Unix `SOCK_SEQPACKET` endpoint with at most 16 active clients and one delivered request per event-loop turn. The versioned request protocol carries `switch-config` and `haptics-demo`; hello/state packets carry `uhid_ready`, `needs_config`, and `bt_haptics`. Config failure replies expose only fixed category messages. `/run/dseuhid/daemon.lock` uses `flock` for atomic single-instance ownership and contains the PID only for diagnostics. Access details live in `docs/INSTALLATION_TESTING.md`.
 - **Config file limits**: `-c`, edgemap CLI, validation, and profile selection accept only regular files no larger than 64 KiB. Files are opened nonblocking and reads are independently capped, rejecting FIFO/device nodes and preventing unbounded pseudo-file reads. Runtime socket content is capped to the same size.
 - **edgemap daemon**: auto-creates `edgemap.toml` + `default.toml` under `$XDG_CONFIG_HOME/edgemap` (default `~/.config/edgemap`) on first run. Profiles in `[profiles.*]` sections with `match_process` (comm exact) and/or `match_cmdline` (substring), first match in TOML declaration order wins. Each 3-second profile scan reads each PID's required `comm`/`cmdline` data at most once. A persistent control connection reports dseuhid lifetime and UHID/config state; inotify watches `edgemap.toml` and socket recreation, while periodic/state-triggered resynchronization closes watch replacement races and recovers from queue overflow. Selected, effective, and failed config decisions advance only after acknowledged applies; an invalid selected profile may fall back to the validated base config without hiding the failure. Only `needs_config=true`, an edgemap.toml reload, or a genuinely changed profile decision makes the daemon re-inject; manual config switches otherwise remain active until the daemon chooses a different profile. Sends notifications only after acknowledged switches.
 - **edgemap single instance**: daemon mode holds an exclusive `flock` on `$XDG_STATE_HOME/edgemap/edgemap.lock` (fallback `~/.local/state/edgemap/edgemap.lock`). The file contains the PID for diagnostics; process lifetime is determined only by the kernel lock.

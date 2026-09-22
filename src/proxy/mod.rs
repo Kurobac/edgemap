@@ -26,7 +26,7 @@ mod repeat;
 mod runtime;
 mod uhid_events;
 
-use haptics::HapticsDemo;
+use haptics::{HapticsDemo, LiveHaptics};
 use pipeline::{transform, transform_timer};
 pub(crate) use repeat::validate_repeat_env;
 use repeat::RepeatInput;
@@ -82,6 +82,7 @@ pub struct Proxy {
     repeat_input: Option<RepeatInput>,
     physical_output_state: PhysicalOutputState,
     haptics_demo: Option<HapticsDemo>,
+    live_haptics: LiveHaptics,
     physical_set_report_unsupported_warned: HashSet<u8>,
     runtimes: MappingRuntimes,
 }
@@ -147,6 +148,7 @@ impl Proxy {
             repeat_input,
             physical_output_state: PhysicalOutputState::default(),
             haptics_demo: None,
+            live_haptics: LiveHaptics::default(),
             physical_set_report_unsupported_warned: HashSet::new(),
             runtimes,
         }
@@ -298,6 +300,17 @@ impl Proxy {
         out.to_vec()
     }
 
+    fn haptics_device(&self) -> crate::control::HapticsDevice {
+        use crate::control::HapticsDevice;
+        match (self.codec.target, self.source_kind) {
+            (TargetCodec::Ds5UsbForced, _) => HapticsDevice::DualSense,
+            (_, SonyDeviceKind::DualSense) => HapticsDevice::DualSense,
+            // DS4 emulation changes the gamepad only; its audio endpoint stays
+            // native to the physical DualSense, as with a USB source.
+            (_, SonyDeviceKind::DualSenseEdge) => HapticsDevice::DualSenseEdge,
+        }
+    }
+
     fn next_timing_deadline(&self) -> Option<Instant> {
         self.runtimes
             .next_deadline()
@@ -312,6 +325,7 @@ impl Proxy {
                     .as_ref()
                     .and_then(HapticsDemo::next_deadline),
             )
+            .chain(self.live_haptics.next_deadline())
             .min()
     }
 
@@ -331,7 +345,8 @@ impl Proxy {
     }
 
     fn handle_timing_tick(&mut self, seq: &mut u8, now: Instant) -> io::Result<()> {
-        let haptics_active = self.haptics_demo.is_some();
+        let haptics_active =
+            self.haptics_demo.is_some() || self.live_haptics.next_deadline().is_some();
         self.handle_haptics_tick(now);
         if haptics_active && DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(());
@@ -376,6 +391,7 @@ impl Proxy {
 
     fn clear_timing_state(&mut self) {
         self.stop_haptics_demo();
+        self.stop_live_haptics();
         self.last_frame = None;
         if let Some(repeat) = self.repeat_input.as_mut() {
             repeat.clear();
@@ -445,8 +461,28 @@ impl Proxy {
             return ExitReason::FatalError;
         }
 
+        let pcm_receiver = if self.codec.physical == crate::codec::PhysicalCodec::Ds5Bt {
+            match crate::control::haptics::PcmReceiver::bind(control.runtime_dir()) {
+                Ok(receiver) => {
+                    match ep_fd.add(receiver.as_fd(), EpollEvent::new(EpollFlags::EPOLLIN, 6)) {
+                        Ok(()) => Some(receiver),
+                        Err(error) => {
+                            error!("Bluetooth PCM socket registration failed: {error}");
+                            None
+                        }
+                    }
+                }
+                Err(error) => {
+                    error!("Bluetooth PCM socket unavailable: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let mut control_state = control.state();
         control_state.uhid_ready = true;
+        control_state.bt_haptics = pcm_receiver.as_ref().map(|_| self.haptics_device());
         control.set_state(control_state);
         info!("proxy started");
 
@@ -519,6 +555,18 @@ impl Proxy {
                                     ExitReason::FatalError
                                 }
                             };
+                        } else if fd_num == 6 {
+                            if let Some(receiver) = &pcm_receiver {
+                                let now = Instant::now();
+                                if let Err(error) = receiver.drain(|samples| {
+                                    if self.haptics_demo.is_none() {
+                                        self.live_haptics
+                                            .push(crate::codec::HapticsFrame(samples), now);
+                                    }
+                                }) {
+                                    error!("Bluetooth PCM receive failed: {error}");
+                                }
+                            }
                         } else if fd_num == 5 {
                             if ev.events().intersects(failure) {
                                 error!("timing timer fd reported a poll failure");
@@ -561,6 +609,7 @@ impl Proxy {
 
         if exit_reason == ExitReason::DeviceGone {
             self.haptics_demo = None;
+            self.live_haptics = LiveHaptics::default();
         }
         self.clear_timing_state();
         info!("proxy stopped");
@@ -1030,6 +1079,7 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
         let initial = crate::control::ControlState {
             uhid_ready: true,
             needs_config: true,
+            bt_haptics: None,
         };
         let mut server = ControlServer::bind(&dir, initial).unwrap();
         let client = crate::control::ControlClient::connect(&dir.join("control.sock")).unwrap();
@@ -1080,7 +1130,8 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
             Some(crate::control::ServerPacket::State(
                 crate::control::ControlState {
                     uhid_ready: true,
-                    needs_config: false
+                    needs_config: false,
+                    bt_haptics: None,
                 }
             ))
         );
@@ -1130,6 +1181,7 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
         let state = crate::control::ControlState {
             uhid_ready: true,
             needs_config: true,
+            bt_haptics: None,
         };
         let mut server = ControlServer::bind(&dir, state).unwrap();
         let client = crate::control::ControlClient::connect(&dir.join("control.sock")).unwrap();
@@ -1224,6 +1276,77 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
         assert!(proxy.haptics_demo.is_none());
         assert!(receive_uhid_packet(&peer).is_none());
         DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn audio_identity_tracks_dualsense_target_and_preserves_native_audio_for_ds4() {
+        use crate::control::HapticsDevice;
+        let (mut proxy, _peer) = test_proxy(MappingConfig::default());
+        for (source, target, expected) in [
+            (
+                SonyDeviceKind::DualSense,
+                TargetCodec::Ds5UsbAuto,
+                HapticsDevice::DualSense,
+            ),
+            (
+                SonyDeviceKind::DualSenseEdge,
+                TargetCodec::Ds5UsbAuto,
+                HapticsDevice::DualSenseEdge,
+            ),
+            (
+                SonyDeviceKind::DualSenseEdge,
+                TargetCodec::Ds5UsbForced,
+                HapticsDevice::DualSense,
+            ),
+            (
+                SonyDeviceKind::DualSense,
+                TargetCodec::Ds5UsbForced,
+                HapticsDevice::DualSense,
+            ),
+            (
+                SonyDeviceKind::DualSenseEdge,
+                TargetCodec::Ds4Usb,
+                HapticsDevice::DualSenseEdge,
+            ),
+            (
+                SonyDeviceKind::DualSense,
+                TargetCodec::Ds4Usb,
+                HapticsDevice::DualSense,
+            ),
+        ] {
+            proxy.source_kind = source;
+            proxy.codec.target = target;
+            assert_eq!(proxy.haptics_device(), expected);
+        }
+    }
+
+    #[test]
+    fn live_pcm_uses_timer_without_mode_output_and_stops_on_teardown() {
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (mut proxy, _uhid_peer) = test_proxy(MappingConfig::default());
+        let (physical, peer) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        proxy.codec.physical = PhysicalCodec::Ds5Bt;
+        let now = Instant::now();
+        let samples = std::array::from_fn(|i| i as i8 - 32);
+        proxy
+            .live_haptics
+            .push(crate::codec::HapticsFrame(samples), now);
+        assert!(receive_uhid_packet(&peer).is_none());
+        assert_eq!(proxy.start_haptics_demo(now).unwrap_err().0, "haptics-busy");
+        let deadline = proxy.next_timing_deadline().unwrap();
+        proxy.handle_timing_tick(&mut 0, deadline).unwrap();
+        let report = receive_uhid_packet(&peer).unwrap();
+        assert_eq!(report.len(), 142);
+        assert_eq!(report[0], 0x32);
+        assert_eq!(&report[13..77], samples.map(|s| s as u8));
+        assert!(receive_uhid_packet(&peer).is_none());
+        proxy.clear_timing_state();
+        let stop = receive_uhid_packet(&peer).unwrap();
+        assert_eq!(stop[0], 0x32);
+        assert!(stop[13..77].iter().all(|b| *b == 0));
+        assert!(proxy.next_timing_deadline().is_none());
     }
 
     #[test]

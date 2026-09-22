@@ -116,6 +116,7 @@ pub(crate) fn run(config_path: Option<String>) -> DaemonExit {
         control::ControlState {
             uhid_ready: false,
             needs_config: active_config.is_none(),
+            bt_haptics: None,
         },
     )
     .unwrap_or_else(|e| {
@@ -241,6 +242,7 @@ pub(crate) fn run(config_path: Option<String>) -> DaemonExit {
                 active_config = config;
                 let mut state = control.state();
                 state.uhid_ready = false;
+                state.bt_haptics = None;
                 state.needs_config = false;
                 control.set_state(state);
                 info!("output device changed; recreating virtual HID device");
@@ -251,6 +253,7 @@ pub(crate) fn run(config_path: Option<String>) -> DaemonExit {
                     control.set_state(control::ControlState {
                         uhid_ready: false,
                         needs_config: true,
+                        bt_haptics: None,
                     });
                 }
                 info!("controller disconnected; waiting for reconnection");
@@ -295,6 +298,7 @@ mod daemon_tests {
             control::ControlState {
                 uhid_ready: false,
                 needs_config: true,
+                bt_haptics: None,
             },
         )
         .unwrap();

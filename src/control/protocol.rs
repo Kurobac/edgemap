@@ -1,13 +1,44 @@
 use crate::config::ActiveConfig;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub(super) const MAX_CONFIG_SOURCE_SIZE: usize = 4096;
 pub(super) const SWITCH_CONFIG_PREFIX: &[u8] = b"switch-config\0";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HapticsDevice {
+    DualSense,
+    DualSenseEdge,
+}
+
+impl HapticsDevice {
+    pub fn product_id(self) -> u16 {
+        match self {
+            Self::DualSense => 0x0ce6,
+            Self::DualSenseEdge => 0x0df2,
+        }
+    }
+
+    pub fn product_name(self) -> &'static str {
+        match self {
+            Self::DualSense => "DualSense Wireless Controller",
+            Self::DualSenseEdge => "DualSense Edge Wireless Controller",
+        }
+    }
+}
+
+fn haptics_device_field(device: Option<HapticsDevice>) -> &'static str {
+    match device {
+        None => "none",
+        Some(HapticsDevice::DualSense) => "dualsense",
+        Some(HapticsDevice::DualSenseEdge) => "dualsense-edge",
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlState {
     pub uhid_ready: bool,
     pub needs_config: bool,
+    pub bt_haptics: Option<HapticsDevice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,18 +91,20 @@ fn bool_digit(value: bool) -> char {
 
 pub(super) fn hello_packet(state: ControlState) -> Vec<u8> {
     format!(
-        "hello version={PROTOCOL_VERSION} uhid_ready={} needs_config={}",
+        "hello version={PROTOCOL_VERSION} uhid_ready={} needs_config={} bt_haptics={}",
         bool_digit(state.uhid_ready),
-        bool_digit(state.needs_config)
+        bool_digit(state.needs_config),
+        haptics_device_field(state.bt_haptics)
     )
     .into_bytes()
 }
 
 pub(super) fn state_packet(state: ControlState) -> Vec<u8> {
     format!(
-        "state uhid_ready={} needs_config={}",
+        "state uhid_ready={} needs_config={} bt_haptics={}",
         bool_digit(state.uhid_ready),
-        bool_digit(state.needs_config)
+        bool_digit(state.needs_config),
+        haptics_device_field(state.bt_haptics)
     )
     .into_bytes()
 }
@@ -86,6 +119,10 @@ fn parse_state_fields(input: &str) -> Result<ControlState, String> {
         .next()
         .and_then(|field| field.strip_prefix("needs_config="))
         .ok_or_else(|| "missing needs_config field".to_string())?;
+    let bt = fields
+        .next()
+        .and_then(|field| field.strip_prefix("bt_haptics="))
+        .ok_or_else(|| "missing bt_haptics field".to_string())?;
     if fields.next().is_some() {
         return Err("unexpected state fields".to_string());
     }
@@ -97,6 +134,12 @@ fn parse_state_fields(input: &str) -> Result<ControlState, String> {
     Ok(ControlState {
         uhid_ready: parse_bool(ready)?,
         needs_config: parse_bool(needs)?,
+        bt_haptics: match bt {
+            "none" => None,
+            "dualsense" => Some(HapticsDevice::DualSense),
+            "dualsense-edge" => Some(HapticsDevice::DualSenseEdge),
+            _ => return Err(format!("invalid Bluetooth haptics device {bt:?}")),
+        },
     })
 }
 

@@ -9,11 +9,15 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(crate) fn drain_control_state(
     client: &control::ControlClient,
+    mut observe: impl FnMut(control::ControlState),
 ) -> Result<Option<control::ControlState>, String> {
     let mut latest = None;
     loop {
         match client.receive().map_err(|e| e.to_string())? {
-            Some(control::ServerPacket::State(state)) => latest = Some(state),
+            Some(control::ServerPacket::State(state)) => {
+                observe(state);
+                latest = Some(state);
+            }
             Some(packet) => return Err(format!("unexpected control packet: {packet:?}")),
             None => return Ok(latest),
         }
@@ -184,10 +188,12 @@ mod tests {
     const INITIAL: ControlState = ControlState {
         uhid_ready: false,
         needs_config: true,
+        bt_haptics: None,
     };
     const READY: ControlState = ControlState {
         uhid_ready: true,
         needs_config: false,
+        bt_haptics: None,
     };
 
     fn with_connection(test: impl FnOnce(&mut ControlServer, &ControlClient)) {
@@ -258,8 +264,8 @@ mod tests {
                     let fd = reply_to_request(
                         server,
                         &[
-                            b"state uhid_ready=1 needs_config=1",
-                            b"state uhid_ready=1 needs_config=0",
+                            b"state uhid_ready=1 needs_config=1 bt_haptics=none",
+                            b"state uhid_ready=1 needs_config=0 bt_haptics=none",
                         ],
                         false,
                     );
@@ -290,7 +296,7 @@ mod tests {
                 "validation-failed: invalid config",
             ),
             (
-                vec![b"hello version=1 uhid_ready=1 needs_config=0".as_slice()],
+                vec![b"hello version=3 uhid_ready=1 needs_config=0 bt_haptics=none".as_slice()],
                 false,
                 "unexpected control response",
             ),
@@ -319,20 +325,47 @@ mod tests {
     #[test]
     fn state_drain_keeps_latest_state_and_rejects_unsolicited_ack() {
         with_connection(|server, client| {
-            assert_eq!(drain_control_state(client).unwrap(), None);
+            assert_eq!(drain_control_state(client, |_| {}).unwrap(), None);
             server.set_state(ControlState {
                 uhid_ready: true,
                 needs_config: true,
+                bt_haptics: None,
             });
             server.set_state(READY);
-            assert_eq!(drain_control_state(client).unwrap(), Some(READY));
-            assert_eq!(drain_control_state(client).unwrap(), None);
+            let mut observed = Vec::new();
+            assert_eq!(
+                drain_control_state(client, |state| observed.push(state)).unwrap(),
+                Some(READY)
+            );
+            assert_eq!(observed.len(), 2);
+            assert!(observed[0].needs_config);
+            assert_eq!(observed[1], READY);
+            assert_eq!(drain_control_state(client, |_| {}).unwrap(), None);
             client.send_request(&request()).unwrap();
             let pending = server.drain_requests().unwrap().pop().unwrap();
             server.reply_ok(pending.client, &pending.request);
-            assert!(drain_control_state(client)
+            assert!(drain_control_state(client, |_| {})
                 .unwrap_err()
                 .contains("unexpected control packet"));
+        });
+    }
+
+    #[test]
+    fn state_drain_observes_disconnect_even_when_reconnect_is_already_queued() {
+        with_connection(|server, client| {
+            let bt = ControlState {
+                bt_haptics: Some(control::HapticsDevice::DualSenseEdge),
+                ..READY
+            };
+            server.set_state(bt);
+            server.set_state(INITIAL);
+            server.set_state(bt);
+            let mut observed = Vec::new();
+            assert_eq!(
+                drain_control_state(client, |state| observed.push(state.bt_haptics)).unwrap(),
+                Some(bt)
+            );
+            assert_eq!(observed, [bt.bt_haptics, None, bt.bt_haptics]);
         });
     }
 

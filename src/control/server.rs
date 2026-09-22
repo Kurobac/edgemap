@@ -71,6 +71,12 @@ impl ControlServer {
         self.epoll.0.as_fd()
     }
 
+    pub fn runtime_dir(&self) -> &Path {
+        self.socket_path
+            .parent()
+            .expect("control socket has runtime directory")
+    }
+
     pub fn state(&self) -> ControlState {
         self.state
     }

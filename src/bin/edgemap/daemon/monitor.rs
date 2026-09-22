@@ -500,6 +500,7 @@ mod tests {
                         control::ControlState {
                             uhid_ready: true,
                             needs_config: false,
+                            bt_haptics: None,
                         },
                     )
                     .unwrap(),
@@ -537,6 +538,7 @@ mod tests {
             control::ControlState {
                 uhid_ready: true,
                 needs_config: false,
+                bt_haptics: None,
             },
         )
         .unwrap();

@@ -1,3 +1,4 @@
+mod audio;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::time::{Duration, Instant};
@@ -403,6 +404,7 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
         std::process::exit(1);
     });
 
+    let mut audio = audio::AudioManager::default();
     let mut apply_tracker = ConfigApplyTracker::default();
     let mut control_client: Option<control::ControlClient> = None;
     let mut control_state: Option<control::ControlState> = None;
@@ -434,7 +436,9 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
             let mut disconnect_reason = None;
 
             if let Some(client) = control_client.as_ref() {
-                match drain_control_state(client) {
+                match drain_control_state(client, |state| {
+                    audio.update(state.bt_haptics.filter(|_| state.uhid_ready))
+                }) {
                     Ok(Some(state)) => control_state = Some(state),
                     Ok(None) => {}
                     Err(e) => {
@@ -490,6 +494,8 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
                 }
             }
         }
+
+        audio.update(control_state.and_then(|state| state.bt_haptics.filter(|_| state.uhid_ready)));
 
         if !control_state.is_some_and(|state| state.uhid_ready) {
             if let Err(e) = wait_for_daemon_activity(
@@ -622,6 +628,7 @@ pub(crate) fn cmd_daemon(args: &[String]) -> ! {
     if let Err(error) = &run_result {
         log::error!("{error}");
     }
+    drop(audio);
     log::info!("edgemap daemon stopped");
     std::process::exit(if run_result.is_ok() { 0 } else { 1 });
 }

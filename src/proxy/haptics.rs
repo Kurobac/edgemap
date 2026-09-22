@@ -8,6 +8,57 @@ const TOTAL_SAMPLES: u64 = RIGHT_START + TONE_SAMPLES;
 const SILENCE_FRAME: u64 = TOTAL_SAMPLES.div_ceil(HapticsFrame::FRAMES as u64);
 const FRAME_NUMERATOR_NS: u64 = HapticsFrame::FRAMES as u64 * 1_000_000_000;
 
+const PCM_PERIOD: Duration = Duration::from_nanos(FRAME_NUMERATOR_NS.div_ceil(HapticsFrame::RATE));
+
+#[derive(Default)]
+pub(super) struct LiveHaptics {
+    frames: std::collections::VecDeque<HapticsFrame>,
+    deadline: Option<Instant>,
+}
+
+impl LiveHaptics {
+    pub(super) fn push(&mut self, frame: HapticsFrame, now: Instant) {
+        if self.deadline.is_none() && frame == HapticsFrame::SILENCE {
+            return;
+        }
+        if self.frames.len() == 3 {
+            self.frames.pop_front();
+        }
+        self.frames.push_back(frame);
+        // One block of initial buffering absorbs PipeWire quantum boundaries.
+        self.deadline.get_or_insert(now + PCM_PERIOD);
+    }
+
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    pub(super) fn take_due_frame(&mut self, now: Instant) -> Option<HapticsFrame> {
+        let deadline = self.deadline?;
+        if now < deadline {
+            return None;
+        }
+        let skipped = (now.duration_since(deadline).as_nanos() / PCM_PERIOD.as_nanos()) as usize;
+        for _ in 0..skipped.min(self.frames.len()) {
+            self.frames.pop_front();
+        }
+        if let Some(frame) = self.frames.pop_front() {
+            if frame == HapticsFrame::SILENCE
+                && self.frames.iter().all(|f| *f == HapticsFrame::SILENCE)
+            {
+                self.frames.clear();
+                self.deadline = None;
+            } else {
+                self.deadline = Some(deadline + PCM_PERIOD * (skipped as u32 + 1));
+            }
+            Some(frame)
+        } else {
+            self.deadline = None;
+            Some(HapticsFrame::SILENCE)
+        }
+    }
+}
+
 /// Finite PCM producer for hardware testing. Absolute sample time keeps a
 /// late wakeup from replaying old haptics or extending the test indefinitely.
 pub(super) struct HapticsDemo {
@@ -64,6 +115,57 @@ impl HapticsDemo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_queue_bounds_latency_skips_late_frames_and_stops_on_underrun() {
+        let start = Instant::now();
+        let mut live = LiveHaptics::default();
+        live.push(HapticsFrame::SILENCE, start);
+        assert!(live.next_deadline().is_none());
+        for i in 1..=5 {
+            live.push(HapticsFrame([i; 64]), start);
+        }
+        assert_eq!(live.frames.len(), 3);
+        assert!(live.take_due_frame(start).is_none());
+        assert_eq!(
+            live.take_due_frame(start + PCM_PERIOD),
+            Some(HapticsFrame([3; 64]))
+        );
+        assert_eq!(
+            live.take_due_frame(start + PCM_PERIOD * 3),
+            Some(HapticsFrame([5; 64]))
+        );
+        assert!(live.take_due_frame(start + PCM_PERIOD * 3).is_none());
+        assert_eq!(
+            live.take_due_frame(start + PCM_PERIOD * 4),
+            Some(HapticsFrame::SILENCE)
+        );
+        assert!(live.next_deadline().is_none());
+        live.push(HapticsFrame([7; 64]), start + PCM_PERIOD * 5);
+        assert_eq!(
+            live.take_due_frame(start + Duration::from_secs(10)),
+            Some(HapticsFrame::SILENCE)
+        );
+        assert!(live.next_deadline().is_none());
+    }
+
+    #[test]
+    fn continuous_idle_capture_sends_one_stop_and_releases_playback() {
+        let start = Instant::now();
+        let mut live = LiveHaptics::default();
+        live.push(HapticsFrame([10; 64]), start);
+        live.take_due_frame(start + PCM_PERIOD).unwrap();
+        live.push(HapticsFrame::SILENCE, start + PCM_PERIOD);
+        assert_eq!(
+            live.take_due_frame(start + PCM_PERIOD * 2),
+            Some(HapticsFrame::SILENCE)
+        );
+        for _ in 0..10 {
+            live.push(HapticsFrame::SILENCE, start + PCM_PERIOD * 3);
+        }
+        assert!(live.next_deadline().is_none());
+        assert!(live.frames.is_empty());
+    }
 
     #[test]
     fn demo_separates_channels_and_finishes_with_silence() {

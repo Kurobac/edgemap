@@ -106,7 +106,7 @@ pub enum PhysicalCodec {
     Ds5Bt,
 }
 
-pub(crate) const DEFAULT_BT_HAPTICS_BUFFER: u8 = 32;
+pub(crate) const DEFAULT_BT_HAPTICS_BUFFER: u8 = 64;
 
 #[derive(Debug)]
 pub struct PhysicalOutputState {

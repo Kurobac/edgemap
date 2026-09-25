@@ -13,7 +13,6 @@ RestartSec=2
 MemoryMax=64M
 TasksMax=32
 LimitNOFILE=128
-LimitCORE=0
 
 [Install]
 WantedBy=multi-user.target

@@ -123,11 +123,13 @@ Input order inside `handle_hidraw_input()`:
 - `edgemap daemon` creates the PipeWire sink `edgemap.dualsense` when the control
   state reports `uhid_ready=1` with a `bt_haptics` model, and destroys it on disconnect or daemon
   shutdown. A UHID session recreation also recreates the PCM endpoint and sink.
-  USB sessions do not create a sink. Every state transition is observed, including
+  USB sessions and DS4 output mode do not create a BT PCM endpoint or virtual
+  audio sink. Switching to DS4 tears down the audio session; switching back to
+  auto or DualSense recreates it for a Bluetooth source.
+  Every state transition is observed, including
   disconnect/reconnect notifications drained together. Audio identity follows the
   virtual DS5 target: auto preserves DualSense/Edge, forced DualSense uses 0x0ce6.
-  DS4 emulation retains the physical DualSense audio identity, matching the USB
-  source behavior. A model change recreates the sink under the same stable name.
+  A model change recreates the sink under the same stable name.
   If the connected PCM receiver closes before the control notification arrives,
   Unix datagram `ECONNREFUSED` ends the old capture normally. It does not retry
   or attach the old worker to a new session; control state owns the next start.

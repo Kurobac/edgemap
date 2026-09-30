@@ -7,7 +7,9 @@ Genshin Impact works because it enumerates all audio endpoints without requiring
 
 ## Root Cause
 
-DualSense HD haptics use the USB audio interface (`snd-usb-audio`), not HID.
+With a USB-connected controller, DualSense HD haptics use the USB audio interface
+(`snd-usb-audio`). With a Bluetooth-connected controller, edgemap provides the
+audio endpoint through PipeWire and forwards its haptics samples over Bluetooth HID.
 Windows games correlate the HID device with the audio device via **ContainerId** (a GUID):
 
 ```
@@ -66,6 +68,24 @@ USB-topology-based to a fixed value. ContainerId's sole purpose is cross-device 
 as long as HID and Audio remain consistent, there is no functional impact.
 Multiple DualSense pads would share the same ContainerId (dseuhid only virtualizes one).
 
+### Bluetooth Audio Endpoint
+
+For Bluetooth sources with `output_device = "auto"` or `"dualsense"`, edgemap
+creates the PipeWire sink `edgemap.dualsense`. It exposes Sony VID `054C` and the
+selected DualSense PID (`0CE6` or `0DF2`), but has no physical USB parent in sysfs.
+The USB topology-based audio patch therefore needs an additional rule for this
+virtual endpoint.
+
+Apply `proton-edgemap-audio-containerid.patch` from
+[proton-eg-patch](https://github.com/Kurobac/proton-eg-patch) together with the
+base DualSense ContainerId patch. In `winepulse.drv`, the additional patch assigns
+the same fixed ContainerId to the `edgemap.dualsense` render endpoint when its
+Sony VID/PID match and its existing ContainerId is empty. This lets games such as
+Cyberpunk 2077 associate the virtual HID controller with the Bluetooth audio sink.
+
+DS4 output mode disables edgemap's virtual audio endpoint. USB-connected
+controllers continue to use their physical USB audio device.
+
 ## Build
 
 ```bash
@@ -76,6 +96,8 @@ Multiple DualSense pads would share the same ContainerId (dseuhid only virtualiz
 # 2. Apply patch from the proton-eg-patch repository
 cd <wine-src>
 curl -L https://raw.githubusercontent.com/Kurobac/proton-eg-patch/main/patches/proton-dualsense-containerid.patch | patch -p1
+# For edgemap Bluetooth audio, also apply:
+curl -L https://raw.githubusercontent.com/Kurobac/proton-eg-patch/main/patches/proton-edgemap-audio-containerid.patch | patch -p1
 
 # 3. Build
 ./autogen.sh
@@ -118,5 +140,6 @@ grep "0000054C" ~/steam-1091500.log
 ## Related Files
 
 - [proton-dualsense-containerid.patch](https://github.com/Kurobac/proton-eg-patch/blob/main/patches/proton-dualsense-containerid.patch) — patch file for ValveSoftware/wine
+- [proton-edgemap-audio-containerid.patch](https://github.com/Kurobac/proton-eg-patch/blob/main/patches/proton-edgemap-audio-containerid.patch) — additional winepulse association for the Bluetooth audio sink
 - [proton-eg-patch](https://github.com/Kurobac/proton-eg-patch) — maintained Proton patch repository
 - This issue cannot be fixed on the dseuhid side (kernel UHID interface does not support setting sysfs USB parent)

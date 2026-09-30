@@ -81,6 +81,7 @@ Run `edgemap create-config` to print a template with full inline documentation.
 | Event-driven hotplug | libudev device discovery with immediate controller add/remove handling |
 | Native HID behavior | DS5 USB target keeps source backing where possible; BT physical output wraps USB target output into the DS5 BT main-output envelope |
 | Regular DualSense | DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported over USB and Bluetooth source hidraw |
+| Bluetooth HD haptics | PipeWire virtual audio sink forwards game audio haptics to a Bluetooth DualSense or Edge with `auto` or `dualsense` output |
 | DSE→DS virtualization | `output_device = "dualsense"` makes Edge appear as regular DS for game compatibility |
 | DualShock 4 target (Beta) | `output_device = "dualshock4"` exposes a DS4-compatible UHID target for native DS4 games |
 | GET_REPORT cache | DS5 USB/BT physical devices read calibration/firmware data on startup |
@@ -133,12 +134,7 @@ DualShock 4 (`054C:09CC`, `Wireless Controller`). This is intended for games
 with native DS4 support while keeping dseuhid's remap/combo/macro pipeline.
 
 For best Proton compatibility, use the DS4 UHID MI_03 identity patch from
-[proton-eg-patch](https://github.com/Kurobac/proton-eg-patch). Tests show that
-some native DS4 games require the Windows device path to look like
-`VID_054C&PID_09CC&MI_03` with version `0100` before they perform the complete
-Sony feature init sequence (`0x12 -> 0xA3 -> 0x14 -> 0x02`). Without the patch,
-some games still accept buttons and show Sony icons, while others may only do a
-partial init or ignore the controller.
+[proton-eg-patch](https://github.com/Kurobac/proton-eg-patch).
 
 ### Bluetooth source support
 
@@ -150,6 +146,11 @@ Bluetooth source input is decoded into the same remap/combo/macro pipeline as
 USB input. DS5 USB target output is wrapped back into the DualSense Bluetooth
 main-output report, so normal vibration, player LEDs, mic LED, lightbar, and
 adaptive-trigger payloads can work when games use the main output path.
+
+For `output_device = "auto"` or `"dualsense"`, `edgemap daemon` also creates a
+four-channel PipeWire sound device while the Bluetooth controller is connected.
+Games can send native HD haptics to its rear channels, which are converted and
+sent to the controller over Bluetooth. 
 
 Bluetooth SET_REPORT / vendor feature-report forwarding is not implemented.
 Known vendor/test commands are dropped, so hardware-test tools may miss some
@@ -179,7 +180,8 @@ target repeat is disabled by default and can be enabled with
 - Root for `dseuhid` only
 - `python-pyqt6` for GUI support (optional)
 - `libnotify` for profile-switch notifications (optional)
-- Configuration files must be regular files no larger than 64 KiB
+- PipeWire and `pw-cat` for Bluetooth HD haptics (optional)
+- `libopus.so.0` for experimental Bluetooth speaker playback (optional)
 
 ## Special Thanks
 

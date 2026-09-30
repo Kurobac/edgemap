@@ -1,10 +1,14 @@
-# edgemap — Project Status (2026-08-16)
+# edgemap — Project Status (2026-10-01)
 
 ## Overview
 
 UHID proxy for DualSense and DualSense Edge controllers (PID 0x0CE6 / 0x0DF2) over USB or Bluetooth source hidraw. Two binaries: `dseuhid` (daemon, root) and `edgemap` (user CLI). Reads physical DualSense input via `/dev/hidraw`, decodes it through a source codec, applies mappings from source frames and monotonic timing deadlines, and emits a virtual USB HID target through `/dev/uhid`. Native Sony behavior is preserved through explicit codec paths rather than unconditional raw passthrough.
 
 Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/uhid` and `/dev/hidraw` access (daemon only). Kernel compatibility: tested 7.0, should work 6.7+, may work 5.12+.
+
+Bluetooth HD haptics use a four-channel PipeWire sound device managed by the user
+daemon. It is available with `auto` or `dualsense` output and follows the
+controller session. Experimental speaker playback is opt-in.
 
 ## Version History
 
@@ -48,6 +52,17 @@ Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/
 | v1.2.1 | `b22c909` | **Control-plane hardening**: generic config errors, bounded regular-file loading, client/request limits, and systemd resource ceilings; 223 Rust + 21 GUI tests |
 | v1.3.0 | `f17697e` | **Architecture and GUI overhaul**: content-based config switching, responsibility-focused Rust modules, capability-driven Python package, and unified release tooling; 171 Rust + 30 GUI tests |
 | v1.3.1 | — | **Correctness and release hardening**: split touch handling, strict config/daemon state, ownership-aware deadline scheduling, corrected defaults and durable GUI saves, and verified release payloads; 240 Rust + 35 GUI tests |
+| v1.4.0 (prepared) | — | **Bluetooth HD haptics**: automatic PipeWire audio bridge, output-aware audio lifecycle, configurable controller buffering, and optional experimental speaker playback |
+
+## v1.4.0 Release Notes
+
+- Added native audio-based HD haptics for Bluetooth DualSense and DualSense Edge. `edgemap daemon` creates a four-channel PipeWire sound device and forwards the rear channels through the Bluetooth PCM transport. The audio endpoint follows the selected DualSense identity; games requiring HID/audio ContainerId association can use the corresponding patch from [proton-eg-patch](https://github.com/Kurobac/proton-eg-patch).
+- Audio availability follows `output_device`: `auto` preserves the physical DualSense/Edge identity, `dualsense` uses the regular DualSense identity, and `dualshock4` disables the virtual audio sink and PCM endpoint. Disconnects and output-mode changes clean up the audio session; switching back to a DualSense target recreates it.
+- The controller haptics buffer defaults to `64` for stable short effects. `DSEUHID_BT_HAPTICS_BUFFER` on `dseuhid` accepts decimal values from `1` to `255`; restart the daemon to apply a change. The buffer value is a protocol setting, not a duration in milliseconds.
+- Added opt-in experimental controller speaker playback with `EDGEMAP_SPEAKER_DEMO=1` on `edgemap daemon`. Front-channel speaker audio and rear-channel haptics can play together. `libopus.so.0` is loaded when this feature starts; native game speaker behavior remains unverified.
+- Bluetooth audio requires PipeWire and `pw-cat`; Opus is an optional speaker dependency. The installer warns when `pw-cat` is missing. Upgrade both binaries together and restart both services because the control protocol now includes the audio device model.
+- Improved audio lifecycle handling during configuration changes and receiver shutdown, and corrected queued audio timing after overflow. Removed `LimitCORE=0` from the service units so core-dump limits follow system defaults.
+- Expanded regression coverage for codec boundaries, configuration transactions, controller/session lifecycle, GUI save failures, and Bluetooth audio. The default suite contains 279 Rust tests and 44 GUI tests, with four additional Rust tests requiring a dedicated PipeWire or dependency-isolation environment.
 
 ## v1.3.1 Release Notes
 
@@ -217,6 +232,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - DS5 USB target keeps the DS5 USB source report as backing where possible. DS4 target converts input/output through DS4-specific USB report code.
 - DS5/DS4 USB byte layout helpers live in their protocol-specific `src/codec/` modules; transport-neutral controller state lives in `src/model.rs`.
 - DS5 BT source input uses a BT-specific codec and USB-compatible backing; DS5 BT physical output wraps USB target output into the 0x31 Bluetooth main-output envelope. BT physical GET_REPORT cache validates the 0xA3 feature CRC and keeps full-size 0x05/0x20 reports for the USB virtual target.
+- Bluetooth audio uses 3 kHz signed 8-bit stereo haptics in `0x32` reports; experimental speaker playback combines haptics and Opus in `0x36` reports. The proxy enables the PCM endpoint only for Bluetooth sources with a DualSense target.
 
 ### Error Handling Policy
 - Bad or short input frames are dropped. They are not raw-forwarded to the virtual target.
@@ -273,16 +289,16 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Multi-device: warn if more than one DualSense detected
 - Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
 
-### Rust Tests (240 total, all passing)
+### Rust Tests (279 default-suite tests, 4 additional environment-dependent tests)
 
 | Target | Tests | Coverage |
 |--------|-------|----------|
-| library | 101 | capabilities, typed config validation/compilation, ownership-aware mapping, bounded loading, control protocol/limits, daemon locks, keycodes, and signalfd shutdown |
-| `dseuhid` | 96 | codec/default-state formats, device discovery, desired keyboard state, source/timer pipeline transforms, deadline/repeat scheduling, daemon/session policy, and UHID parsing |
-| `edgemap` | 26 | XDG paths, declaration-order profile matching, selected/effective apply state, inotify/runtime resynchronization, child reaping, and daemon state transitions |
-| CLI integration | 17 | help/error streams, ambiguous input rejection, exit behavior, create/validate output, and capabilities TOML |
+| library | 105 | capabilities, typed config validation/compilation, ownership-aware mapping, bounded loading, control protocol/limits, PCM packets, daemon locks, keycodes, and signalfd shutdown |
+| `dseuhid` | 119 | codec/default-state formats, Bluetooth audio packets and buffering, output-aware PCM lifecycle, device discovery, desired keyboard state, source/timer transforms, deadline scheduling, daemon/session policy, and UHID parsing |
+| `edgemap` | 37 + 4 environment-dependent | XDG paths, declaration-order profile matching, selected/effective apply state, inotify/runtime resynchronization, child reaping, audio filtering/encoding, PipeWire capture, and daemon state transitions |
+| CLI integration | 18 | help/error streams, ambiguous input rejection, exit behavior, create/validate output, and capabilities TOML |
 
-### GUI Tests (35 total, PyQt6 offscreen)
+### GUI Tests (44 total, PyQt6 offscreen)
 
 Coverage includes capability-contract parsing, private-package launcher resolution and Python-version rejection, atomic file/directory fsync ordering, profile schema errors, save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device serialization, DS4 selection warning behavior, keyboard picker state, action-button styling, and Rust validator compatibility.
 

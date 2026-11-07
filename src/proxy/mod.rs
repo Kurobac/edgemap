@@ -417,13 +417,15 @@ impl Proxy {
     pub fn run(&mut self, shutdown: &ShutdownSignal, control: &mut ControlServer) -> ExitReason {
         DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
 
+        let mut control_state = control.state();
         if self.force_audio_haptics {
             if let Err(error) = self.select_audio_haptics() {
-                return if is_disconnect_io_error(&error) {
-                    ExitReason::DeviceGone
-                } else {
-                    ExitReason::FatalError
-                };
+                if is_disconnect_io_error(&error) {
+                    return ExitReason::DeviceGone;
+                }
+                warn!("could not enable forced audio haptics: {error}; continuing with game-controlled haptics");
+                self.force_audio_haptics = false;
+                control_state.needs_config = true;
             }
         }
 
@@ -504,7 +506,6 @@ impl Proxy {
         } else {
             None
         };
-        let mut control_state = control.state();
         control_state.uhid_ready = true;
         control_state.bt_haptics = pcm_receiver.as_ref().and(haptics_device);
         control.set_state(control_state);
@@ -1256,6 +1257,76 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
                 assert_eq!(filtered[offset..offset + size], expected);
             }
         }
+    }
+
+    #[test]
+    fn failed_startup_haptics_keeps_input_running_and_allows_config_reapply() {
+        use crate::control::{ControlClient, ControlState, ServerPacket};
+        use nix::poll::{poll, PollFd, PollFlags};
+
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("proxy-haptics-start-{}", std::process::id()));
+        let initial = ControlState {
+            uhid_ready: false,
+            needs_config: false,
+            bt_haptics: None,
+        };
+        let mut server = ControlServer::bind(&dir, initial).unwrap();
+        let client = ControlClient::connect(&dir.join("control.sock")).unwrap();
+        assert!(server.drain_requests().unwrap().is_empty());
+        assert_eq!(
+            client.receive().unwrap(),
+            Some(ServerPacket::Hello(initial))
+        );
+
+        let config = ActiveConfig::from_content(
+            "pcm.toml".into(),
+            "version = 2\nforce_audio_haptics = true\n[cross]\nremap = \"circle\"".into(),
+        )
+        .unwrap();
+        let (mut proxy, uhid_peer) =
+            test_proxy(config.parse().unwrap().to_mapping_config().unwrap());
+        proxy.active_config = Some(config.clone());
+        proxy.force_audio_haptics = true;
+        let (physical, peer) = packet_pair();
+        // A full nonblocking output queue fails the initial mode write with EAGAIN.
+        while send(physical.as_raw_fd(), &[0; 48], MsgFlags::MSG_NOSIGNAL).is_ok() {}
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        let worker = std::thread::spawn(move || {
+            let mut input = [0; 64];
+            input[0] = 1;
+            input[8] = 0x28; // Cross pressed, neutral D-pad.
+            send_test_packet(&peer, &input);
+            let mut fds = [PollFd::new(uhid_peer.as_fd(), PollFlags::POLLIN)];
+            assert_eq!(poll(&mut fds, 3000u16).unwrap(), 1);
+            let mapped = receive_uhid_packet(&uhid_peer).unwrap();
+            assert_eq!(mapped[6 + 8] & 0x60, 0x40); // Circle, as configured.
+            assert_eq!(
+                client.receive().unwrap(),
+                Some(ServerPacket::State(ControlState {
+                    uhid_ready: true,
+                    needs_config: true,
+                    bt_haptics: None,
+                }))
+            );
+
+            while receive_uhid_packet(&peer).is_some() {}
+            client
+                .send_request(&ControlRequest::SwitchConfig(config))
+                .unwrap();
+            let mut fds = [PollFd::new(peer.as_fd(), PollFlags::POLLIN)];
+            assert_eq!(poll(&mut fds, 3000u16).unwrap(), 1);
+            assert_eq!(receive_uhid_packet(&peer).unwrap()[..2], [2, 1]);
+            uhid_peer // Keep UHID open while the physical peer disconnects.
+        });
+        assert_eq!(
+            proxy.run(&ShutdownSignal::new().unwrap(), &mut server),
+            ExitReason::DeviceGone
+        );
+        worker.join().unwrap();
+        assert!(proxy.force_audio_haptics);
+        assert!(!server.state().needs_config);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

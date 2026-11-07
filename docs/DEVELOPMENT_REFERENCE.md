@@ -123,6 +123,9 @@ Input order inside `handle_hidraw_input()`:
   DS4/DS5 decoding and before physical encoding. Trigger and light updates pass
   through. Omitting the field or setting it to false returns mode selection to
   the game on its next output. Switching this field alone keeps the UHID session.
+  A failed mode write during startup keeps the loaded input mapping active with
+  game-controlled haptics and sets `needs_config` for reapplication. A disconnect
+  still ends the session. A failed hot switch preserves the previous live config.
   Session teardown sends silence if still connected; disconnect discards queued
   audio. Individual output failures stop live playback without stopping input.
 - `edgemap daemon` creates the PipeWire sink `edgemap.dualsense` when the control

@@ -116,19 +116,22 @@ Input order inside `handle_hidraw_input()`:
   value of 64. A value of 32 produced intermittent missed short haptics during
   repeated Genshin activity-page switching; 64 was more stable in that test.
   Example: `sudo env DSEUHID_BT_HAPTICS_BUFFER=32 ./target/debug/dseuhid`.
-- `proxy/output.rs` owns the shared physical write/error path. Ordinary game
-  output retains its flags. No rumble/PCM priority policy is applied.
+- `proxy/output.rs` owns the shared physical write/error path. The optional top-level
+  `force_audio_haptics = true` in a mapping TOML selects grip PCM when the
+  configuration takes effect and at session startup. Game control reports then
+  have the rumble mode, enhanced rumble flag and motor strengths filtered after
+  DS4/DS5 decoding and before physical encoding. Trigger and light updates pass
+  through. Omitting the field or setting it to false returns mode selection to
+  the game on its next output. Switching this field alone keeps the UHID session.
   Session teardown sends silence if still connected; disconnect discards queued
   audio. Individual output failures stop live playback without stopping input.
 - `edgemap daemon` creates the PipeWire sink `edgemap.dualsense` when the control
   state reports `uhid_ready=1` with a `bt_haptics` model, and destroys it on disconnect or daemon
   shutdown. A UHID session recreation also recreates the PCM endpoint and sink.
-  USB sessions and DS4 output mode do not create a BT PCM endpoint or virtual
-  audio sink. Switching to DS4 tears down the audio session; switching back to
-  auto or DualSense recreates it for a Bluetooth source.
+  Every Bluetooth target exposes the PCM endpoint. USB uses the physical audio device.
   Every state transition is observed, including
   disconnect/reconnect notifications drained together. Audio identity follows the
-  virtual DS5 target: auto preserves DualSense/Edge, forced DualSense uses 0x0ce6.
+  physical DualSense/Edge for auto and DS4 targets. Forced DualSense uses 0x0ce6.
   A model change recreates the sink under the same stable name.
   If the connected PCM receiver closes before the control notification arrives,
   Unix datagram `ECONNREFUSED` ends the old capture normally. It does not retry

@@ -120,13 +120,9 @@ pub(super) fn encode_input(
     }
 }
 
-pub(super) fn decode_output(data: &[u8]) -> Ds4UsbOutput {
-    Ds4UsbOutput { raw: data.to_vec() }
-}
-
-pub(super) fn convert_output_to_ds5(ds4: &[u8]) -> [u8; 63] {
-    let mut ds5 = [0u8; 63];
-    ds5[0] = 0x02;
+pub(super) fn decode_output(ds4: &[u8]) -> Ds5UsbOutput {
+    let mut ds5 = Ds5UsbOutput { raw: vec![0; 63] };
+    ds5.raw[0] = 0x02;
 
     if ds4.len() < 11 {
         return ds5;
@@ -142,15 +138,15 @@ pub(super) fn convert_output_to_ds5(ds4: &[u8]) -> [u8; 63] {
 
     let flags = ds4[offset];
     if flags & 0x01 != 0 {
-        ds5[1] |= 0x03;
-        ds5[3] = ds4[offset + 3];
-        ds5[4] = ds4[offset + 4];
+        ds5.raw[1] |= 0x03;
+        ds5.raw[3] = ds4[offset + 3];
+        ds5.raw[4] = ds4[offset + 4];
     }
     if flags & 0x02 != 0 {
-        ds5[2] |= 0x04;
-        ds5[45] = ds4[offset + 5];
-        ds5[46] = ds4[offset + 6];
-        ds5[47] = ds4[offset + 7];
+        ds5.raw[2] |= 0x04;
+        ds5.raw[45] = ds4[offset + 5];
+        ds5.raw[46] = ds4[offset + 6];
+        ds5.raw[47] = ds4[offset + 7];
     }
     ds5
 }

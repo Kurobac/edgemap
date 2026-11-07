@@ -14,20 +14,8 @@ impl Ds5UsbOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ds4UsbOutput {
-    pub(super) raw: Vec<u8>,
-}
-
-impl Ds4UsbOutput {
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.raw
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputCommand {
     Ds5Usb(Ds5UsbOutput),
-    Ds4Usb(Ds4UsbOutput),
     Haptics(HapticsFrame),
     Audio {
         haptics: HapticsFrame,

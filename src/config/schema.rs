@@ -8,6 +8,8 @@ pub struct Config {
     pub version: u32,
     #[serde(default = "default_output_device")]
     pub output_device: String,
+    #[serde(default)]
+    pub force_audio_haptics: bool,
     #[serde(flatten)]
     pub buttons: HashMap<String, ButtonConfig>,
     #[serde(default)]

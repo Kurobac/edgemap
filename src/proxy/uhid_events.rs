@@ -36,8 +36,11 @@ impl Proxy {
                                 data.len(),
                                 report_id_label(data)
                             );
-                            let encoded =
-                                self.codec.target.decode_output(data).and_then(|command| {
+                            let encoded = self
+                                .codec
+                                .target
+                                .decode_output(data, self.force_audio_haptics)
+                                .and_then(|command| {
                                     self.codec
                                         .physical
                                         .encode_output(&command, &mut self.physical_output_state)

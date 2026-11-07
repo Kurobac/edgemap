@@ -83,8 +83,9 @@ the same fixed ContainerId to the `edgemap.dualsense` render endpoint when its
 Sony VID/PID match and its existing ContainerId is empty. This lets games such as
 Cyberpunk 2077 associate the virtual HID controller with the Bluetooth audio sink.
 
-DS4 output mode disables edgemap's virtual audio endpoint. USB-connected
-controllers continue to use their physical USB audio device.
+DS4 output mode also exposes the Bluetooth audio endpoint under the physical
+DualSense/Edge audio identity. USB-connected controllers use their physical USB
+audio device.
 
 ## Build
 

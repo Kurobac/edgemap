@@ -35,6 +35,10 @@ impl Proxy {
         self.write_physical_output(&report)
     }
 
+    pub(super) fn select_audio_haptics(&mut self) -> io::Result<()> {
+        self.send_output_command(&OutputCommand::Ds5Usb(Ds5UsbOutput::audio_haptics_mode()))
+    }
+
     fn send_live_audio(&mut self, frame: crate::control::haptics::AudioFrame) -> io::Result<()> {
         let speaker_active = frame.speaker.is_some();
         if speaker_active != self.speaker_active {

@@ -267,6 +267,19 @@ class EdgemapEditor(QMainWindow):
             if value not in known_devices:
                 dev_menu.addAction(value, lambda _checked=False, v=value: self._set_output_device(v))
         self.device_btn.setMenu(dev_menu)
+
+        if not hasattr(self, "audio_haptics_checkbox"):
+            self.audio_haptics_checkbox = QCheckBox("Force audio haptics")
+            self.audio_haptics_checkbox.clicked.connect(self._set_force_audio_haptics)
+            self.statusBar().insertPermanentWidget(0, self.audio_haptics_checkbox)
+        self.audio_haptics_checkbox.setChecked(self.config.get("force_audio_haptics", False))
+
+    def _set_force_audio_haptics(self, enabled):
+        if enabled:
+            self.config["force_audio_haptics"] = True
+        else:
+            self.config.pop("force_audio_haptics", None)
+
     def _set_output_device(self, val):
         self.config["output_device"] = val
         label = OUTPUT_DEVICE_LABELS.get(val, "Auto")

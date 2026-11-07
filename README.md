@@ -147,10 +147,9 @@ USB input. DS5 USB target output is wrapped back into the DualSense Bluetooth
 main-output report, so normal vibration, player LEDs, mic LED, lightbar, and
 adaptive-trigger payloads can work when games use the main output path.
 
-For `output_device = "auto"` or `"dualsense"`, `edgemap daemon` also creates a
-four-channel PipeWire sound device while the Bluetooth controller is connected.
-Games can send native HD haptics to its rear channels, which are converted and
-sent to the controller over Bluetooth. 
+`edgemap daemon` also creates a four-channel PipeWire sound device while the 
+Bluetooth controller is connected. Games can send native HD haptics to its 
+rear channels, which are converted and sent to the controller over Bluetooth. 
 
 Bluetooth SET_REPORT / vendor feature-report forwarding is not implemented.
 Known vendor/test commands are dropped, so hardware-test tools may miss some

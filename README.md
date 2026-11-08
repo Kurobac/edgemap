@@ -4,7 +4,7 @@ A Linux remapping tool for DualSense and DualSense Edge that preserves native So
 
 edgemap lets you customize controller inputs while keeping features such as adaptive triggers, HD haptics, and motion controls available to games with native DualSense support.
 
-It works by creating a virtual Sony HID controller through Linux UHID, allowing input remapping without emulating a gernic Xinput gamepad.
+It works by creating a virtual Sony HID controller through Linux UHID, allowing input remapping without emulating a generic XInput controller.
 
 > [!IMPORTANT]
 > When using edgemap with Proton, many games need a patched Proton build to use DualSense HD haptics or recognize the virtual DualShock 4. See [proton-eg-patch](https://github.com/Kurobac/proton-eg-patch).

@@ -51,8 +51,8 @@ controller session. Experimental speaker playback is opt-in.
 | v1.2.0 | `88824b7` | **Event-driven daemon coordination**: libudev hotplug, signalfd shutdown, acknowledged Unix seqpacket IPC, atomic daemon locks, transactional startup/reload handling; 218 Rust + 21 GUI tests |
 | v1.2.1 | `b22c909` | **Control-plane hardening**: generic config errors, bounded regular-file loading, client/request limits, and systemd resource ceilings; 223 Rust + 21 GUI tests |
 | v1.3.0 | `f17697e` | **Architecture and GUI overhaul**: content-based config switching, responsibility-focused Rust modules, capability-driven Python package, and unified release tooling; 171 Rust + 30 GUI tests |
-| v1.3.1 | — | **Correctness and release hardening**: split touch handling, strict config/daemon state, ownership-aware deadline scheduling, corrected defaults and durable GUI saves, and verified release payloads; 240 Rust + 35 GUI tests |
-| v1.4.0 (prepared) | — | **Bluetooth HD haptics**: automatic PipeWire audio bridge, output-aware audio lifecycle, configurable controller buffering, and optional experimental speaker playback |
+| v1.3.1 | `1104b24` | **Correctness and release hardening**: split touch handling, strict config/daemon state, ownership-aware deadline scheduling, corrected defaults and durable GUI saves, and verified release payloads; 240 Rust + 35 GUI tests |
+| v1.4.0 | `2325198` | **Bluetooth HD haptics**: automatic PipeWire audio bridge, output-aware audio lifecycle, configurable controller buffering, and optional experimental speaker playback |
 
 ## v1.4.0 Release Notes
 

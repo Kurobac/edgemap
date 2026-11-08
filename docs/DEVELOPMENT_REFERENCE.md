@@ -81,8 +81,16 @@ Input order inside `handle_hidraw_input()`:
 - `TargetCodec::encode_input()` writes the selected virtual target report → `UHID_INPUT2`
 
 **Physical output path**
-- UHID OUTPUT: `TargetCodec::decode_output()` → `OutputCommand` → `PhysicalCodec::encode_output()` → physical hidraw write
+- For UHID OUTPUT, `uhid_events.rs` checks the report type and passes the payload to `proxy/output.rs`. The target codec decodes an `OutputCommand`. After the repeat check below, the physical codec encodes each forwarded command for the hidraw write.
 - UHID SET_REPORT: `PhysicalCodec::encode_set_report()` decides whether a target feature report can be forwarded to physical hidraw
+
+Assassin's Creed Shadows repeatedly alternated lightbar updates and commands to turn off both adaptive triggers. The virtual DualSense Edge logged `Output queue is full`. A conservative workaround reduces physical writes when a DS5 USB target (`auto` or `dualsense`) forwards these reports to a Bluetooth controller.
+
+- `ds5_usb.rs` identifies lightbar-only and both-triggers-off requests from USB report `0x02`. The sender tracks the last successful write for each kind independently. It skips a request if the complete USB report, including its length and trailing bytes, matches that write and less than 100 ms has elapsed. The first matching request at or after 100 ms is sent immediately.
+- A report with an all-zero payload is forwarded and preserves both entries. Other valid DS5 control reports, including mixed updates and active trigger effects, are forwarded in order and invalidate both entries. A failed physical write also clears both entries. Each controller session starts with an empty history.
+- The repeat check runs before Bluetooth sequence assignment and CRC generation. Each forwarded request produces its own report. Physical USB output, DS4 target output, and timed PCM/audio frames follow their existing send paths.
+
+Set `RUST_LOG=info,dseuhid::proxy::output=debug` to see a `BT control output` summary roughly every five seconds of ongoing UHID output to a Bluetooth controller. Each line gives the actual elapsed time, reports received, successful hidraw writes, repeats skipped for each control kind, and failures (invalid reports or failed writes). The next incoming report triggers the summary when the interval has elapsed. These counts cover UHID output only. Internally generated PCM, audio and speaker setup commands follow a separate entry point.
 
 **Timing path**
 - Source transforms cache the latest decoded `ControllerFrame`. Timer transforms reuse that frame but do not observe fresh source edges, so deadlines cannot retrigger physical/combo macro activation.

@@ -8,6 +8,7 @@ mod ds5_usb;
 mod feature;
 mod types;
 
+pub(crate) use ds5_usb::Ds5ControlKind;
 use feature::{report_with_id, DS5_PHYSICAL_FEATURE_REPORTS_TO_CACHE};
 pub use feature::{FeatureReportCache, PhysicalFeatureReportRequest};
 #[allow(unused_imports)]
@@ -22,9 +23,13 @@ use ds5_bt::{
     OUTPUT_CRC_OFFSET as DS5_BT_OUTPUT_CRC_OFFSET,
     OUTPUT_PAYLOAD_OFFSET as DS5_BT_OUTPUT_PAYLOAD_OFFSET,
     OUTPUT_REPORT_ID as DS5_BT_OUTPUT_REPORT_ID, OUTPUT_REPORT_SIZE as DS5_BT_OUTPUT_REPORT_SIZE,
-    OUTPUT_TAG as DS5_BT_OUTPUT_TAG, USB_OUTPUT_REPORT_ID as DS5_USB_OUTPUT_REPORT_ID,
-    USB_OUTPUT_REPORT_MAX_SIZE as DS5_USB_OUTPUT_REPORT_MAX_SIZE,
-    USB_OUTPUT_REPORT_MIN_SIZE as DS5_USB_OUTPUT_REPORT_MIN_SIZE,
+    OUTPUT_TAG as DS5_BT_OUTPUT_TAG,
+};
+#[cfg(test)]
+use ds5_usb::{
+    OUTPUT_REPORT_ID as DS5_USB_OUTPUT_REPORT_ID,
+    OUTPUT_REPORT_MAX_SIZE as DS5_USB_OUTPUT_REPORT_MAX_SIZE,
+    OUTPUT_REPORT_MIN_SIZE as DS5_USB_OUTPUT_REPORT_MIN_SIZE,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

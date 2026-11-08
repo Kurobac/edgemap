@@ -4,9 +4,6 @@ pub(super) const INPUT_REPORT_ID: u8 = 0x31;
 pub(super) const INPUT_REPORT_SIZE: usize = 78;
 const INPUT_COMMON_OFFSET: usize = 2;
 pub(super) const INPUT_CRC_SIZE: usize = 4;
-pub(super) const USB_OUTPUT_REPORT_ID: u8 = 0x02;
-pub(super) const USB_OUTPUT_REPORT_MIN_SIZE: usize = 48;
-pub(super) const USB_OUTPUT_REPORT_MAX_SIZE: usize = 64;
 pub(super) const OUTPUT_REPORT_ID: u8 = 0x31;
 pub(super) const OUTPUT_REPORT_SIZE: usize = OUTPUT_CRC_OFFSET + 4;
 pub(super) const OUTPUT_TAG: u8 = 0x10;
@@ -107,10 +104,7 @@ pub(super) fn encode_output_from_ds5_usb_bytes(
     usb: &[u8],
     state: &mut PhysicalOutputState,
 ) -> CodecResult<Vec<u8>> {
-    if usb.len() < USB_OUTPUT_REPORT_MIN_SIZE
-        || usb.len() > USB_OUTPUT_REPORT_MAX_SIZE
-        || usb[0] != USB_OUTPUT_REPORT_ID
-    {
+    if !ds5_usb::is_main_output(usb) {
         return Err(CodecError::InvalidReport);
     }
 

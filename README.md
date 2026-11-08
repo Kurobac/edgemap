@@ -1,174 +1,68 @@
 # edgemap
 
-DualSense HID remapper — remap buttons, turbo, combos, macros while preserving native Sony HID behavior as much as possible. Three components: `dseuhid` (root daemon, UHID proxy), `edgemap` (user CLI, config management), and `edgemap-gui` (PyQt6 config editor). The daemon reads the physical controller through hidraw, converts reports through source/target codecs, and exposes a virtual USB HID device through UHID.
+A Linux remapping tool for DualSense and DualSense Edge that preserves native Sony controller features.
 
-## Disclaimer
+edgemap lets you customize controller inputs while keeping features such as adaptive triggers, HD haptics, and motion controls available to games with native DualSense support.
 
-This project is entirely vibecoded. The author has no programming knowledge and cannot review the code. 
+It works by creating a virtual Sony HID controller through Linux UHID, allowing input remapping without emulating a gernic Xinput gamepad.
 
-This project was created solely for the author's own needs. Remap without losing any DualSense features.
+> [!IMPORTANT]
+> When using edgemap with Proton, many games need a patched Proton build to use DualSense HD haptics or recognize the virtual DualShock 4. See [proton-eg-patch](https://github.com/Kurobac/proton-eg-patch).
 
-SDL-based remappers cannot preserve DualSense-specific features such as adaptive triggers and HD haptics. 
-Steam Input is slightly different — games supporting [Native mode](https://partner.steamgames.com/doc/features/steam_controller/concepts) retain DualSense features while using Steam Input, but for Legacy Mode only games, Steam maps the controller to a standard XInput device.
+## Features
 
-This project is provided AS IS. The author has tested it to the best of their ability,
-but makes no warranty regarding functionality or stability.
+**Remapping and advanced inputs**
 
-## Note on Proton patches
+Remap controller buttons to other buttons, stick directions, triggers, or keyboard keys. Create turbo actions, button combinations, and timed macros. Split touchpad input is also supported.
 
-Some games may require a [patched Proton build](https://github.com/Kurobac/proton-eg-patch)
-for DualSense HD haptics or the DualShock 4 target (`output_device = "dualshock4"`).
+**Profiles**
 
-## Install
+Create different configurations for different games. Profiles can be switched manually or automatically based on running processes. A PyQt6 GUI provides an editor for mappings, macros, and profiles.
+
+**Native controller support**
+
+Supports DualSense and DualSense Edge over both USB and Bluetooth.
+
+The virtual controller can retain the original Sony identity or emulate a standard DualSense. An experimental DualShock 4 output mode is also available.
+
+Bluetooth HD haptics are supported through a virtual PipeWire audio device, allowing compatible games to use audio-based haptic effects wirelessly.
+
+## Installation
 
 ### Arch Linux
 
-Install from AUR:
+Install from the [AUR](https://aur.archlinux.org/packages/edgemap):
+
+### Other Linux distributions
+
+Download the precompiled x86_64 package from [Releases](https://github.com/Kurobac/edgemap/releases), extract it, and run:
 
 ```bash
-paru -S edgemap
-# or use your favourite AUR helper
+sudo ./install.sh
 ```
 
-### Other Linux (pre-compiled binary)
+### Getting started
 
-Download the latest tarball from the [Releases](https://github.com/kurobac/edgemap/releases) page:
+Enable the system and user services:
 
 ```bash
-tar xzf edgemap-v*.tar.gz
-cd edgemap-v*-x86_64/
-sudo ./install.sh
-# then enable systemd services
 sudo systemctl daemon-reload
 sudo systemctl enable --now dseuhid
 systemctl --user daemon-reload
 systemctl --user enable --now edgemap
 ```
 
-When upgrading, install both binaries from the same release and restart both
-services so the control protocol versions stay in sync:
+Then launch `edgemap-gui` to create and manage your configurations.
 
-```bash
-sudo systemctl restart dseuhid
-systemctl --user restart edgemap
-```
+The GUI requires Python 3.11+ and PyQt6. Bluetooth HD haptics additionally require PipeWire and `pw-cat`.
 
->**Note:** install.sh assumes a writable /usr.
->If you are using an immutable distribution,
->please install manually.
+## Compatibility and limitations
 
-### Build from source
+edgemap is designed primarily for games with native DualSense support. For games without native DualSense support, you can use edgemap alongside Steam Input or similar tools.
 
-```bash
-cargo build --release
-```
+Currently, edgemap supports one DualSense or DualSense Edge controller at a time.
 
-edgemap daemon auto-creates `edgemap.toml` + `default.toml` under
-`$XDG_CONFIG_HOME/edgemap` (default: `~/.config/edgemap`) on first run.
-Run `edgemap create-config` to print a template with full inline documentation.
-
-## Features
-
-| Feature | Description |
-|---------|-------------|
-| Remap | Any button → button, stick direction, or full trigger press |
-| Turbo | Hold-to-repeat with configurable interval and delay |
-| Combo | Modifier key + key → injected output |
-| Macro | Timed key sequences, hold (loop) and single (one-shot) modes |
-| Keyboard target | Remap, combo, macro, and split-touchpad output to 107 uinput keyboard keys |
-| Profile auto-switch | Match running processes (comm/cmdline), auto-switch remap config |
-| Config switching | inotify-based profile selection plus acknowledged Unix socket content transfer |
-| Event-driven hotplug | libudev device discovery with immediate controller add/remove handling |
-| Native HID behavior | DS5 USB target keeps source backing where possible; BT physical output wraps USB target output into the DS5 BT main-output envelope |
-| Regular DualSense | DualSense (0x0CE6) and DualSense Edge (0x0DF2) supported over USB and Bluetooth source hidraw |
-| Bluetooth HD haptics | PipeWire virtual audio sink forwards game audio haptics to a Bluetooth DualSense or Edge with `auto` or `dualsense` output |
-| DSE→DS virtualization | `output_device = "dualsense"` makes Edge appear as regular DS for game compatibility |
-| DualShock 4 target (Beta) | `output_device = "dualshock4"` exposes a DS4-compatible UHID target for native DS4 games |
-| GET_REPORT cache | DS5 USB/BT physical devices read calibration/firmware data on startup |
-| GUI config editor | PyQt6 native editor — remap, turbo, combo, macro, macro manager, save/load |
-
-> **Note:** `output_device = "dualsense"` on a regular DualSense is harmless — the device
-> is already recognized as DS. Edge-specific button configs (paddles, FN keys) are
-> silently ignored on regular DualSense; they simply have no physical counterpart.
-
-## Configuration
-
-Button sections use lowercase names. Missing sections and `remap = "passthrough"` both leave
-the physical input untouched.
-
-```toml
-version = 2
-output_device = "auto" # "auto", "dualsense", or "dualshock4"
-
-[cross]
-remap = "circle"
-
-[right_paddle]
-remap = "key:space"
-
-[left_paddle]
-remap = "combo"
-
-[[left_paddle.combos]]
-key = "cross"
-output = "triangle"
-```
-
-`edgemap daemon` creates `edgemap.toml` in the XDG config directory for profile switching:
-
-```toml
-config = "default.toml"
-
-[profiles.example]
-config = "example.toml"
-match_process = "game.exe"
-```
-
-Profiles are checked in declaration order. `match_process` is an exact process-name match;
-`match_cmdline` is a substring match. When both are set, both must match.
-
-### DualShock 4 target (Beta)
-
-`output_device = "dualshock4"` makes the virtual controller identify as a
-DualShock 4 (`054C:09CC`, `Wireless Controller`). This is intended for games
-with native DS4 support while keeping dseuhid's remap/combo/macro pipeline.
-
-For best Proton compatibility, use the DS4 UHID MI_03 identity patch from
-[proton-eg-patch](https://github.com/Kurobac/proton-eg-patch).
-
-### Bluetooth source support
-
-DualSense and DualSense Edge can be used as physical Bluetooth source devices.
-The virtual controller is still exposed as a USB UHID target; dseuhid does not
-create a Bluetooth virtual target.
-
-Bluetooth source input is decoded into the same remap/combo/macro pipeline as
-USB input. DS5 USB target output is wrapped back into the DualSense Bluetooth
-main-output report, so normal vibration, player LEDs, mic LED, lightbar, and
-adaptive-trigger payloads can work when games use the main output path.
-
-For `output_device = "auto"` or `"dualsense"`, `edgemap daemon` also creates a
-four-channel PipeWire sound device while the Bluetooth controller is connected.
-Games can send native HD haptics to its rear channels, which are converted and
-sent to the controller over Bluetooth. 
-
-Bluetooth SET_REPORT / vendor feature-report forwarding is not implemented.
-Known vendor/test commands are dropped, so hardware-test tools may miss some
-factory or speaker functions. Games that rely on normal DualSense output
-reports should continue to work.
-
-For BT source → DS5 USB target, dseuhid repeats the latest virtual input at a
-stable cadence by default to avoid gyro drift in some games.
-Use `DSEUHID_BT_DS5_USB_REPEAT_HZ` to override the default
-`1000Hz`, or `DSEUHID_BT_DS5_USB_REPEAT_MODE=passthrough` to disable it. DS4
-target repeat is disabled by default and can be enabled with
-`DSEUHID_BT_DS4_USB_REPEAT_HZ`.
-
-## Not supported
-
-- Multiple controllers
-- D‑Bus control API
-- Non-Sony device
+For detailed feature behavior, controller output modes, Bluetooth handling, and troubleshooting, see the [User Guide](docs/USER_GUIDE.md).
 
 ## Requirements
 
@@ -183,12 +77,14 @@ target repeat is disabled by default and can be enabled with
 - PipeWire and `pw-cat` for Bluetooth HD haptics (optional)
 - `libopus.so.0` for experimental Bluetooth speaker playback (optional)
 
-## Special Thanks
+## Disclaimer
 
-*   **[inputplumber](https://github.com/ShadowBlip/InputPlumber)** - The initial demo of this project was built based on its core concepts and ideas.
-*   **[dualsense-tester](https://github.com/daidr/dualsense-tester)** - This repository served as a valuable reference for establishing and defining our HID behaviors.
-*   **[SAxense](https://github.com/egormanga/SAxense)** - HD haptics via Bluetooth.
+This project is entirely vibecoded. The author tests it through actual use but cannot independently audit the code. It is provided as-is, with no warranty.
+
+## Acknowledgments
+
+Thanks to [InputPlumber](https://github.com/ShadowBlip/InputPlumber), [dualsense-tester](https://github.com/daidr/dualsense-tester), and [SAxense](https://github.com/egormanga/SAxense) for their ideas and technical references.
 
 ## License
 
-GPL-3.0-or-later
+[GPL-3.0-or-later](LICENSE).

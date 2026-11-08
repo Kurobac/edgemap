@@ -66,16 +66,9 @@ For detailed feature behavior, controller output modes, Bluetooth handling, and 
 
 ## Requirements
 
-- Linux with `uhid` kernel module
-- `libudev` for initialized hidraw device discovery and hotplug monitoring
-- `acl` utilities (`getfacl` and `setfacl`) for hiding/restoring physical device nodes
-- Kernel: tested 7.0, should work 6.7+, may work 5.12+
-- DualSense (0x0CE6) or DualSense Edge (0x0DF2) controller over USB or Bluetooth source hidraw
-- Root for `dseuhid` only
-- `python-pyqt6` for GUI support (optional)
-- `libnotify` for profile-switch notifications (optional)
-- PipeWire and `pw-cat` for Bluetooth HD haptics (optional)
-- `libopus.so.0` for experimental Bluetooth speaker playback (optional)
+- Linux kernel 6.7+ (tested on 7.0) with UHID support
+- Python 3.11+ and PyQt6 for the GUI
+- PipeWire and `pw-cat` for Bluetooth HD haptics
 
 ## Disclaimer
 

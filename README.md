@@ -31,7 +31,7 @@ Bluetooth HD haptics are supported through a virtual PipeWire audio device, allo
 
 ### Arch Linux
 
-Install from the [AUR](https://aur.archlinux.org/packages/edgemap):
+Install from the [AUR](https://aur.archlinux.org/packages/edgemap).
 
 ### Other Linux distributions
 

@@ -3,6 +3,15 @@ use super::*;
 pub(super) const INPUT_REPORT_SIZE: usize = 64;
 pub(super) const INPUT_REPORT_ID: u8 = 0x01;
 
+pub(super) const OUTPUT_REPORT_ID: u8 = 0x02;
+pub(super) const OUTPUT_REPORT_MIN_SIZE: usize = 48;
+pub(super) const OUTPUT_REPORT_MAX_SIZE: usize = 64;
+
+pub(super) fn is_main_output(raw: &[u8]) -> bool {
+    (OUTPUT_REPORT_MIN_SIZE..=OUTPUT_REPORT_MAX_SIZE).contains(&raw.len())
+        && raw[0] == OUTPUT_REPORT_ID
+}
+
 pub(super) fn parse_input(data: &[u8]) -> Option<GamepadState> {
     if data.len() < INPUT_REPORT_SIZE || data[0] != INPUT_REPORT_ID {
         return None;
@@ -230,18 +239,25 @@ pub(super) fn decode_output(data: &[u8]) -> Ds5UsbOutput {
     Ds5UsbOutput { raw: data.to_vec() }
 }
 
+pub(crate) enum Ds5ControlKind {
+    Lightbar,
+    BothTriggersOff,
+    Empty,
+    Other,
+}
+
 impl Ds5UsbOutput {
     /// Select PCM without updating triggers, LEDs or speaker settings.
     pub fn audio_haptics_mode() -> Self {
-        let mut raw = vec![0; 48];
-        raw[0] = 0x02;
+        let mut raw = vec![0; OUTPUT_REPORT_MIN_SIZE];
+        raw[0] = OUTPUT_REPORT_ID;
         raw[1] = 0x01;
         Self { raw }
     }
 
     pub(super) fn force_audio_haptics(&mut self) {
         let raw = &mut self.raw;
-        if raw.first() != Some(&0x02) || raw.len() < 2 {
+        if raw.first() != Some(&OUTPUT_REPORT_ID) || raw.len() < 2 {
             return;
         }
         // Clear HAPTICS_SELECT and the enhanced emulation flag. USB passthrough
@@ -253,6 +269,18 @@ impl Ds5UsbOutput {
         if let Some(valid_flag2) = raw.get_mut(39) {
             *valid_flag2 &= !0x04;
         }
+    }
+
+    pub(crate) fn control_kind(raw: &[u8]) -> CodecResult<Ds5ControlKind> {
+        if !is_main_output(raw) {
+            return Err(CodecError::InvalidReport);
+        }
+        Ok(match (raw[1], raw[2], raw[39]) {
+            (0, 0x04, 0) => Ds5ControlKind::Lightbar,
+            (0x0c, 0, 0) if raw[11] == 0x05 && raw[22] == 0x05 => Ds5ControlKind::BothTriggersOff,
+            (0, 0, 0) if raw[1..].iter().all(|&byte| byte == 0) => Ds5ControlKind::Empty,
+            _ => Ds5ControlKind::Other,
+        })
     }
 
     /// Minimal speaker routing/volume update for the opt-in audio demo.

@@ -84,6 +84,8 @@ pub struct Proxy {
     last_frame: Option<ControllerFrame>,
     repeat_input: Option<RepeatInput>,
     physical_output_state: PhysicalOutputState,
+    sent_controls: output::SentControls,
+    bt_output_stats: output::BtOutputStats,
     live_haptics: LiveHaptics,
     speaker_active: bool,
     physical_set_report_unsupported_warned: HashSet<u8>,
@@ -161,6 +163,8 @@ impl Proxy {
             last_frame: None,
             repeat_input,
             physical_output_state,
+            sent_controls: output::SentControls::default(),
+            bt_output_stats: output::BtOutputStats::default(),
             live_haptics: LiveHaptics::default(),
             speaker_active: false,
             physical_set_report_unsupported_warned: HashSet::new(),
@@ -1581,6 +1585,85 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
     }
 
     #[test]
+    fn bt_output_skips_only_identical_static_controls() {
+        let (mut proxy, receiver) = test_proxy(MappingConfig::default());
+        let (physical, peer) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        proxy.codec.physical = PhysicalCodec::Ds5Bt;
+
+        let mut light = [0; 64];
+        light[..3].copy_from_slice(&[2, 0, 4]);
+        light[45..48].fill(255);
+        light[60..].copy_from_slice(&[0x4c, 0x47, 0xd6, 0xeb]);
+        let mut off = [0; 48];
+        off[0] = 2;
+        off[1] = 0x0c;
+        off[11] = 5;
+        off[22] = 5;
+        let mut empty = [0; 48];
+        empty[0] = 2;
+        let mut changed = light;
+        changed[60] ^= 1;
+        let mut active = off;
+        active[11] = 0x26;
+
+        for data in [
+            &light[..],
+            &off,
+            &empty,
+            &light,
+            &off,
+            &changed,
+            &active,
+            &active,
+            &off,
+        ] {
+            send_test_packet(&receiver, &output_event(data));
+        }
+        proxy.handle_uhid_event().unwrap();
+        for (seq, data) in [&light[..], &off, &empty, &changed, &active, &active, &off]
+            .iter()
+            .enumerate()
+        {
+            let packet = receive_uhid_packet(&peer).unwrap();
+            assert_eq!(packet[1], (seq as u8) << 4);
+            assert_eq!(&packet[3..data.len() + 2], &data[1..]);
+        }
+        assert!(receive_uhid_packet(&peer).is_none());
+    }
+
+    #[test]
+    fn forced_pcm_keeps_mixed_ds5_and_converted_ds4_reports_out_of_repeat_filter() {
+        let (mut proxy, _receiver) = test_proxy(MappingConfig::default());
+        let (physical, peer) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        proxy.codec.physical = PhysicalCodec::Ds5Bt;
+        proxy.force_audio_haptics = true;
+
+        // After PCM filtering, both requests encode as a lightbar-only update.
+        let mut mixed = [0; 48];
+        mixed[..5].copy_from_slice(&[2, 2, 4, 80, 100]);
+        mixed[39] = 4;
+        mixed[45..48].copy_from_slice(&[3, 5, 7]);
+        let mut ds4 = [0; 32];
+        ds4[..2].copy_from_slice(&[5, 2]);
+        ds4[6..9].copy_from_slice(&[3, 5, 7]);
+        for (target, data) in [
+            (TargetCodec::Ds5UsbAuto, mixed.as_slice()),
+            (TargetCodec::Ds4Usb, ds4.as_slice()),
+        ] {
+            proxy.codec.target = target;
+            for _ in 0..2 {
+                proxy.send_target_output(data).unwrap();
+                let report = receive_uhid_packet(&peer).unwrap();
+                assert_eq!(&report[3..7], &[0, 4, 0, 0]);
+                assert_eq!(report[41], 0);
+                assert_eq!(&report[47..50], &[3, 5, 7]);
+            }
+        }
+    }
+
+    #[test]
     fn output_handler_drops_invalid_reports_and_keeps_running_after_write_failure() {
         let _guard = EVENT_TEST_LOCK.lock().unwrap();
         DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1590,7 +1673,8 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
         proxy.codec.physical = PhysicalCodec::Ds5Bt;
         let mut valid = vec![0; 48];
         valid[0] = 2;
-        valid[3] = 67;
+        valid[2] = 4;
+        valid[45] = 67;
         send_test_packet(&receiver, &output_event(&[2])); // Too short for BT output.
         send_test_packet(&receiver, &output_event(&valid));
         proxy.handle_uhid_event().unwrap();
@@ -1606,10 +1690,15 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
             .unwrap();
         let original =
             std::mem::replace(&mut proxy.hidraw, HidrawDevice::from_test_fd(full.into()));
+        valid[45] = 68;
         send_test_packet(&receiver, &output_event(&valid));
         proxy.handle_uhid_event().unwrap();
         assert!(!DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst));
         proxy.hidraw = original;
+        send_test_packet(&receiver, &output_event(&valid));
+        proxy.handle_uhid_event().unwrap();
+        let output = receive_uhid_packet(&physical_peer).unwrap();
+        assert_eq!(&output[3..50], &valid[1..]);
         let input = proxy
             .codec
             .target

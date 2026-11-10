@@ -36,34 +36,14 @@ impl Proxy {
                                 data.len(),
                                 report_id_label(data)
                             );
-                            let encoded = self
-                                .codec
-                                .target
-                                .decode_output(data, self.force_audio_haptics)
-                                .and_then(|command| {
-                                    self.codec
-                                        .physical
-                                        .encode_output(&command, &mut self.physical_output_state)
-                                });
-                            match encoded {
-                                Ok(encoded) => {
-                                    if let Err(e) = self.write_physical_output(&encoded) {
-                                        if is_disconnect_io_error(&e) {
-                                            info!("controller disconnected");
-                                            break;
-                                        }
-                                    }
-                                }
-                                Err(error) => {
-                                    warn!(
-                                        "invalid output report dropped: error={error:?}, target={:?}, controller={:?}",
-                                        self.codec.target, self.codec.physical
-                                    );
-                                    warn!(
-                                        "output report metadata: rtype={rtype}, size={}, report_id={}",
-                                        data.len(),
-                                        report_id_label(data)
-                                    );
+                            if let Err(error) = self.send_target_output(data) {
+                                warn!(
+                                    "failed to forward output report: target={:?}, controller={:?}, size={}, report_id={}, error={error}",
+                                    self.codec.target, self.codec.physical, data.len(), report_id_label(data)
+                                );
+                                if is_disconnect_io_error(&error) {
+                                    info!("controller disconnected");
+                                    break;
                                 }
                             }
                         } else {

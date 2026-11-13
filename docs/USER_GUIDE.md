@@ -18,7 +18,7 @@ Choose the output model at the bottom of the editor. The choice is saved with ea
 - **Auto (match physical)** is the default. A DualSense appears as a DualSense and an Edge appears as an Edge.
 - **DualSense** lets an Edge work with games that recognize only the regular model. Map its paddles and Fn buttons to ordinary buttons or keyboard keys to use them in those games.
 
-To keep the grips playing audio haptics when a game sends ordinary rumble, check **Force audio haptics** in the editor or set `force_audio_haptics = true` at the top of the mapping file. Adaptive triggers and lights still respond to the game. The default lets the game select the grip mode.
+To keep the grips playing audio haptics when a game sends ordinary rumble, check **Force audio haptics** in the editor or set `force_audio_haptics = true` at the top of the mapping file. Adaptive triggers and lights still respond to the game. You can apply this setting while playing. Clearing it gives the game control of the grip mode on its next output command. Existing mappings use game-controlled haptics by default.
 
 Applying a different output model reconnects the virtual controller. Choose the model before launching games that detect controllers only at startup.
 

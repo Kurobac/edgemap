@@ -1,4 +1,4 @@
-# edgemap — Project Status (2026-10-01)
+# edgemap — Project Status (2026-11-13)
 
 ## Overview
 
@@ -7,8 +7,7 @@ UHID proxy for DualSense and DualSense Edge controllers (PID 0x0CE6 / 0x0DF2) ov
 Written in Rust. Zero async runtime. Single epoll loop. Root required for `/dev/uhid` and `/dev/hidraw` access (daemon only). Kernel compatibility: tested 7.0, should work 6.7+, may work 5.12+.
 
 Bluetooth HD haptics use a four-channel PipeWire sound device managed by the user
-daemon. It is available with `auto` or `dualsense` output and follows the
-controller session. Experimental speaker playback is opt-in.
+daemon. It follows the controller session in all three output modes. Experimental speaker playback is opt-in.
 
 ## Version History
 
@@ -53,6 +52,19 @@ controller session. Experimental speaker playback is opt-in.
 | v1.3.0 | `f17697e` | **Architecture and GUI overhaul**: content-based config switching, responsibility-focused Rust modules, capability-driven Python package, and unified release tooling; 171 Rust + 30 GUI tests |
 | v1.3.1 | `1104b24` | **Correctness and release hardening**: split touch handling, strict config/daemon state, ownership-aware deadline scheduling, corrected defaults and durable GUI saves, and verified release payloads; 240 Rust + 35 GUI tests |
 | v1.4.0 | `2325198` | **Bluetooth HD haptics**: automatic PipeWire audio bridge, output-aware audio lifecycle, configurable controller buffering, and optional experimental speaker playback |
+| v1.5.0 (prepared) | — | Per-profile audio haptics, Bluetooth haptics in DS4 mode, fewer repeated Bluetooth writes, and continuous device-node restrictions during output model changes |
+
+## v1.5.0 Release Notes
+
+### New features
+
+- Added `force_audio_haptics` to mapping configs to keep grip motors in PCM mode when games send rumble commands.
+- Bluetooth `dualshock4` output now accepts PCM haptics on the rear channels of the `edgemap.dualsense` PipeWire sink.
+
+### Behavior changes
+
+- Worked around UHID output queue saturation observed in *Assassin’s Creed Shadows*. Bluetooth `auto` and `dualsense` output now filters identical lightbar-only and both-triggers-off reports within a 100 ms window per report type.
+- Switching `output_device` now keeps physical evdev and hidraw nodes restricted throughout the UHID rebuild.
 
 ## v1.4.0 Release Notes
 
@@ -232,7 +244,7 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - DS5 USB target keeps the DS5 USB source report as backing where possible. DS4 target converts input/output through DS4-specific USB report code.
 - DS5/DS4 USB byte layout helpers live in their protocol-specific `src/codec/` modules; transport-neutral controller state lives in `src/model.rs`.
 - DS5 BT source input uses a BT-specific codec and USB-compatible backing; DS5 BT physical output wraps USB target output into the 0x31 Bluetooth main-output envelope. BT physical GET_REPORT cache validates the 0xA3 feature CRC and keeps full-size 0x05/0x20 reports for the USB virtual target.
-- Bluetooth audio uses 3 kHz signed 8-bit stereo haptics in `0x32` reports; experimental speaker playback combines haptics and Opus in `0x36` reports. The proxy enables the PCM endpoint only for Bluetooth sources with a DualSense target.
+- Bluetooth audio uses 3 kHz signed 8-bit stereo haptics in `0x32` reports; experimental speaker playback combines haptics and Opus in `0x36` reports. The proxy enables the PCM endpoint for Bluetooth sources in all output modes.
 
 ### Error Handling Policy
 - Bad or short input frames are dropped. They are not raw-forwarded to the virtual target.
@@ -289,18 +301,18 @@ Layer 3 (output): TargetCodec::encode_input → UHID_INPUT2
 - Multi-device: warn if more than one DualSense detected
 - Disconnect cooldown: 2-second sleep after hidraw `EIO` / `ENODEV` / `ENXIO`
 
-### Rust Tests (279 default-suite tests, 4 additional environment-dependent tests)
+### Rust Tests (286 default-suite tests, 4 additional environment-dependent tests)
 
 | Target | Tests | Coverage |
 |--------|-------|----------|
 | library | 105 | capabilities, typed config validation/compilation, ownership-aware mapping, bounded loading, control protocol/limits, PCM packets, daemon locks, keycodes, and signalfd shutdown |
-| `dseuhid` | 119 | codec/default-state formats, Bluetooth audio packets and buffering, output-aware PCM lifecycle, device discovery, desired keyboard state, source/timer transforms, deadline scheduling, daemon/session policy, and UHID parsing |
+| `dseuhid` | 126 | codec/default-state formats, Bluetooth audio packets and buffering, output-aware PCM lifecycle, device discovery, desired keyboard state, source/timer transforms, deadline scheduling, daemon/session policy, and UHID parsing |
 | `edgemap` | 37 + 4 environment-dependent | XDG paths, declaration-order profile matching, selected/effective apply state, inotify/runtime resynchronization, child reaping, audio filtering/encoding, PipeWire capture, and daemon state transitions |
 | CLI integration | 18 | help/error streams, ambiguous input rejection, exit behavior, create/validate output, and capabilities TOML |
 
-### GUI Tests (44 total, PyQt6 offscreen)
+### GUI Tests (45 total, PyQt6 offscreen)
 
-Coverage includes capability-contract parsing, private-package launcher resolution and Python-version rejection, atomic file/directory fsync ordering, profile schema errors, save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device serialization, DS4 selection warning behavior, keyboard picker state, action-button styling, and Rust validator compatibility.
+Coverage includes capability-contract parsing, private-package launcher resolution and Python-version rejection, atomic file/directory fsync ordering, profile schema errors, save/cancel results, macro initialization and reference integrity, TOML quoting, arbitrary profile paths, XDG/HOME handling, passthrough/split serialization, output device and forced audio haptics serialization, DS4 selection warning behavior, keyboard picker state, action-button styling, and Rust validator compatibility.
 
 ### Tools
 | Tool | Binary | Description |

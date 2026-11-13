@@ -28,6 +28,11 @@ impl NodePermissions {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn restrict_test_node(&mut self, path: &Path) {
+        Self::restrict_node(path, &mut self.restored_nodes).unwrap();
+    }
+
     fn read_acl(path: &Path) -> io::Result<String> {
         let mut command = std::process::Command::new("getfacl");
         command.args(["--absolute-names", &path.to_string_lossy()]);

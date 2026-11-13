@@ -238,15 +238,6 @@ pub(crate) fn run(config_path: Option<String>) -> DaemonExit {
         );
 
         match crate::session::run(&dev_info, &active_config, &shutdown, &mut control) {
-            crate::session::SessionExit::ConfigChanged(config) => {
-                active_config = config;
-                let mut state = control.state();
-                state.uhid_ready = false;
-                state.bt_haptics = None;
-                state.needs_config = false;
-                control.set_state(state);
-                info!("output device changed; recreating virtual HID device");
-            }
             crate::session::SessionExit::DeviceGone { reset_config } => {
                 if reset_config {
                     active_config = None;

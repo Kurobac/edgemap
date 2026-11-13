@@ -203,6 +203,11 @@ impl HidrawDevice {
         self.permissions.restrict()
     }
 
+    #[cfg(test)]
+    pub(crate) fn restrict_test_node(&mut self, path: &Path) {
+        self.permissions.restrict_test_node(path);
+    }
+
     pub fn clear_restored_paths(&mut self) {
         self.permissions.forget();
     }

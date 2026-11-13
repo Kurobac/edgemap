@@ -11,7 +11,6 @@ use crate::proxy::{self, Proxy, ProxyInit};
 use crate::uhid::UhidDevice;
 
 pub(crate) enum SessionExit {
-    ConfigChanged(Option<config::ActiveConfig>),
     DeviceGone { reset_config: bool },
     Shutdown,
     Fatal,
@@ -30,6 +29,56 @@ pub(crate) fn run(
     shutdown: &ShutdownSignal,
     control: &mut control::ControlServer,
 ) -> SessionExit {
+    let mut hidraw = match HidrawDevice::open(&dev_info.path) {
+        Ok(device) => device,
+        Err(e) if is_controller_gone_error(&e) => {
+            warn!("failed to open controller: {e}");
+            return SessionExit::DeviceGone {
+                reset_config: false,
+            };
+        }
+        Err(e) => {
+            error!("failed to open hidraw device: {e}");
+            return SessionExit::Fatal;
+        }
+    };
+
+    if let Err(e) = hidraw.restrict_evdev_nodes() {
+        warn!("failed to restrict input nodes: {e}");
+    }
+
+    let mut active_config = active_config.clone();
+    loop {
+        let mut proxy = match create_proxy(dev_info, hidraw, active_config, control) {
+            Ok(proxy) => proxy,
+            Err(()) => return SessionExit::Fatal,
+        };
+        match proxy.run(shutdown, control) {
+            proxy::ExitReason::ConfigChanged => {
+                (hidraw, active_config) = proxy.into_rebuild_parts();
+                control.set_state(control::ControlState {
+                    uhid_ready: false,
+                    needs_config: false,
+                    bt_haptics: None,
+                });
+                info!("output device changed; recreating virtual HID device");
+            }
+            proxy::ExitReason::DeviceGone => {
+                proxy.forget_restore_on_physical_disconnect();
+                return SessionExit::DeviceGone { reset_config: true };
+            }
+            proxy::ExitReason::UserShutdown => return SessionExit::Shutdown,
+            proxy::ExitReason::FatalError => return SessionExit::Fatal,
+        }
+    }
+}
+
+fn create_proxy(
+    dev_info: &DeviceInfo,
+    hidraw: HidrawDevice,
+    active_config: Option<config::ActiveConfig>,
+    control: &mut control::ControlServer,
+) -> Result<Proxy, ()> {
     let loaded_config = match active_config.as_ref() {
         Some(active) => {
             info!("loading config: source={}", active.source());
@@ -37,7 +86,7 @@ pub(crate) fn run(
                 Ok(cfg) => Some(cfg),
                 Err(e) => {
                     error!("failed to parse active config: {e}");
-                    return SessionExit::Fatal;
+                    return Err(());
                 }
             }
         }
@@ -61,7 +110,7 @@ pub(crate) fn run(
             }
             Err(e) => {
                 error!("failed to build mapping: {e}");
-                return SessionExit::Fatal;
+                return Err(());
             }
         },
         None => {
@@ -71,26 +120,12 @@ pub(crate) fn run(
     };
     let mapping = Arc::new(RwLock::new(mapping));
 
-    let mut hidraw = match HidrawDevice::open(&dev_info.path) {
-        Ok(device) => device,
-        Err(e) if is_controller_gone_error(&e) => {
-            warn!("failed to open controller: {e}");
-            return SessionExit::DeviceGone {
-                reset_config: false,
-            };
-        }
-        Err(e) => {
-            error!("failed to open hidraw device: {e}");
-            return SessionExit::Fatal;
-        }
-    };
-
     let mut uhid = match UhidDevice::open() {
         Ok(device) => device,
         Err(e) => {
             error!("failed to open /dev/uhid: {e}");
             error!("UHID kernel module may be unavailable; verify with: modprobe uhid");
-            return SessionExit::Fatal;
+            return Err(());
         }
     };
 
@@ -143,17 +178,13 @@ pub(crate) fn run(
         target_identity.report_descriptor,
     ) {
         error!("failed to create virtual HID device: {e}");
-        return SessionExit::Fatal;
+        return Err(());
     }
 
     info!(
         "virtual HID device created: name={}, output={}",
         target_identity.name, target_identity.label
     );
-
-    if let Err(e) = hidraw.restrict_evdev_nodes() {
-        warn!("failed to restrict input nodes: {e}");
-    }
 
     info!("proxy initializing");
     let keyboard = match KeyboardDevice::open() {
@@ -169,14 +200,14 @@ pub(crate) fn run(
 
     if let Err(e) = reject_inactive_control(control) {
         error!("failed to reject control request while proxy is inactive: {e}");
-        return SessionExit::Fatal;
+        return Err(());
     }
-    let mut proxy = Proxy::new(ProxyInit {
+    Ok(Proxy::new(ProxyInit {
         hidraw,
         uhid,
         keyboard,
         mapping,
-        active_config: active_config.clone(),
+        active_config,
         report_cache,
         codec: codec_pipeline,
         source_kind: dev_info.kind,
@@ -184,19 +215,7 @@ pub(crate) fn run(
         force_audio_haptics: loaded_config
             .as_ref()
             .is_some_and(|cfg| cfg.force_audio_haptics),
-    });
-    match proxy.run(shutdown, control) {
-        proxy::ExitReason::ConfigChanged => {
-            SessionExit::ConfigChanged(proxy.active_config().cloned())
-        }
-        proxy::ExitReason::DeviceGone => {
-            proxy.forget_restore_on_physical_disconnect();
-            drop(proxy);
-            SessionExit::DeviceGone { reset_config: true }
-        }
-        proxy::ExitReason::UserShutdown => SessionExit::Shutdown,
-        proxy::ExitReason::FatalError => SessionExit::Fatal,
-    }
+    }))
 }
 
 #[cfg(test)]

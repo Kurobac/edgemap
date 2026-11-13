@@ -176,8 +176,8 @@ impl Proxy {
         self.hidraw.clear_restored_paths();
     }
 
-    pub fn active_config(&self) -> Option<&ActiveConfig> {
-        self.active_config.as_ref()
+    pub(crate) fn into_rebuild_parts(self) -> (HidrawDevice, Option<ActiveConfig>) {
+        (self.hidraw, self.active_config)
     }
 
     fn apply_active_config(
@@ -1038,7 +1038,7 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
             let invalid =
                 ActiveConfig::from_content("invalid.toml".into(), content.into()).unwrap();
             assert_eq!(proxy.apply_active_config(invalid).unwrap_err().0, code);
-            assert_eq!(proxy.active_config(), Some(&original));
+            assert_eq!(proxy.active_config.as_ref(), Some(&original));
             assert!(!proxy.force_audio_haptics);
             assert_eq!(proxy.output_device_config, "auto");
             assert!(!proxy.recreate_uhid);
@@ -1082,7 +1082,7 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
             proxy.apply_active_config(config.clone()).unwrap();
             assert_eq!(proxy.recreate_uhid, output != "auto");
             assert_eq!(proxy.output_device_config, output);
-            assert_eq!(proxy.active_config(), Some(&config));
+            assert_eq!(proxy.active_config.as_ref(), Some(&config));
             assert_eq!(
                 proxy.keyboard.recorded_key_events(),
                 [(57, true), (57, false)]
@@ -1096,6 +1096,41 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
             proxy.apply_active_config(config).unwrap();
             assert!(!proxy.recreate_uhid);
         }
+    }
+
+    #[test]
+    fn target_rebuilds_keep_physical_node_restricted_until_shutdown() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!("dseuhid-rebuild-{}", std::process::id()));
+        let file = std::fs::File::create_new(&path).unwrap();
+        file.set_permissions(std::fs::Permissions::from_mode(0o640))
+            .unwrap();
+        let mode = || std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let original_fd = file.as_raw_fd();
+        let mut physical = HidrawDevice::from_test_fd(file.into());
+        physical.restrict_test_node(&path);
+
+        for output in ["dualshock4", "dualsense"] {
+            let (mut proxy, virtual_peer) = test_proxy(MappingConfig::default());
+            proxy.hidraw = physical;
+            let config = ActiveConfig::from_content(
+                "switch.toml".into(),
+                format!("version = 2\noutput_device = \"{output}\"\n"),
+            )
+            .unwrap();
+            proxy.apply_active_config(config.clone()).unwrap();
+            assert!(proxy.recreate_uhid);
+            let retained_config;
+            (physical, retained_config) = proxy.into_rebuild_parts();
+            assert_eq!(retained_config, Some(config));
+            assert_eq!(receive_uhid_packet(&virtual_peer), Some(vec![])); // EOF
+            assert_eq!(physical.as_raw_fd(), original_fd);
+            assert_eq!(mode(), 0);
+        }
+        drop(physical);
+        assert_eq!(mode(), 0o640);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1135,7 +1170,7 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
         );
         assert_eq!(client.receive().unwrap(), None); // No ACK or success state after rejection.
         assert_eq!(server.state(), initial);
-        assert_eq!(proxy.active_config(), Some(&old));
+        assert_eq!(proxy.active_config.as_ref(), Some(&old));
 
         let next = ActiveConfig::from_content(
             "/nonexistent/profile.toml".into(),
@@ -1160,7 +1195,7 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
                 }
             ))
         );
-        assert_eq!(proxy.active_config(), Some(&next));
+        assert_eq!(proxy.active_config.as_ref(), Some(&next));
         assert!(proxy.recreate_uhid);
         drop(client);
         drop(server);
@@ -1450,6 +1485,15 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
             worker.join().unwrap();
             assert_eq!(reason, ExitReason::ConfigChanged);
             assert!(!pcm_path.exists(), "old PCM endpoint survived session exit");
+
+            // The worker unplugged the physical peer between the two epoll loops.
+            let (physical, _) = proxy.into_rebuild_parts();
+            let (mut next_proxy, _virtual_peer) = test_proxy(MappingConfig::default());
+            next_proxy.hidraw = physical;
+            assert_eq!(
+                next_proxy.run(&shutdown, &mut server),
+                ExitReason::DeviceGone
+            );
         }
         std::fs::remove_dir_all(dir).unwrap();
     }

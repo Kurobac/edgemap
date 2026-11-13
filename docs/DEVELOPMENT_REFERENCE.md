@@ -32,8 +32,8 @@ Installation, packaging, and system-level verification are documented separately
 |------|------|
 | `src/lib.rs` | Shared package library used by both binaries. Exposes capabilities, config, control, keycodes, mapping, model, and shutdown modules; it is not a promised third-party SDK. |
 | `src/main.rs` | Thin dseuhid entry: CLI dispatch, logging/startup checks, and final handoff to `daemon::run()`. |
-| `src/daemon.rs` | Process-level daemon lifecycle: shutdown signal, daemon lock/control server, active config, controller reconnect loop, and UHID recreation decisions. |
-| `src/session.rs` | Builds one physical-controller session: hidraw, codecs, feature cache, UHID, keyboard, mapping, and Proxy. Returns typed session outcomes to the outer daemon loop. |
+| `src/daemon.rs` | Process-level daemon lifecycle: shutdown signal, daemon lock/control server, startup config, and controller reconnect loop. |
+| `src/session.rs` | Manages one physical connection. Changing the output target rebuilds the proxy and its virtual devices while retaining the open hidraw handle and its device-node permission snapshots. |
 | `src/proxy/` | epoll ownership and **three-layer pipeline** (L1→L2→L3). `pipeline.rs` performs fd-free source/timer transforms and output-intent reduction, `runtime.rs` owns turbo/combo/macro timing, `repeat.rs` owns BT cadence/sequence, and `uhid_events.rs` handles OUTPUT/GET/SET. One monotonic one-shot timerfd is armed to the earliest runtime or repeat deadline. |
 | `src/control/` | Versioned Unix `SOCK_SEQPACKET` protocol, complete packet transport, client/server, and `flock`-based named daemon locks. Public names are re-exported from `control/mod.rs`. |
 | `src/codec/` | Source/physical/target codec boundary. Protocol-specific wire formats live in `ds5_usb.rs`, `ds5_bt.rs`, and `ds4_usb.rs`; `feature.rs` owns feature-cache policy and `types.rs` owns transport frame/command types. |

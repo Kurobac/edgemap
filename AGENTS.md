@@ -42,6 +42,16 @@ Read the relevant section of `docs/DEVELOPMENT_REFERENCE.md` before changing an 
 - Required startup failures stop the daemon; individual output/feature failures do not stop the input path.
 - GUI button, target, output-device, macro-name, and keyboard lists come only from the versioned capabilities contract.
 
+## Changelog and release notes
+
+- Compare each release with the immediately preceding release tag. Describe the changes users will notice when upgrading between those versions.
+- Omit changes reverted before release and bugs introduced and fixed between the same two releases.
+- Group entries under headings such as New features, Behavior changes, and Bug fixes. Use Upgrade notes for actions users need to take. Omit empty sections.
+- Keep each bullet short and focused on one outcome. For a fix, name the symptom users experienced. For a changed command or setting, give its replacement when applicable.
+- Lead with the setting, command, device, or protocol behavior that changed. Keep setup steps in the user guide unless users need them to upgrade.
+- For compatibility workarounds, name the affected game or device and the observed symptom. State the scope of the workaround when it applies more broadly.
+- Use Bug fixes for departures from intended behavior. Use Behavior changes for deliberate revisions to an existing policy or default.
+
 ## Detailed references
 
 - `docs/DEVELOPMENT_REFERENCE.md`: architecture, pipeline, codecs, error behavior, quirks, configuration constraints, and migration notes.

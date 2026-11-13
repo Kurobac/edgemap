@@ -626,6 +626,22 @@ class WidgetTests(unittest.TestCase):
         self.assertIn("rapid fire", parsed["macros"])
         self.assertEqual(parsed["cross"]["remap"], "rapid fire")
 
+    def test_audio_haptics_checkbox_roundtrips_mapping(self):
+        editor = gui.EdgemapEditor.__new__(gui.EdgemapEditor)
+        gui.QMainWindow.__init__(editor)
+        editor.capabilities = self.capabilities
+        editor.setStatusBar(gui.QStatusBar())
+        editor.config = {"version": 2, "force_audio_haptics": True}
+        editor._split_rows = {}
+        editor._build_ui()
+        self.assertTrue(editor.audio_haptics_checkbox.isChecked())
+        editor.audio_haptics_checkbox.click()
+        self.assertNotIn("force_audio_haptics", tomllib.loads(editor._build_toml()))
+        editor.audio_haptics_checkbox.click()
+        content = editor._build_toml()
+        self.client.validate_content(content)
+        self.assertIs(tomllib.loads(content)["force_audio_haptics"], True)
+
     def test_output_device_dualshock4_menu_and_serialization(self):
         editor = gui.EdgemapEditor.__new__(gui.EdgemapEditor)
         gui.QMainWindow.__init__(editor)

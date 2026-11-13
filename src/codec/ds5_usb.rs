@@ -247,8 +247,31 @@ pub(crate) enum Ds5ControlKind {
 }
 
 impl Ds5UsbOutput {
-    pub(crate) fn control_kind(&self) -> CodecResult<Ds5ControlKind> {
-        let raw = self.as_bytes();
+    /// Select PCM without updating triggers, LEDs or speaker settings.
+    pub fn audio_haptics_mode() -> Self {
+        let mut raw = vec![0; OUTPUT_REPORT_MIN_SIZE];
+        raw[0] = OUTPUT_REPORT_ID;
+        raw[1] = 0x01;
+        Self { raw }
+    }
+
+    pub(super) fn force_audio_haptics(&mut self) {
+        let raw = &mut self.raw;
+        if raw.first() != Some(&OUTPUT_REPORT_ID) || raw.len() < 2 {
+            return;
+        }
+        // Clear HAPTICS_SELECT and the enhanced emulation flag. USB passthrough
+        // also accepts short reports, so mask only fields present in the report.
+        raw[1] &= !0x02;
+        for motor in raw.iter_mut().skip(3).take(2) {
+            *motor = 0;
+        }
+        if let Some(valid_flag2) = raw.get_mut(39) {
+            *valid_flag2 &= !0x04;
+        }
+    }
+
+    pub(crate) fn control_kind(raw: &[u8]) -> CodecResult<Ds5ControlKind> {
         if !is_main_output(raw) {
             return Err(CodecError::InvalidReport);
         }
@@ -310,14 +333,6 @@ pub(super) fn fallback_feature_report(report_id: u8) -> Option<Vec<u8>> {
         0xF2 => Some(vec![0u8; 53]),
         _ => None,
     }
-}
-
-pub(super) fn encode_physical_output_from_ds5_usb(output: &Ds5UsbOutput) -> CodecResult<Vec<u8>> {
-    Ok(output.as_bytes().to_vec())
-}
-
-pub(super) fn encode_physical_output_from_ds4_usb(output: &Ds4UsbOutput) -> CodecResult<Vec<u8>> {
-    Ok(ds4_usb::convert_output_to_ds5(output.as_bytes()).to_vec())
 }
 
 pub(super) fn decode_feature_report(

@@ -18,13 +18,15 @@ Choose the output model at the bottom of the editor. The choice is saved with ea
 - **Auto (match physical)** is the default. A DualSense appears as a DualSense and an Edge appears as an Edge.
 - **DualSense** lets an Edge work with games that recognize only the regular model. Map its paddles and Fn buttons to ordinary buttons or keyboard keys to use them in those games.
 
+To keep the grips playing audio haptics when a game sends ordinary rumble, check **Force audio haptics** in the editor or set `force_audio_haptics = true` at the top of the mapping file. Adaptive triggers and lights still respond to the game. The default lets the game select the grip mode.
+
 Applying a different output model reconnects the virtual controller. Choose the model before launching games that detect controllers only at startup.
 
 For games without native DualSense support, you can also use edgemap with Steam Input or a similar tool.
 
 ## DualShock 4 target (Beta)
 
-For a game with native DualShock 4 support, select **DualShock 4 (Beta)** in the editor or set `output_device = "dualshock4"` in its mapping file. The game sees a USB DS4, and your mappings still apply. Buttons, sticks, triggers, touchpad input, lightbar, and ordinary rumble should work. For DualSense HD haptics and adaptive triggers, choose **Auto** or **DualSense**.
+For a game with native DualShock 4 support, select **DualShock 4 (Beta)** in the editor or set `output_device = "dualshock4"` in its mapping file. The game sees a USB DS4, and your mappings still apply. Buttons, sticks, triggers, touchpad input, lightbar, and ordinary rumble should work. For games that send native DualSense effects, choose **Auto** or **DualSense**. In DS4 mode, external audio sources can still play grip haptics through the controller audio device.
 
 Some games under Proton look for a specific DS4 USB interface (`MI_03`). If the game ignores the virtual DS4, the DS4 identity patch supplies that interface identifier. [proton-eg-patch](https://github.com/Kurobac/proton-eg-patch) · [DS4 compatibility notes](DS4_TARGET_STATUS.md)
 
@@ -78,7 +80,7 @@ The physical press goes through touchpad splitting, turbo, combo detection, and 
 
 When you connect over Bluetooth, edgemap presents the selected controller model to the game as a USB device. edgemap translates inputs, including motion and touch, into that controller's USB reports. In the other direction, it sends ordinary rumble, light changes, and adaptive-trigger commands back over Bluetooth. Vendor-specific feature writes used by some hardware-test tools are unsupported over Bluetooth.
 
-edgemap delivers HD haptics over Bluetooth to a DualSense or DualSense Edge in **Auto** or **DualSense** output mode. Games normally send these effects to the controller’s USB audio device. For Bluetooth, the user service creates a four-channel PipeWire output named `edgemap.dualsense`. Games send haptic effects to its two rear channels, and edgemap forwards them to the controller. The output disappears when you disconnect the controller or switch to DS4 mode.
+The user service creates a four-channel PipeWire output named `edgemap.dualsense` in every Bluetooth output mode. Send haptic audio to its rear left and right channels. The output disappears when the controller disconnects. With a USB connection, use the physical controller's rear audio channels.
 
 Bluetooth HD haptics require a running PipeWire session and `pw-cat` (`pipewire-audio` on Arch, `pipewire-bin` on Debian/Ubuntu). Experimental speaker playback uses the two front channels and also requires `libopus.so.0`.
 

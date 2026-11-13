@@ -62,6 +62,7 @@ pub(crate) struct ProxyInit {
     pub(crate) codec: CodecPipeline,
     pub(crate) source_kind: SonyDeviceKind,
     pub(crate) output_device_config: String,
+    pub(crate) force_audio_haptics: bool,
 }
 
 static DISCONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -75,6 +76,7 @@ pub struct Proxy {
     codec: CodecPipeline,
     source_kind: SonyDeviceKind,
     output_device_config: String,
+    force_audio_haptics: bool,
     recreate_uhid: bool,
     keyboard: crate::keyboard::KeyboardDevice,
     last_snapshot: Option<crate::model::GamepadState>,
@@ -128,6 +130,7 @@ impl Proxy {
             codec,
             source_kind,
             output_device_config,
+            force_audio_haptics,
         } = init;
         let repeat_input = RepeatInput::from_env(codec);
         let mut physical_output_state = PhysicalOutputState::default();
@@ -152,6 +155,7 @@ impl Proxy {
             codec,
             source_kind,
             output_device_config,
+            force_audio_haptics,
             recreate_uhid: false,
             keyboard,
             last_snapshot: None,
@@ -206,6 +210,11 @@ impl Proxy {
         };
         let new_output_device = cfg.output_device.clone();
         let new_runtimes = MappingRuntimes::from_mapping(&new_mapping);
+        if cfg.force_audio_haptics && !self.force_audio_haptics {
+            self.select_audio_haptics()
+                .map_err(|e| ("haptics-failed", e.to_string()))?;
+        }
+        self.force_audio_haptics = cfg.force_audio_haptics;
         *self.mapping.write().unwrap() = new_mapping;
         info!(
             "config applied: source={}",
@@ -320,12 +329,9 @@ impl Proxy {
             return None;
         }
         match (self.codec.target, self.source_kind) {
-            (TargetCodec::Ds4Usb, _) => None,
             (TargetCodec::Ds5UsbForced, _) => Some(HapticsDevice::DualSense),
-            (TargetCodec::Ds5UsbAuto, SonyDeviceKind::DualSense) => Some(HapticsDevice::DualSense),
-            (TargetCodec::Ds5UsbAuto, SonyDeviceKind::DualSenseEdge) => {
-                Some(HapticsDevice::DualSenseEdge)
-            }
+            (_, SonyDeviceKind::DualSense) => Some(HapticsDevice::DualSense),
+            (_, SonyDeviceKind::DualSenseEdge) => Some(HapticsDevice::DualSenseEdge),
         }
     }
 
@@ -415,6 +421,18 @@ impl Proxy {
     pub fn run(&mut self, shutdown: &ShutdownSignal, control: &mut ControlServer) -> ExitReason {
         DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
 
+        let mut control_state = control.state();
+        if self.force_audio_haptics {
+            if let Err(error) = self.select_audio_haptics() {
+                if is_disconnect_io_error(&error) {
+                    return ExitReason::DeviceGone;
+                }
+                warn!("could not enable forced audio haptics: {error}; continuing with game-controlled haptics");
+                self.force_audio_haptics = false;
+                control_state.needs_config = true;
+            }
+        }
+
         let ep_fd = match Epoll::new(EpollCreateFlags::EPOLL_CLOEXEC) {
             Ok(fd) => fd,
             Err(e) => {
@@ -492,7 +510,6 @@ impl Proxy {
         } else {
             None
         };
-        let mut control_state = control.state();
         control_state.uhid_ready = true;
         control_state.bt_haptics = pcm_receiver.as_ref().and(haptics_device);
         control.set_state(control_state);
@@ -730,6 +747,7 @@ fn public_control_error_message(code: &str) -> &'static str {
     match code {
         "load-failed" => "configuration load failed",
         "validation-failed" => "configuration validation failed",
+        "haptics-failed" => "failed to select audio haptics on controller",
         "mapping-failed" => "configuration mapping failed",
         _ => "control request failed",
     }
@@ -863,6 +881,7 @@ mod tests {
             codec,
             source_kind: SonyDeviceKind::DualSense,
             output_device_config: "auto".to_string(),
+            force_audio_haptics: false,
         });
         (proxy, receiver)
     }
@@ -1000,6 +1019,9 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
         .unwrap();
         for (content, code) in [
             ("not valid TOML", "load-failed"),
+            ("version = 2\nforce_audio_haptics = 1", "load-failed"),
+            // test_proxy uses a read-only hidraw fd, so mode selection fails.
+            ("version = 2\nforce_audio_haptics = true", "haptics-failed"),
             (
                 "version = 2\noutput_device = \"invalid\"",
                 "validation-failed",
@@ -1017,6 +1039,7 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
                 ActiveConfig::from_content("invalid.toml".into(), content.into()).unwrap();
             assert_eq!(proxy.apply_active_config(invalid).unwrap_err().0, code);
             assert_eq!(proxy.active_config(), Some(&original));
+            assert!(!proxy.force_audio_haptics);
             assert_eq!(proxy.output_device_config, "auto");
             assert!(!proxy.recreate_uhid);
             assert!(proxy.last_frame.is_some());
@@ -1172,7 +1195,146 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
     }
 
     #[test]
-    fn audio_requires_bluetooth_and_a_dualsense_target() {
+    fn mapping_switch_selects_pcm_once_and_preserves_other_game_output() {
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        for output_device in ["auto", "dualshock4"] {
+            let target = TargetCodec::from_output_device(output_device);
+            let base_toml = format!("version = 2\noutput_device = \"{output_device}\"\n");
+            for physical in [PhysicalCodec::Ds5Usb, PhysicalCodec::Ds5Bt] {
+                let (mut proxy, uhid_peer) = test_proxy(MappingConfig::default());
+                let (hidraw, physical_peer) = packet_pair();
+                proxy.hidraw = HidrawDevice::from_test_fd(hidraw);
+                proxy.codec.target = target;
+                proxy.output_device_config = output_device.into();
+                proxy.codec.physical = physical;
+                let forced = ActiveConfig::from_content(
+                    "pcm.toml".into(),
+                    format!("{base_toml}force_audio_haptics = true"),
+                )
+                .unwrap();
+                proxy.apply_active_config(forced.clone()).unwrap();
+                let mode = receive_uhid_packet(&physical_peer).unwrap();
+                let offset = if physical == PhysicalCodec::Ds5Bt {
+                    3
+                } else {
+                    1
+                };
+                assert_eq!(mode[offset], 1);
+                assert!(mode[offset + 1..offset + 47].iter().all(|&b| b == 0));
+                proxy.apply_active_config(forced).unwrap();
+                assert!(receive_uhid_packet(&physical_peer).is_none());
+                assert!(!proxy.recreate_uhid);
+
+                let game = if target == TargetCodec::Ds4Usb {
+                    let mut report = vec![0; 32];
+                    report[..2].copy_from_slice(&[5, 3]); // Motors and lightbar.
+                    report[4..9].copy_from_slice(&[64, 128, 10, 20, 30]);
+                    report
+                } else {
+                    let mut report = vec![0x55; 48];
+                    report[0] = 2;
+                    report[1] = 0x0f; // Classic rumble and both adaptive triggers.
+                    report[39] = 0x06; // Enhanced rumble and lightbar setup.
+                    report
+                };
+                send_test_packet(&uhid_peer, &output_event(&game));
+                proxy.handle_uhid_event().unwrap();
+                let filtered = receive_uhid_packet(&physical_peer).unwrap();
+                let base =
+                    ActiveConfig::from_content("game.toml".into(), base_toml.clone()).unwrap();
+                proxy.apply_active_config(base).unwrap();
+                assert!(receive_uhid_packet(&physical_peer).is_none());
+                send_test_packet(&uhid_peer, &output_event(&game));
+                proxy.handle_uhid_event().unwrap();
+                let normal = receive_uhid_packet(&physical_peer).unwrap();
+                let size = if target == TargetCodec::Ds4Usb {
+                    62
+                } else {
+                    47
+                };
+                let mut expected = normal[offset..offset + size].to_vec();
+                assert_ne!(expected[0] & 2, 0);
+                assert_ne!(expected[2..4], [0, 0]);
+                expected[0] &= !2;
+                expected[2..4].fill(0);
+                expected[38] &= !4;
+                assert_eq!(filtered[offset..offset + size], expected);
+            }
+        }
+    }
+
+    #[test]
+    fn failed_startup_haptics_keeps_input_running_and_allows_config_reapply() {
+        use crate::control::{ControlClient, ControlState, ServerPacket};
+        use nix::poll::{poll, PollFd, PollFlags};
+
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("proxy-haptics-start-{}", std::process::id()));
+        let initial = ControlState {
+            uhid_ready: false,
+            needs_config: false,
+            bt_haptics: None,
+        };
+        let mut server = ControlServer::bind(&dir, initial).unwrap();
+        let client = ControlClient::connect(&dir.join("control.sock")).unwrap();
+        assert!(server.drain_requests().unwrap().is_empty());
+        assert_eq!(
+            client.receive().unwrap(),
+            Some(ServerPacket::Hello(initial))
+        );
+
+        let config = ActiveConfig::from_content(
+            "pcm.toml".into(),
+            "version = 2\nforce_audio_haptics = true\n[cross]\nremap = \"circle\"".into(),
+        )
+        .unwrap();
+        let (mut proxy, uhid_peer) =
+            test_proxy(config.parse().unwrap().to_mapping_config().unwrap());
+        proxy.active_config = Some(config.clone());
+        proxy.force_audio_haptics = true;
+        let (physical, peer) = packet_pair();
+        // A full nonblocking output queue fails the initial mode write with EAGAIN.
+        while send(physical.as_raw_fd(), &[0; 48], MsgFlags::MSG_NOSIGNAL).is_ok() {}
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        let worker = std::thread::spawn(move || {
+            let mut input = [0; 64];
+            input[0] = 1;
+            input[8] = 0x28; // Cross pressed, neutral D-pad.
+            send_test_packet(&peer, &input);
+            let mut fds = [PollFd::new(uhid_peer.as_fd(), PollFlags::POLLIN)];
+            assert_eq!(poll(&mut fds, 3000u16).unwrap(), 1);
+            let mapped = receive_uhid_packet(&uhid_peer).unwrap();
+            assert_eq!(mapped[6 + 8] & 0x60, 0x40); // Circle, as configured.
+            assert_eq!(
+                client.receive().unwrap(),
+                Some(ServerPacket::State(ControlState {
+                    uhid_ready: true,
+                    needs_config: true,
+                    bt_haptics: None,
+                }))
+            );
+
+            while receive_uhid_packet(&peer).is_some() {}
+            client
+                .send_request(&ControlRequest::SwitchConfig(config))
+                .unwrap();
+            let mut fds = [PollFd::new(peer.as_fd(), PollFlags::POLLIN)];
+            assert_eq!(poll(&mut fds, 3000u16).unwrap(), 1);
+            assert_eq!(receive_uhid_packet(&peer).unwrap()[..2], [2, 1]);
+            uhid_peer // Keep UHID open while the physical peer disconnects.
+        });
+        assert_eq!(
+            proxy.run(&ShutdownSignal::new().unwrap(), &mut server),
+            ExitReason::DeviceGone
+        );
+        worker.join().unwrap();
+        assert!(proxy.force_audio_haptics);
+        assert!(!server.state().needs_config);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn audio_device_follows_bluetooth_controller_identity() {
         use crate::control::HapticsDevice;
         let (mut proxy, _peer) = test_proxy(MappingConfig::default());
         for (source, target, expected) in [
@@ -1196,8 +1358,16 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
                 TargetCodec::Ds5UsbForced,
                 Some(HapticsDevice::DualSense),
             ),
-            (SonyDeviceKind::DualSenseEdge, TargetCodec::Ds4Usb, None),
-            (SonyDeviceKind::DualSense, TargetCodec::Ds4Usb, None),
+            (
+                SonyDeviceKind::DualSenseEdge,
+                TargetCodec::Ds4Usb,
+                Some(HapticsDevice::DualSenseEdge),
+            ),
+            (
+                SonyDeviceKind::DualSense,
+                TargetCodec::Ds4Usb,
+                Some(HapticsDevice::DualSense),
+            ),
         ] {
             proxy.source_kind = source;
             proxy.codec.target = target;
@@ -1209,14 +1379,18 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
     }
 
     #[test]
-    fn output_switch_recreates_pcm_endpoint_only_for_dualsense() {
+    fn bluetooth_pcm_endpoint_is_available_with_every_target() {
         use crate::control::{ControlClient, ControlState, HapticsDevice, ServerPacket};
 
         let _guard = EVENT_TEST_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("proxy-audio-target-{}", std::process::id()));
         for (output, next_output, expected) in [
             ("auto", "dualshock4", Some(HapticsDevice::DualSenseEdge)),
-            ("dualshock4", "dualsense", None),
+            (
+                "dualshock4",
+                "dualsense",
+                Some(HapticsDevice::DualSenseEdge),
+            ),
             ("dualsense", "dualshock4", Some(HapticsDevice::DualSense)),
         ] {
             let initial = ControlState {
@@ -1239,13 +1413,14 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
             proxy.codec.target = TargetCodec::from_output_device(output);
             proxy.source_kind = SonyDeviceKind::DualSenseEdge;
             proxy.output_device_config = output.into();
+            proxy.force_audio_haptics = true;
             let pcm_path = dir.join(crate::control::haptics::HAPTICS_SOCKET);
             let worker_path = pcm_path.clone();
             let (done_tx, done_rx) = std::sync::mpsc::channel();
             let worker = std::thread::spawn(move || {
                 // Keep the simulated devices connected until the config exits the loop.
                 // If this worker fails, dropping the peers also wakes the proxy.
-                let _peers = (physical_peer, uhid_peer);
+                let _uhid_peer = uhid_peer;
                 let deadline = Instant::now() + Duration::from_secs(3);
                 let state = loop {
                     if let Some(ServerPacket::State(state)) = client.receive().unwrap() {
@@ -1255,6 +1430,8 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
                     std::thread::sleep(Duration::from_millis(1));
                 };
                 assert!(state.uhid_ready);
+                let mode = receive_uhid_packet(&physical_peer).unwrap();
+                assert_eq!(&mode[..4], &[0x31, 0, 0x10, 1]);
                 assert_eq!(state.bt_haptics, expected);
                 assert_eq!(worker_path.exists(), expected.is_some());
                 let config = ActiveConfig::from_content(
@@ -1453,6 +1630,37 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
             assert_eq!(&packet[3..data.len() + 2], &data[1..]);
         }
         assert!(receive_uhid_packet(&peer).is_none());
+    }
+
+    #[test]
+    fn forced_pcm_keeps_mixed_ds5_and_converted_ds4_reports_out_of_repeat_filter() {
+        let (mut proxy, _receiver) = test_proxy(MappingConfig::default());
+        let (physical, peer) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        proxy.codec.physical = PhysicalCodec::Ds5Bt;
+        proxy.force_audio_haptics = true;
+
+        // After PCM filtering, both requests encode as a lightbar-only update.
+        let mut mixed = [0; 48];
+        mixed[..5].copy_from_slice(&[2, 2, 4, 80, 100]);
+        mixed[39] = 4;
+        mixed[45..48].copy_from_slice(&[3, 5, 7]);
+        let mut ds4 = [0; 32];
+        ds4[..2].copy_from_slice(&[5, 2]);
+        ds4[6..9].copy_from_slice(&[3, 5, 7]);
+        for (target, data) in [
+            (TargetCodec::Ds5UsbAuto, mixed.as_slice()),
+            (TargetCodec::Ds4Usb, ds4.as_slice()),
+        ] {
+            proxy.codec.target = target;
+            for _ in 0..2 {
+                proxy.send_target_output(data).unwrap();
+                let report = receive_uhid_packet(&peer).unwrap();
+                assert_eq!(&report[3..7], &[0, 4, 0, 0]);
+                assert_eq!(report[41], 0);
+                assert_eq!(&report[47..50], &[3, 5, 7]);
+            }
+        }
     }
 
     #[test]

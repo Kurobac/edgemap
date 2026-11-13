@@ -4,19 +4,21 @@ use std::time::{Duration, Instant};
 
 use log::{debug, error, info, log_enabled, Level};
 
-use crate::codec::{Ds5ControlKind, Ds5UsbOutput, HapticsFrame, OutputCommand, PhysicalCodec};
+use crate::codec::{
+    Ds5ControlKind, Ds5UsbOutput, HapticsFrame, OutputCommand, PhysicalCodec, TargetCodec,
+};
 
 use super::{is_disconnect_io_error, Proxy, DISCONNECTED};
 
 struct SentControl {
     sent_at: Instant,
-    report: Ds5UsbOutput,
+    report: Vec<u8>,
 }
 
 impl SentControl {
-    fn is_repeat(&self, output: &Ds5UsbOutput, now: Instant) -> bool {
+    fn is_repeat(&self, output: &[u8], now: Instant) -> bool {
         // Refresh on the next request after 100 ms in case another writer intervened.
-        self.report == *output && now.duration_since(self.sent_at) < Duration::from_millis(100)
+        self.report == output && now.duration_since(self.sent_at) < Duration::from_millis(100)
     }
 }
 
@@ -91,22 +93,34 @@ impl Proxy {
         let result = self
             .codec
             .target
-            .decode_output(data)
+            .decode_output(data, self.force_audio_haptics)
             .map_err(output_codec_error)
-            .and_then(|command| self.send_output_command(&command));
+            .and_then(|command| self.send_output(&command, Some(data)));
         if self.codec.physical == PhysicalCodec::Ds5Bt && log_enabled!(Level::Debug) {
             self.bt_output_stats.record(&result, Instant::now());
         }
         result.map(|_| ())
     }
 
-    fn send_output_command(&mut self, command: &OutputCommand) -> io::Result<SendOutcome> {
+    fn send_output_command(&mut self, command: &OutputCommand) -> io::Result<()> {
+        self.send_output(command, None).map(|_| ())
+    }
+
+    fn send_output(
+        &mut self,
+        command: &OutputCommand,
+        target_report: Option<&[u8]>,
+    ) -> io::Result<SendOutcome> {
         let tracked = match (self.codec.physical, command) {
-            (PhysicalCodec::Ds5Bt, OutputCommand::Ds5Usb(output)) => {
-                let kind = output.control_kind().map_err(output_codec_error)?;
+            (PhysicalCodec::Ds5Bt, OutputCommand::Ds5Usb(output))
+                if self.codec.target != TargetCodec::Ds4Usb =>
+            {
+                // Compare the original DS5 request: masking rumble can make a mixed update look lightbar-only.
+                let report = target_report.unwrap_or_else(|| output.as_bytes());
+                let kind = Ds5UsbOutput::control_kind(report).map_err(output_codec_error)?;
                 self.sent_controls
                     .slot(kind)
-                    .map(|(slot, skipped)| (slot, output, skipped))
+                    .map(|(slot, skipped)| (slot, report, skipped))
             }
             _ => None,
         };
@@ -130,10 +144,14 @@ impl Proxy {
         if let Some((slot, output, _)) = tracked {
             *slot = Some(SentControl {
                 sent_at: Instant::now(),
-                report: output.clone(),
+                report: output.to_vec(),
             });
         }
         Ok(SendOutcome::Written)
+    }
+
+    pub(super) fn select_audio_haptics(&mut self) -> io::Result<()> {
+        self.send_output_command(&OutputCommand::Ds5Usb(Ds5UsbOutput::audio_haptics_mode()))
     }
 
     fn send_live_audio(&mut self, frame: crate::control::haptics::AudioFrame) -> io::Result<()> {
@@ -247,9 +265,9 @@ mod tests {
         let report = Ds5UsbOutput::speaker_demo_mode(false);
         let last = SentControl {
             sent_at: now,
-            report: report.clone(),
+            report: report.as_bytes().to_vec(),
         };
-        assert!(last.is_repeat(&report, now + Duration::from_millis(99)));
-        assert!(!last.is_repeat(&report, now + Duration::from_millis(100)));
+        assert!(last.is_repeat(report.as_bytes(), now + Duration::from_millis(99)));
+        assert!(!last.is_repeat(report.as_bytes(), now + Duration::from_millis(100)));
     }
 }

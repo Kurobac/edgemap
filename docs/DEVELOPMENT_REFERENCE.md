@@ -88,7 +88,7 @@ Assassin's Creed Shadows repeatedly alternated lightbar updates and commands to 
 
 - `ds5_usb.rs` identifies lightbar-only and both-triggers-off requests from USB report `0x02`. The sender tracks the last successful write for each kind independently. It skips a request if the complete USB report, including its length and trailing bytes, matches that write and less than 100 ms has elapsed. The first matching request at or after 100 ms is sent immediately.
 - A report with an all-zero payload is forwarded and preserves both entries. Other valid DS5 control reports, including mixed updates and active trigger effects, are forwarded in order and invalidate both entries. A failed physical write also clears both entries. Each controller session starts with an empty history.
-- The repeat check runs before Bluetooth sequence assignment and CRC generation. Each forwarded request produces its own report. Physical USB output, DS4 target output, and timed PCM/audio frames follow their existing send paths.
+- The repeat check compares the original target report, so a mixed rumble and lightbar request is forwarded even when forced audio haptics removes its rumble fields. Bluetooth sequence assignment and CRC generation follow the repeat check. Each forwarded request produces its own report. Physical USB output, DS4 target output, and timed PCM/audio frames follow their existing send paths.
 
 Set `RUST_LOG=info,dseuhid::proxy::output=debug` to see a `BT control output` summary roughly every five seconds of ongoing UHID output to a Bluetooth controller. Each line gives the actual elapsed time, reports received, successful hidraw writes, repeats skipped for each control kind, and failures (invalid reports or failed writes). The next incoming report triggers the summary when the interval has elapsed. These counts cover UHID output only. Internally generated PCM, audio and speaker setup commands follow a separate entry point.
 
@@ -124,19 +124,25 @@ Set `RUST_LOG=info,dseuhid::proxy::output=debug` to see a `BT control output` su
   value of 64. A value of 32 produced intermittent missed short haptics during
   repeated Genshin activity-page switching; 64 was more stable in that test.
   Example: `sudo env DSEUHID_BT_HAPTICS_BUFFER=32 ./target/debug/dseuhid`.
-- `proxy/output.rs` owns the shared physical write/error path. Ordinary game
-  output retains its flags. No rumble/PCM priority policy is applied.
+- `proxy/output.rs` owns the shared physical write/error path. The optional top-level
+  `force_audio_haptics = true` in a mapping TOML selects grip PCM when the
+  configuration takes effect and at session startup. Game control reports then
+  have the rumble mode, enhanced rumble flag and motor strengths filtered after
+  DS4/DS5 decoding and before physical encoding. Trigger and light updates pass
+  through. Omitting the field or setting it to false returns mode selection to
+  the game on its next output. Switching this field alone keeps the UHID session.
+  A failed mode write during startup keeps the loaded input mapping active with
+  game-controlled haptics and sets `needs_config` for reapplication. A disconnect
+  still ends the session. A failed hot switch preserves the previous live config.
   Session teardown sends silence if still connected; disconnect discards queued
   audio. Individual output failures stop live playback without stopping input.
 - `edgemap daemon` creates the PipeWire sink `edgemap.dualsense` when the control
   state reports `uhid_ready=1` with a `bt_haptics` model, and destroys it on disconnect or daemon
   shutdown. A UHID session recreation also recreates the PCM endpoint and sink.
-  USB sessions and DS4 output mode do not create a BT PCM endpoint or virtual
-  audio sink. Switching to DS4 tears down the audio session; switching back to
-  auto or DualSense recreates it for a Bluetooth source.
+  Every Bluetooth target exposes the PCM endpoint. USB uses the physical audio device.
   Every state transition is observed, including
   disconnect/reconnect notifications drained together. Audio identity follows the
-  virtual DS5 target: auto preserves DualSense/Edge, forced DualSense uses 0x0ce6.
+  physical DualSense/Edge for auto and DS4 targets. Forced DualSense uses 0x0ce6.
   A model change recreates the sink under the same stable name.
   If the connected PCM receiver closes before the control notification arrives,
   Unix datagram `ECONNREFUSED` ends the old capture normally. It does not retry

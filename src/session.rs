@@ -181,6 +181,9 @@ pub(crate) fn run(
         codec: codec_pipeline,
         source_kind: dev_info.kind,
         output_device_config: output_device,
+        force_audio_haptics: loaded_config
+            .as_ref()
+            .is_some_and(|cfg| cfg.force_audio_haptics),
     });
     match proxy.run(shutdown, control) {
         proxy::ExitReason::ConfigChanged => {

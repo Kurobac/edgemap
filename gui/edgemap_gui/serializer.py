@@ -18,6 +18,8 @@ def serialize_config(config: dict[str, Any], source_buttons: Iterable[str]) -> s
     output_device = config.get("output_device", "auto")
     if output_device != "auto":
         lines.append(f"output_device = {toml_quote(output_device)}")
+    if config.get("force_audio_haptics"):
+        lines.append("force_audio_haptics = true")
     lines.append("")
 
     for name in source_buttons:

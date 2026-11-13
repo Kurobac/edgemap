@@ -13,7 +13,7 @@ use feature::{report_with_id, DS5_PHYSICAL_FEATURE_REPORTS_TO_CACHE};
 pub use feature::{FeatureReportCache, PhysicalFeatureReportRequest};
 #[allow(unused_imports)]
 pub use types::{ControllerFrame, MotionFrame, SourceReport, TouchpadContact, TouchpadFrame};
-pub use types::{Ds4UsbOutput, Ds5UsbOutput, HapticsFrame, OutputCommand};
+pub use types::{Ds5UsbOutput, HapticsFrame, OutputCommand};
 
 #[cfg(test)]
 use ds5_bt::{
@@ -160,18 +160,9 @@ impl PhysicalCodec {
         state: &mut PhysicalOutputState,
     ) -> CodecResult<Vec<u8>> {
         match (self, command) {
-            (Self::Ds5Usb, OutputCommand::Ds5Usb(output)) => {
-                ds5_usb::encode_physical_output_from_ds5_usb(output)
-            }
-            (Self::Ds5Usb, OutputCommand::Ds4Usb(output)) => {
-                ds5_usb::encode_physical_output_from_ds4_usb(output)
-            }
+            (Self::Ds5Usb, OutputCommand::Ds5Usb(output)) => Ok(output.as_bytes().to_vec()),
             (Self::Ds5Bt, OutputCommand::Ds5Usb(output)) => {
                 ds5_bt::encode_output_from_ds5_usb(output, state)
-            }
-            (Self::Ds5Bt, OutputCommand::Ds4Usb(output)) => {
-                let ds5 = ds4_usb::convert_output_to_ds5(output.as_bytes());
-                ds5_bt::encode_output_from_ds5_usb_bytes(&ds5, state)
             }
             (Self::Ds5Bt, OutputCommand::Haptics(frame)) => {
                 Ok(ds5_bt::encode_haptics(frame, state))
@@ -243,13 +234,19 @@ impl TargetCodec {
         }
     }
 
-    pub fn decode_output(self, data: &[u8]) -> CodecResult<OutputCommand> {
-        match self {
-            Self::Ds5UsbAuto | Self::Ds5UsbForced => {
-                Ok(OutputCommand::Ds5Usb(ds5_usb::decode_output(data)))
-            }
-            Self::Ds4Usb => Ok(OutputCommand::Ds4Usb(ds4_usb::decode_output(data))),
+    pub fn decode_output(
+        self,
+        data: &[u8],
+        force_audio_haptics: bool,
+    ) -> CodecResult<OutputCommand> {
+        let mut output = match self {
+            Self::Ds5UsbAuto | Self::Ds5UsbForced => ds5_usb::decode_output(data),
+            Self::Ds4Usb => ds4_usb::decode_output(data),
+        };
+        if force_audio_haptics {
+            output.force_audio_haptics();
         }
+        Ok(OutputCommand::Ds5Usb(output))
     }
 
     pub fn seed_feature_reports(self, cache: &mut FeatureReportCache) {
@@ -578,7 +575,7 @@ mod tests {
 
         let mut usb: Vec<u8> = (0..48).collect();
         usb[0] = 2;
-        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb, false).unwrap();
         let output = PhysicalCodec::Ds5Bt
             .encode_output(&command, &mut PhysicalOutputState::default())
             .unwrap();
@@ -671,7 +668,7 @@ mod tests {
         ds4[1] = 0x01;
         ds4[4] = 64;
         ds4[5] = 128;
-        let command = TargetCodec::Ds4Usb.decode_output(&ds4).unwrap();
+        let command = TargetCodec::Ds4Usb.decode_output(&ds4, false).unwrap();
         let mut state = PhysicalOutputState::default();
         let ds5 = PhysicalCodec::Ds5Usb
             .encode_output(&command, &mut state)
@@ -686,13 +683,21 @@ mod tests {
     #[test]
     fn ds5_output_passthrough_is_exposed_through_codec_boundary() {
         let ds5 = [0x02, 0x01, 0x02, 0x03];
-        let command = TargetCodec::Ds5UsbAuto.decode_output(&ds5).unwrap();
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&ds5, false).unwrap();
         let mut state = PhysicalOutputState::default();
         let encoded = PhysicalCodec::Ds5Usb
             .encode_output(&command, &mut state)
             .unwrap();
 
         assert_eq!(encoded, ds5);
+
+        let short = TargetCodec::Ds5UsbAuto
+            .decode_output(&[2, 0x0f, 4, 80], true)
+            .unwrap();
+        let filtered = PhysicalCodec::Ds5Usb
+            .encode_output(&short, &mut state)
+            .unwrap();
+        assert_eq!(filtered, [2, 0x0d, 4, 0]);
     }
 
     #[test]
@@ -994,7 +999,7 @@ mod tests {
         for (i, byte) in usb[1..].iter_mut().enumerate() {
             *byte = (i as u8).wrapping_add(1);
         }
-        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb, false).unwrap();
         let mut state = PhysicalOutputState::default();
 
         let bt = PhysicalCodec::Ds5Bt
@@ -1028,7 +1033,7 @@ mod tests {
         for (i, byte) in usb[1..].iter_mut().enumerate() {
             *byte = (i as u8).wrapping_add(1);
         }
-        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb, false).unwrap();
         let mut state = PhysicalOutputState::default();
 
         let bt = PhysicalCodec::Ds5Bt
@@ -1058,7 +1063,7 @@ mod tests {
     fn physical_ds5_bt_output_sequence_increments_and_wraps() {
         let mut usb = [0u8; DS5_USB_OUTPUT_REPORT_MIN_SIZE];
         usb[0] = DS5_USB_OUTPUT_REPORT_ID;
-        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb, false).unwrap();
         let mut state = PhysicalOutputState::default();
 
         for expected in 0..16u8 {
@@ -1083,7 +1088,7 @@ mod tests {
         ds4[6] = 1;
         ds4[7] = 2;
         ds4[8] = 3;
-        let command = TargetCodec::Ds4Usb.decode_output(&ds4).unwrap();
+        let command = TargetCodec::Ds4Usb.decode_output(&ds4, false).unwrap();
         let mut state = PhysicalOutputState::default();
 
         let bt = PhysicalCodec::Ds5Bt
@@ -1102,7 +1107,7 @@ mod tests {
     #[test]
     fn physical_ds5_bt_rejects_invalid_ds5_usb_output() {
         let command = TargetCodec::Ds5UsbAuto
-            .decode_output(&[0x02, 0x01])
+            .decode_output(&[0x02, 0x01], false)
             .unwrap();
         let mut state = PhysicalOutputState::default();
         assert_eq!(
@@ -1112,7 +1117,7 @@ mod tests {
 
         let mut usb = [0u8; DS5_USB_OUTPUT_REPORT_MAX_SIZE];
         usb[0] = 0x31;
-        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb, false).unwrap();
         assert_eq!(
             PhysicalCodec::Ds5Bt.encode_output(&command, &mut state),
             Err(CodecError::InvalidReport)
@@ -1120,7 +1125,7 @@ mod tests {
 
         let mut usb = [0u8; DS5_USB_OUTPUT_REPORT_MAX_SIZE + 1];
         usb[0] = DS5_USB_OUTPUT_REPORT_ID;
-        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb).unwrap();
+        let command = TargetCodec::Ds5UsbAuto.decode_output(&usb, false).unwrap();
         assert_eq!(
             PhysicalCodec::Ds5Bt.encode_output(&command, &mut state),
             Err(CodecError::InvalidReport)

@@ -82,6 +82,8 @@ When you connect over Bluetooth, edgemap presents the selected controller model 
 
 The user service creates a four-channel PipeWire output named `edgemap.dualsense` in every Bluetooth output mode. Send haptic audio to its rear left and right channels. The output disappears when the controller disconnects. With a USB connection, use the physical controller's rear audio channels.
 
+For Bluetooth HD haptics, edgemap downsamples the grip audio from 48 kHz to 3 kHz. This is a lossy conversion that can remove much of the high-frequency detail in an effect. In a blind test with the rotating beam effect from *Stray*, the author felt no clear difference between the original and downsampled versions played through the same USB-connected DualSense Edge.
+
 Bluetooth HD haptics require a running PipeWire session and `pw-cat` (`pipewire-audio` on Arch, `pipewire-bin` on Debian/Ubuntu). Experimental speaker playback uses the two front channels and also requires `libopus.so.0`.
 
 By default, edgemap repeats the latest Bluetooth input at 1000 Hz for a virtual DualSense or Edge. This gives games a steady 1 ms interval between reports even when the physical controller’s reports arrive unevenly. The report sequence advances while the sensor timestamp stays with the last real sample. In Genshin Impact, this timing almost eliminated the visible gyro jitter seen with uneven report intervals. The DS4 mode follows incoming Bluetooth reports by default. Both behaviors can be adjusted in the [environment reference](#environment-variables).

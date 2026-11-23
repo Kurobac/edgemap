@@ -235,15 +235,19 @@ impl TargetCodec {
         }
     }
 
+    pub(crate) fn decode_control(self, data: &[u8]) -> Ds5UsbOutput {
+        match self {
+            Self::Ds5UsbAuto | Self::Ds5UsbForced => ds5_usb::decode_output(data),
+            Self::Ds4Usb => ds4_usb::decode_output(data),
+        }
+    }
+
     pub fn decode_output(
         self,
         data: &[u8],
         force_audio_haptics: bool,
     ) -> CodecResult<OutputCommand> {
-        let mut output = match self {
-            Self::Ds5UsbAuto | Self::Ds5UsbForced => ds5_usb::decode_output(data),
-            Self::Ds4Usb => ds4_usb::decode_output(data),
-        };
+        let mut output = self.decode_control(data);
         if force_audio_haptics {
             output.force_audio_haptics();
         }

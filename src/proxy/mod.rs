@@ -85,7 +85,7 @@ pub struct Proxy {
     last_frame: Option<ControllerFrame>,
     repeat_input: Option<RepeatInput>,
     physical_output_state: PhysicalOutputState,
-    sent_controls: output::SentControls,
+    bt_controls: output::BtControls,
     bt_output_stats: output::BtOutputStats,
     live_haptics: LiveHaptics,
     speaker_active: bool,
@@ -164,7 +164,7 @@ impl Proxy {
             last_frame: None,
             repeat_input,
             physical_output_state,
-            sent_controls: output::SentControls::default(),
+            bt_controls: output::BtControls::default(),
             bt_output_stats: output::BtOutputStats::default(),
             live_haptics: LiveHaptics::default(),
             speaker_active: false,
@@ -346,11 +346,12 @@ impl Proxy {
                     .and_then(RepeatInput::next_deadline),
             )
             .chain(self.live_haptics.next_deadline())
+            .chain(self.bt_controls.next_deadline())
             .min()
     }
 
-    fn arm_timing_timer(&self, timer: &TimerFd) -> Result<(), String> {
-        let Some(deadline) = self.next_timing_deadline() else {
+    fn arm_timing_timer(timer: &TimerFd, deadline: Option<Instant>) -> Result<(), String> {
+        let Some(deadline) = deadline else {
             return timer
                 .unset()
                 .map_err(|error| format!("failed to disarm timing timer: {error}"));
@@ -369,6 +370,14 @@ impl Proxy {
         self.handle_haptics_tick(now);
         if haptics_active && DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(());
+        }
+        if self.bt_controls.next_deadline().is_some_and(|at| at <= now) {
+            if let Err(error) = self.flush_bt_controls(now) {
+                warn!("failed to send pending Bluetooth control: {error}");
+                if is_disconnect_io_error(&error) {
+                    return Ok(());
+                }
+            }
         }
         let runtime_due = self
             .runtimes
@@ -409,6 +418,7 @@ impl Proxy {
     }
 
     fn clear_timing_state(&mut self) {
+        self.bt_controls = output::BtControls::default();
         self.stop_live_haptics();
         self.last_frame = None;
         if let Some(repeat) = self.repeat_input.as_mut() {
@@ -519,8 +529,7 @@ impl Proxy {
         let mut seq: u8 = 0;
         let mut events = [EpollEvent::empty(); 8];
 
-        let exit_reason = 'run: loop {
-            let mut timing_ready = false;
+        let mut exit_reason = 'run: loop {
             match ep_fd.wait(&mut events, EpollTimeout::NONE) {
                 Ok(n) => {
                     for ev in events.iter().take(n) {
@@ -603,7 +612,6 @@ impl Proxy {
                                 error!("failed to consume timing timer expiration: {error}");
                                 break 'run ExitReason::FatalError;
                             }
-                            timing_ready = true;
                         } else {
                             error!("unknown epoll event token: token={fd_num}");
                             break 'run ExitReason::FatalError;
@@ -616,7 +624,9 @@ impl Proxy {
                     break 'run ExitReason::FatalError;
                 }
             }
-            if timing_ready {
+            // A deadline can pass while the current batch of fd events is being handled.
+            let mut deadline = self.next_timing_deadline();
+            if deadline.is_some_and(|at| at <= Instant::now()) {
                 if let Err(error) = self.handle_timing_tick(&mut seq, Instant::now()) {
                     error!("timing event handler failed: {error}");
                     break 'run ExitReason::FatalError;
@@ -624,16 +634,26 @@ impl Proxy {
                 if DISCONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
                     break 'run ExitReason::DeviceGone;
                 }
+                deadline = self.next_timing_deadline();
             }
             if self.recreate_uhid {
                 break 'run ExitReason::ConfigChanged;
             }
-            if let Err(error) = self.arm_timing_timer(&timing_timer) {
+            if let Err(error) = Self::arm_timing_timer(&timing_timer, deadline) {
                 error!("{error}");
                 break 'run ExitReason::FatalError;
             }
         };
 
+        if exit_reason == ExitReason::ConfigChanged {
+            // The next UHID session reuses this controller and may only support DS4 output.
+            if let Err(error) = self.reset_bt_triggers_for_rebuild() {
+                warn!("failed to release adaptive triggers before device recreation: {error}");
+                if is_disconnect_io_error(&error) {
+                    exit_reason = ExitReason::DeviceGone;
+                }
+            }
+        }
         if exit_reason == ExitReason::DeviceGone {
             self.live_haptics = LiveHaptics::default();
         }
@@ -976,6 +996,54 @@ mod tests {
         // A duplicate readiness observation in the same turn cannot emit again.
         proxy.handle_timing_tick(&mut seq, late).unwrap();
         assert_one_input_packet_then_empty(&receiver);
+    }
+
+    #[test]
+    fn due_repeat_runs_between_the_32nd_and_33rd_uhid_events() {
+        use crate::control::ControlState;
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        let (mut proxy, uhid) = test_proxy(MappingConfig::default());
+        let (physical, _peer) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        prime_runtime_and_repeat(&mut proxy, &frame_with(&[]), Instant::now());
+
+        for _ in 0..31 {
+            send_test_packet(&uhid, &(UhidEventType::Open as u32).to_le_bytes());
+        }
+        for id in [32, 33] {
+            send_test_packet(&uhid, &[9, 0, 0, 0, id, 0, 0, 0, 9, 0]);
+        }
+        send_test_packet(&uhid, &(UhidEventType::Stop as u32).to_le_bytes());
+
+        let dir = std::env::temp_dir().join(format!("proxy-uhid-batch-{}", std::process::id()));
+        let mut server = ControlServer::bind(
+            &dir,
+            ControlState {
+                uhid_ready: false,
+                needs_config: false,
+                bt_haptics: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            proxy.run(&ShutdownSignal::new().unwrap(), &mut server),
+            ExitReason::FatalError
+        );
+        // No timerfd was armed before the first batch. Its due repeat must run
+        // after the first reply and before the second batch reaches STOP.
+        for (kind, id) in [
+            (UhidEventType::GetReportReply, Some(32u32)),
+            (UhidEventType::Input2, None),
+            (UhidEventType::GetReportReply, Some(33u32)),
+        ] {
+            let packet = receive_uhid_packet(&uhid).unwrap();
+            assert_eq!(&packet[..4], &(kind as u32).to_le_bytes());
+            if let Some(id) = id {
+                assert_eq!(&packet[4..8], &id.to_le_bytes());
+            }
+        }
+        assert!(receive_uhid_packet(&uhid).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1670,15 +1738,145 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
             send_test_packet(&receiver, &output_event(data));
         }
         proxy.handle_uhid_event().unwrap();
-        for (seq, data) in [&light[..], &off, &empty, &changed, &active, &active, &off]
-            .iter()
-            .enumerate()
-        {
+        for (seq, data) in [&light[..], &off, &empty].iter().enumerate() {
             let packet = receive_uhid_packet(&peer).unwrap();
             assert_eq!(packet[1], (seq as u8) << 4);
             assert_eq!(&packet[3..data.len() + 2], &data[1..]);
         }
         assert!(receive_uhid_packet(&peer).is_none());
+        // Only the newest trigger state survives the burst. The light update
+        // still carries its changed trailing bytes when the timer sends it.
+        for (seq, data) in [(3, &changed[..]), (4, &off[..])] {
+            let deadline = proxy.next_timing_deadline().unwrap();
+            proxy.handle_timing_tick(&mut 0, deadline).unwrap();
+            let packet = receive_uhid_packet(&peer).unwrap();
+            assert_eq!(packet[1], seq << 4);
+            assert_eq!(&packet[3..data.len() + 2], &data[1..]);
+        }
+        assert!(proxy.next_timing_deadline().is_none());
+        assert!(receive_uhid_packet(&peer).is_none());
+    }
+
+    #[test]
+    fn bt_light_flood_obeys_burst_and_rate_and_flushes_the_final_color() {
+        let (mut proxy, _uhid) = test_proxy(MappingConfig::default());
+        let (physical, peer) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        proxy.codec.physical = PhysicalCodec::Ds5Bt;
+        let start = Instant::now();
+        let mut light = [0u8; 48];
+        light[..3].copy_from_slice(&[2, 0, 4]);
+        let mut writes = 0;
+        for i in 0..400u16 {
+            let now = start + Duration::from_micros(2500 * u64::from(i));
+            light[45..47].copy_from_slice(&i.to_le_bytes());
+            proxy.submit_bt_control(&light, now).unwrap();
+            if let Some(report) = receive_uhid_packet(&peer) {
+                writes += 1;
+                assert_eq!(&report[47..49], &i.to_le_bytes());
+            }
+            if i < 3 {
+                assert_eq!(writes, i + 1);
+            }
+            assert!(receive_uhid_packet(&peer).is_none());
+            assert!(u64::from(writes) <= 3 + u64::from(i) * 30 / 400);
+        }
+        assert_eq!(writes, 32);
+        let due = proxy.next_timing_deadline().unwrap();
+        proxy
+            .handle_timing_tick(&mut 0, due - Duration::from_nanos(1))
+            .unwrap();
+        assert!(receive_uhid_packet(&peer).is_none());
+        proxy.handle_timing_tick(&mut 0, due).unwrap();
+        assert_eq!(
+            &receive_uhid_packet(&peer).unwrap()[47..49],
+            &399u16.to_le_bytes()
+        );
+        assert!(proxy.next_timing_deadline().is_none());
+
+        for i in 0..20 {
+            let now = start + Duration::from_secs(2) + Duration::from_millis(50 * i);
+            light[45] = i as u8;
+            proxy.submit_bt_control(&light, now).unwrap();
+            assert_eq!(receive_uhid_packet(&peer).unwrap()[47], i as u8);
+            assert!(proxy.next_timing_deadline().is_none());
+        }
+    }
+
+    #[test]
+    fn bt_repeats_preserve_credit_and_pending_updates_keep_the_last_requested_state() {
+        let (mut proxy, _uhid) = test_proxy(MappingConfig::default());
+        let (physical, peer) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        proxy.codec.physical = PhysicalCodec::Ds5Bt;
+        let now = Instant::now();
+        let mut light = [0u8; 48];
+        light[..3].copy_from_slice(&[2, 0, 4]);
+        let mut rumble = [0u8; 48];
+        rumble[..5].copy_from_slice(&[2, 3, 0, 64, 32]);
+        let mut trigger = [0u8; 48];
+        trigger[..2].copy_from_slice(&[2, 4]);
+        trigger[11] = 0x26;
+        // Repeats do not consume either of the remaining two burst tokens.
+        for data in [&light, &light, &light, &rumble, &trigger] {
+            proxy.submit_bt_control(data, now).unwrap();
+        }
+        for data in [&light, &rumble, &trigger] {
+            assert_eq!(&receive_uhid_packet(&peer).unwrap()[3..50], &data[1..]);
+        }
+
+        // Later requests cover the first pending color entirely.
+        light[45] = 20;
+        proxy.submit_bt_control(&light, now).unwrap();
+        light[45] = 0;
+        proxy.submit_bt_control(&light, now).unwrap();
+        let mut mixed = rumble;
+        mixed[2] = 4;
+        mixed[45] = 30;
+        proxy.submit_bt_control(&mixed, now).unwrap();
+        trigger[11] = 5;
+        proxy.submit_bt_control(&trigger, now).unwrap();
+        // The mixed report is still the only writer of rumble; the last color wins.
+        light[45] = 80;
+        proxy.submit_bt_control(&light, now).unwrap();
+        for data in [&mixed, &trigger, &light] {
+            let due = proxy.next_timing_deadline().unwrap();
+            proxy.handle_timing_tick(&mut 0, due).unwrap();
+            assert_eq!(&receive_uhid_packet(&peer).unwrap()[3..50], &data[1..]);
+        }
+        assert!(proxy.next_timing_deadline().is_none());
+    }
+
+    #[test]
+    fn pending_color_reversal_and_pcm_mode_switch_reach_the_controller() {
+        let (mut proxy, _uhid) = test_proxy(MappingConfig::default());
+        let (physical, peer) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        proxy.codec.physical = PhysicalCodec::Ds5Bt;
+        let now = Instant::now();
+        let mut light = [0u8; 48];
+        light[..3].copy_from_slice(&[2, 0, 4]);
+        for color in [1, 2, 3, 4, 3] {
+            light[45] = color;
+            proxy.submit_bt_control(&light, now).unwrap();
+        }
+        for color in [1, 2, 3] {
+            assert_eq!(receive_uhid_packet(&peer).unwrap()[47], color);
+        }
+        assert!(receive_uhid_packet(&peer).is_none());
+        let mut rumble = [0; 48];
+        rumble[..5].copy_from_slice(&[2, 3, 0, 88, 77]);
+        proxy.submit_bt_control(&rumble, now).unwrap();
+        // Internal mode setup bypasses the exhausted game budget.
+        proxy.select_audio_haptics().unwrap();
+        assert_eq!(&receive_uhid_packet(&peer).unwrap()[3..7], &[1, 0, 0, 0]);
+        let due = proxy.next_timing_deadline().unwrap();
+        proxy.handle_timing_tick(&mut 0, due).unwrap();
+        assert_eq!(receive_uhid_packet(&peer).unwrap()[47], 3);
+        let due = proxy.next_timing_deadline().unwrap();
+        proxy.handle_timing_tick(&mut 0, due).unwrap();
+        assert_eq!(&receive_uhid_packet(&peer).unwrap()[3..7], &[1, 0, 0, 0]);
+        assert!(proxy.next_timing_deadline().is_none());
     }
 
     #[test]
@@ -1702,6 +1900,7 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
             (TargetCodec::Ds4Usb, ds4.as_slice()),
         ] {
             proxy.codec.target = target;
+            proxy.bt_controls = output::BtControls::default();
             for _ in 0..2 {
                 proxy.send_target_output(data).unwrap();
                 let report = receive_uhid_packet(&peer).unwrap();
@@ -1710,6 +1909,181 @@ sequence = [{ key = "key:space", press_ms = 0, release_ms = 50 }]
                 assert_eq!(&report[47..50], &[3, 5, 7]);
             }
         }
+    }
+
+    // Three active-trigger writes exhaust the burst at a fixed instant.
+    pub(super) fn busy_bt_proxy() -> (Proxy, OwnedFd, OwnedFd, Instant) {
+        let (mut proxy, uhid) = test_proxy(MappingConfig::default());
+        let (physical, peer) = packet_pair();
+        proxy.codec.physical = PhysicalCodec::Ds5Bt;
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        let now = Instant::now();
+        let mut active = [0; 48];
+        active[..2].copy_from_slice(&[2, 0x0c]);
+        active[11] = 0x26;
+        active[22] = 0x26;
+        for _ in 0..3 {
+            proxy.submit_bt_control(&active, now).unwrap();
+            assert_eq!(&receive_uhid_packet(&peer).unwrap()[3..50], &active[1..]);
+        }
+        (proxy, uhid, peer, now)
+    }
+
+    #[test]
+    fn queued_light_keeps_its_position_only_across_independent_controls() {
+        let mut light = [0; 48];
+        light[..3].copy_from_slice(&[2, 0, 4]);
+        let mut new_light = light;
+        new_light[45] = 70;
+        // Trigger, player LED, unflagged. Only the trigger may be crossed.
+        for (flags, light_first) in [([4, 0], true), ([0, 0x10], false), ([0, 0], false)] {
+            let (mut proxy, _uhid, peer, now) = busy_bt_proxy();
+            let mut other = [0; 48];
+            other[0] = 2;
+            other[1..3].copy_from_slice(&flags);
+            for data in [&light, &other, &new_light] {
+                proxy.submit_bt_control(data, now).unwrap();
+            }
+            let expected = if light_first {
+                [&new_light, &other]
+            } else {
+                [&other, &new_light]
+            };
+            for data in expected {
+                let due = proxy.next_timing_deadline().unwrap();
+                proxy.handle_timing_tick(&mut 0, due).unwrap();
+                assert_eq!(&receive_uhid_packet(&peer).unwrap()[3..50], &data[1..]);
+            }
+            assert!(proxy.next_timing_deadline().is_none());
+            assert!(receive_uhid_packet(&peer).is_none());
+        }
+    }
+
+    #[test]
+    fn ds4_light_updates_use_the_bt_burst_and_coalesce_to_the_last_color() {
+        let (mut proxy, _uhid) = test_proxy(MappingConfig::default());
+        let (physical, peer) = packet_pair();
+        proxy.hidraw = HidrawDevice::from_test_fd(physical);
+        proxy.codec.physical = PhysicalCodec::Ds5Bt;
+        proxy.codec.target = TargetCodec::Ds4Usb;
+        let now = Instant::now();
+        let mut light = [0; 32];
+        light[..2].copy_from_slice(&[5, 2]);
+        for red in 1..=5 {
+            light[6] = red;
+            proxy.submit_bt_control(&light, now).unwrap();
+        }
+        for red in 1..=3 {
+            let packet = receive_uhid_packet(&peer).unwrap();
+            assert_eq!((packet[4], packet[47]), (4, red));
+        }
+        assert!(receive_uhid_packet(&peer).is_none());
+        let due = proxy.next_timing_deadline().unwrap();
+        proxy.handle_timing_tick(&mut 0, due).unwrap();
+        assert_eq!(receive_uhid_packet(&peer).unwrap()[47], 5);
+        assert!(proxy.next_timing_deadline().is_none());
+        assert!(receive_uhid_packet(&peer).is_none());
+    }
+
+    #[test]
+    fn edge_indicator_update_survives_a_later_common_control() {
+        let (mut proxy, _uhid, peer, now) = busy_bt_proxy();
+        proxy.source_kind = SonyDeviceKind::DualSenseEdge;
+        let mut indicator = [0; 64];
+        indicator[0] = 2;
+        indicator[39] = 0x80;
+        indicator[41] = 0x80;
+        indicator[48] = 3; // Update profile indicators, allow profile switching.
+        indicator[49] = 1;
+        let mut next = indicator;
+        next[48] = 2; // Keep switching enabled, leave the indicators alone.
+        next[49] = 0;
+        for report in [&indicator, &next] {
+            proxy.submit_bt_control(report, now).unwrap();
+        }
+        for report in [&indicator, &next] {
+            let due = proxy.next_timing_deadline().unwrap();
+            proxy.handle_timing_tick(&mut 0, due).unwrap();
+            assert_eq!(&receive_uhid_packet(&peer).unwrap()[3..66], &report[1..]);
+        }
+        assert!(proxy.next_timing_deadline().is_none());
+    }
+
+    #[test]
+    fn rebuilding_as_ds4_releases_triggers_even_with_a_pending_stop() {
+        use crate::control::{ControlClient, ControlState};
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        let (mut proxy, _uhid, peer, now) = busy_bt_proxy();
+        let mut off = [0; 48];
+        off[..2].copy_from_slice(&[2, 0x0c]);
+        off[11] = 5;
+        off[22] = 5;
+        proxy.submit_bt_control(&off, now).unwrap();
+        assert!(receive_uhid_packet(&peer).is_none());
+
+        let dir = std::env::temp_dir().join(format!("proxy-trigger-switch-{}", std::process::id()));
+        let mut server = ControlServer::bind(
+            &dir,
+            ControlState {
+                uhid_ready: false,
+                needs_config: false,
+                bt_haptics: None,
+            },
+        )
+        .unwrap();
+        let client = ControlClient::connect(&dir.join("control.sock")).unwrap();
+        assert!(server.drain_requests().unwrap().is_empty());
+        let config = ActiveConfig::from_content(
+            "switch.toml".into(),
+            "version = 2\noutput_device = \"dualshock4\"\n".into(),
+        )
+        .unwrap();
+        client
+            .send_request(&ControlRequest::SwitchConfig(config))
+            .unwrap();
+        let reason = proxy.run(&ShutdownSignal::new().unwrap(), &mut server);
+        assert_eq!(reason, ExitReason::ConfigChanged);
+        assert_eq!(&receive_uhid_packet(&peer).unwrap()[3..50], &off[1..]);
+        assert!(receive_uhid_packet(&peer).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn speaker_mute_supersedes_only_older_game_volume() {
+        let _guard = EVENT_TEST_LOCK.lock().unwrap();
+        DISCONNECTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (mut proxy, _uhid, peer, now) = busy_bt_proxy();
+        proxy.speaker_active = true;
+        let mut mixed = [0; 48];
+        mixed[..3].copy_from_slice(&[2, 0x20, 4]);
+        mixed[6] = 75;
+        mixed[45] = 35;
+        let mut volume = mixed;
+        volume[2] = 0;
+        proxy.submit_bt_control(&mixed, now).unwrap();
+        proxy.submit_bt_control(&volume, now).unwrap();
+        proxy.live_haptics.push(
+            crate::control::haptics::AudioFrame {
+                haptics: [12; 64],
+                speaker: None,
+            },
+            now,
+        );
+        let due = proxy.next_timing_deadline().unwrap();
+        proxy.handle_timing_tick(&mut 0, due).unwrap();
+        let mute = receive_uhid_packet(&peer).unwrap();
+        assert_eq!((mute[3], mute[8]), (0x20, 0));
+        assert_eq!(receive_uhid_packet(&peer).unwrap()[0], 0x32);
+        let after = now + Duration::from_secs(1);
+        proxy.handle_timing_tick(&mut 0, after).unwrap();
+        assert_eq!(receive_uhid_packet(&peer).unwrap()[0], 0x32); // PCM underrun.
+        let light = receive_uhid_packet(&peer).unwrap();
+        assert_eq!((light[3], light[4], light[47]), (0, 4, 35));
+        assert!(receive_uhid_packet(&peer).is_none());
+        assert!(proxy.next_timing_deadline().is_none());
+        proxy.submit_bt_control(&volume, after).unwrap();
+        let later = receive_uhid_packet(&peer).unwrap();
+        assert_eq!((later[3], later[8]), (0x20, 75));
     }
 
     #[test]

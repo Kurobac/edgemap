@@ -239,6 +239,7 @@ pub(super) fn decode_output(data: &[u8]) -> Ds5UsbOutput {
     Ds5UsbOutput { raw: data.to_vec() }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum Ds5ControlKind {
     Lightbar,
     BothTriggersOff,
@@ -247,6 +248,22 @@ pub(crate) enum Ds5ControlKind {
 }
 
 impl Ds5UsbOutput {
+    pub(crate) const SPEAKER_VOLUME: u8 = 0x20;
+
+    pub(crate) fn clear_speaker_volume_update(&mut self) {
+        self.raw[1] &= !Self::SPEAKER_VOLUME;
+        self.raw[6] = 0;
+    }
+
+    pub(crate) fn triggers_off() -> Self {
+        let mut raw = vec![0; OUTPUT_REPORT_MIN_SIZE];
+        raw[0] = OUTPUT_REPORT_ID;
+        raw[1] = 0x0c;
+        raw[11] = 0x05;
+        raw[22] = 0x05;
+        Self { raw }
+    }
+
     /// Select PCM without updating triggers, LEDs or speaker settings.
     pub fn audio_haptics_mode() -> Self {
         let mut raw = vec![0; OUTPUT_REPORT_MIN_SIZE];
@@ -255,7 +272,7 @@ impl Ds5UsbOutput {
         Self { raw }
     }
 
-    pub(super) fn force_audio_haptics(&mut self) {
+    pub(crate) fn force_audio_haptics(&mut self) {
         let raw = &mut self.raw;
         if raw.first() != Some(&OUTPUT_REPORT_ID) || raw.len() < 2 {
             return;
@@ -271,16 +288,35 @@ impl Ds5UsbOutput {
         }
     }
 
-    pub(crate) fn control_kind(raw: &[u8]) -> CodecResult<Ds5ControlKind> {
+    /// Only well-understood, disjoint state changes can pass each other in the queue.
+    pub(crate) fn ordering_mask(fields: u64) -> u64 {
+        const RUMBLE: u64 = 0x04_00_03; // compatible vibration, mode select and vibration v2
+        const TRIGGERS: u64 = 0x0c;
+        const LIGHTBAR: u64 = 0x04_00;
+        if fields & !(RUMBLE | TRIGGERS | LIGHTBAR) != 0 || fields == 0 {
+            return u64::MAX;
+        }
+        if fields & RUMBLE != 0 {
+            return fields | RUMBLE;
+        }
+        fields
+    }
+
+    pub(crate) fn control_fields(&self) -> CodecResult<(u64, Ds5ControlKind)> {
+        let raw = self.as_bytes();
         if !is_main_output(raw) {
             return Err(CodecError::InvalidReport);
         }
-        Ok(match (raw[1], raw[2], raw[39]) {
-            (0, 0x04, 0) => Ds5ControlKind::Lightbar,
-            (0x0c, 0, 0) if raw[11] == 0x05 && raw[22] == 0x05 => Ds5ControlKind::BothTriggersOff,
-            (0, 0, 0) if raw[1..].iter().all(|&byte| byte == 0) => Ds5ControlKind::Empty,
+        // Edge reports carry an additional set of update flags after the common payload.
+        let flags =
+            u32::from_le_bytes([raw[1], raw[2], raw[39], raw.get(48).copied().unwrap_or(0)]);
+        let kind = match flags {
+            0x04_00 => Ds5ControlKind::Lightbar,
+            0x0c if raw[11] == 0x05 && raw[22] == 0x05 => Ds5ControlKind::BothTriggersOff,
+            0 if raw[1..].iter().all(|&byte| byte == 0) => Ds5ControlKind::Empty,
             _ => Ds5ControlKind::Other,
-        })
+        };
+        Ok((u64::from(flags), kind))
     }
 
     /// Minimal speaker routing/volume update for the opt-in audio demo.
@@ -288,7 +324,7 @@ impl Ds5UsbOutput {
     pub fn speaker_demo_mode(enabled: bool) -> Self {
         let mut raw = vec![0; 48];
         raw[0] = 0x02;
-        raw[1] = 0x20; // Speaker volume valid.
+        raw[1] = Self::SPEAKER_VOLUME;
         if enabled {
             raw[1] |= 0x81; // Audio routing + audio haptics mode valid.
             raw[2] = 0x82; // AudioControl2 and power-save control valid.

@@ -11,7 +11,8 @@ use super::{
 
 impl Proxy {
     pub(super) fn handle_uhid_event(&mut self) -> io::Result<()> {
-        loop {
+        // The fd is level-triggered. Leave room for audio and timer deadlines during output floods.
+        for _ in 0..32 {
             match self.uhid.recv_event() {
                 Ok(Some(event)) => match event {
                     UhidEvent::Start => {

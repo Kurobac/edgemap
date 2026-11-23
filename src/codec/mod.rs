@@ -34,6 +34,7 @@ use ds5_usb::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodecError {
+    NonControllerInput,
     InvalidReport,
     UnsupportedOutput,
 }
@@ -521,6 +522,22 @@ mod tests {
         usb[54] = 0x00;
         let frame = ds5_bt::decode_input(&ds5_bt_raw_from_usb(&usb)).unwrap();
         assert!(!frame.state.headphone_connected);
+    }
+
+    #[test]
+    fn ds5_bt_filters_microphone_payloads_by_subtype() {
+        let mut bt = ds5_bt_raw_from_usb(&ds5_usb_raw());
+        for header in [0x02, 0xA2, 0x21] {
+            bt[1] = header;
+            let crc = ps_crc32(PS_INPUT_CRC32_SEED, &bt[..74]);
+            bt[74..].copy_from_slice(&crc.to_le_bytes());
+            let frame = SourceCodec::Ds5Bt.decode_input(&bt);
+            if header == 0x21 {
+                assert!(frame.is_ok());
+            } else {
+                assert!(matches!(frame, Err(CodecError::NonControllerInput)));
+            }
+        }
     }
 
     #[test]

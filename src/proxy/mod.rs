@@ -9,7 +9,8 @@ use nix::sys::timerfd::{ClockId, Expiration, TimerFd, TimerFlags, TimerSetTimeFl
 use std::os::fd::{AsFd, BorrowedFd};
 
 use crate::codec::{
-    CodecPipeline, ControllerFrame, FeatureReportCache, PhysicalOutputState, TargetCodec,
+    CodecError, CodecPipeline, ControllerFrame, FeatureReportCache, PhysicalOutputState,
+    TargetCodec,
 };
 use crate::config::ActiveConfig;
 use crate::control::{ControlRequest, ControlServer};
@@ -685,16 +686,20 @@ impl Proxy {
                     break;
                 }
                 Ok(n) if n >= input_report_size => {
-                    *seq = seq.wrapping_add(1);
-                    let Ok(frame) = self.codec.source.decode_input(&buf[..n]) else {
-                        warn!(
-                            "failed to decode source input report; frame dropped: source={:?}, size={}, report_id={}",
-                            self.codec.source,
-                            n,
-                            report_id_label(&buf[..n])
-                        );
-                        continue;
+                    let frame = match self.codec.source.decode_input(&buf[..n]) {
+                        Ok(frame) => frame,
+                        Err(CodecError::NonControllerInput) => continue,
+                        Err(_) => {
+                            warn!(
+                                "failed to decode source input report; frame dropped: source={:?}, size={}, report_id={}",
+                                self.codec.source,
+                                n,
+                                report_id_label(&buf[..n])
+                            );
+                            continue;
+                        }
                     };
+                    *seq = seq.wrapping_add(1);
                     let now = Instant::now();
                     self.last_frame = Some(frame.clone());
                     let out_report = self.encode_frame(&frame, now, false, *seq);

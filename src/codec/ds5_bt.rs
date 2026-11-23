@@ -49,6 +49,10 @@ pub(super) fn decode_input(raw: &[u8]) -> CodecResult<ControllerFrame> {
     if raw.len() < INPUT_REPORT_SIZE || raw[0] != INPUT_REPORT_ID {
         return Err(CodecError::InvalidReport);
     }
+    // Report 0x31 also carries microphone audio, identified by the low nibble.
+    if raw[1] & 0x0f == 0x02 {
+        return Err(CodecError::NonControllerInput);
+    }
 
     let mut source = [0u8; INPUT_REPORT_SIZE];
     source.copy_from_slice(&raw[..INPUT_REPORT_SIZE]);

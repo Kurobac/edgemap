@@ -50,10 +50,10 @@ impl RearPcm {
     }
 
     fn push(&mut self, quad: &[u8]) -> Option<[i8; 2]> {
-        for ch in 0..2 {
+        for (ch, dest) in self.history[self.cursor].iter_mut().enumerate() {
             let offset = 8 + ch * 4;
             let sample = f32::from_le_bytes(quad[offset..offset + 4].try_into().unwrap());
-            self.history[self.cursor][ch] = if sample.is_finite() {
+            *dest = if sample.is_finite() {
                 sample.clamp(-1.0, 1.0)
             } else {
                 0.0
